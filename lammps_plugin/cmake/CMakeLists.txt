@@ -63,11 +63,14 @@ endif()
 # building the plugins
 
 set(SOURCE_DIR ${CMAKE_SOURCE_DIR}/../plugin)
-add_library(morse2plugin MODULE ${SOURCE_DIR}/morse2plugin.cpp ${SOURCE_DIR}/pair_morse2.cpp ${SOURCE_DIR}/pair_morse2_omp.cpp {SOURCE_DIR}/../connector/bazel-bin/libconnector.so)
+add_library(morse2plugin MODULE ${SOURCE_DIR}/morse2plugin.cpp ${SOURCE_DIR}/pair_morse2.cpp ${SOURCE_DIR}/pair_morse2_omp.cpp)
+add_library(jax_connector SHARED ${SOURCE_DIR}/../../connector/bazel-bin/liblibconnector.so)
 target_include_directories(morse2plugin PRIVATE "${LAMMPS_HEADER_DIR}/OPENMP")
 target_link_libraries(morse2plugin PRIVATE lammps)
 
 set_target_properties(morse2plugin PROPERTIES PREFIX "" SUFFIX ".so")
+set_target_properties(jax_connector PROPERTIES LINKER_LANGUAGE CXX)
+
 
 # MacOS seems to need this
 if(CMAKE_SYSTEM_NAME STREQUAL Darwin)

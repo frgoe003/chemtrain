@@ -40,6 +40,8 @@ limitations under the License.
 #include <string>
 #include <vector>
 
+#include "main.h"
+
 #include "xla/literal.h"
 #include "xla/literal_util.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -71,19 +73,18 @@ std::string StripLogHeaders(std::string_view hlo_string) {
                        });
 }
 
-void execute(int atoms);
 
 int main(int argc, char** argv) {
   tsl::port::InitMain("", &argc, &argv);
 
   const int atoms = int(*argv[1] - '0');
-  execute(atoms);
+  jcn::execute(atoms);
 
     return 0;
 }
 
 
-void execute(int atoms) {
+void jcn::execute(int atoms) {
 
   // Load HloModule from file.
   std::string hlo_filename = "./fn_hlo.txt";

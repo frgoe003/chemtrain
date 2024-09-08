@@ -14,7 +14,7 @@
 
 cc_binary(
     name = "main",
-    srcs = ["main.cc"],
+    srcs = ["main.cpp"],
     tags = ["manual"],
     deps = [
         "@com_google_absl//absl/status:statusor",
@@ -35,9 +35,10 @@ cc_binary(
 
 cc_library(
     name = "libconnector",
-    srcs = ["main.cc"],
+    srcs = ["main.cpp"],
     tags = ["manual"],
-    deps = [
+    hdrs = ["main.h"],
+    deps = [ 
         "@com_google_absl//absl/status:statusor",
         "@tsl//tsl/platform:logging",
         "@tsl//tsl/platform:platform_port",

@@ -8,6 +8,8 @@
 #include "pair_morse2.h"
 #include "pair_morse2_omp.h"
 
+#include "../../connector/main.h"
+
 using namespace LAMMPS_NS;
 
 static Pair *morse2creator(LAMMPS *lmp)
@@ -24,6 +26,11 @@ extern "C" void lammpsplugin_init(void *lmp, void *handle, void *regfunc)
 {
   lammpsplugin_t plugin;
   lammpsplugin_regfunc register_plugin = (lammpsplugin_regfunc) regfunc;
+
+
+  // Place here to test integration
+  int atoms = 5;
+  jcn::execute(atoms);
 
   // register plain morse2 pair style
   plugin.version = LAMMPS_VERSION;
