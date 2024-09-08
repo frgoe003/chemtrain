@@ -71,8 +71,19 @@ std::string StripLogHeaders(std::string_view hlo_string) {
                        });
 }
 
+void execute(int atoms);
+
 int main(int argc, char** argv) {
   tsl::port::InitMain("", &argc, &argv);
+
+  const int atoms = int(*argv[1] - '0');
+  execute(atoms);
+
+    return 0;
+}
+
+
+void execute(int atoms) {
 
   // Load HloModule from file.
   std::string hlo_filename = "./fn_hlo.txt";
@@ -108,7 +119,7 @@ int main(int argc, char** argv) {
       client->Compile(xla_computation, compile_options).value();
 
   std::vector<std::vector<float>> data = {};
-  for (float x = 0.f; x<int(*argv[1] - '0'); x++){
+  for (float x = 0.f; x<atoms; x++){
 	std::vector<float> new_col = {0.1f * x, 0.1f * x + 1.0f, 0.1f * x - 1.0f};
 	data.push_back(new_col);
   }
@@ -166,5 +177,4 @@ int main(int argc, char** argv) {
   std::shared_ptr<xla::Literal> result_literal =
       results[0][0]->ToLiteralSync().value();
   LOG(INFO) << "result = " << *result_literal;
-  return 0;
 }
