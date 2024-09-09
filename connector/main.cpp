@@ -72,39 +72,54 @@ void print2DVector(const std::vector<std::vector<T>>& vec) {
     }
 }
 
-jcn::Connector::Connector() {
-    // Load HloModule from file.
-    std::string hlo_filename = "./fn_hlo.txt";
 
-    std::string hlo_string;
-    tsl::ReadFileToString(tsl::Env::Default(), hlo_filename, &hlo_string);
-    hlo_string = jcn::StripLogHeaders(hlo_string);
+std::string jcn::StripLogHeaders(std::string_view hlo_string);
 
 
-    std::unique_ptr<xla::HloModule> test_module = ParseAndReturnUnverifiedModule(hlo_string, xla::HloModuleConfig()).value();
-    const xla::HloModuleProto test_module_proto = test_module->ToProto();
+class jcn::Connector::Connect {
 
-    // Run it using JAX C++ Runtime (PJRT).
+    public:
+      std::unique_ptr<xla::PjRtLoadedExecutable> executable;
+      std::unique_ptr<xla::PjRtClient> client;
+
+      Connect () {
+
+            // Load HloModule from file.
+            std::string hlo_filename = "./fn_hlo.txt";
+
+            std::string hlo_string;
+            tsl::ReadFileToString(tsl::Env::Default(), hlo_filename, &hlo_string);
+            hlo_string = jcn::StripLogHeaders(hlo_string);
 
 
-    // Get a CPU client.
-    client = xla::GetTfrtCpuClient(/*asynchronous=*/false).value();
+            std::unique_ptr<xla::HloModule> test_module = ParseAndReturnUnverifiedModule(hlo_string, xla::HloModuleConfig()).value();
+            const xla::HloModuleProto test_module_proto = test_module->ToProto();
 
-    // Compile XlaComputation to PjRtExecutable.
-    xla::XlaComputation xla_computation(test_module_proto);
-    xla::CompileOptions compile_options;
+            // Run it using JAX C++ Runtime (PJRT).
 
-    // We initialized the module
-    auto executable_or_status =
-        client->Compile(xla_computation, compile_options);
 
-    std::cout << "Client creation status: " << executable_or_status.status().ToString() << std::endl;
+            // Get a CPU client.
+            client = xla::GetTfrtCpuClient(/*asynchronous=*/false).value();
 
-    executable = std::move(executable_or_status).value();
+            // Compile XlaComputation to PjRtExecutable.
+            xla::XlaComputation xla_computation(test_module_proto);
+            xla::CompileOptions compile_options;
 
-    std::cout << "Executable created" << std::endl;
+            // We initialized the module
+            auto executable_or_status =
+                client->Compile(xla_computation, compile_options);
 
-}
+            std::cout << "Client creation status: " << executable_or_status.status().ToString() << std::endl;
+
+            executable = std::move(executable_or_status).value();
+
+            std::cout << "Executable created" << std::endl;
+        }
+
+};
+
+
+jcn::Connector::Connector(): connect_instance(std::make_unique<Connect>()) {}
 
 
 std::vector<std::vector<float>> jcn::Connector::force(std::vector<std::vector<float>> position, std::vector<std::vector<int>> neighbors) {
@@ -137,13 +152,13 @@ std::vector<std::vector<float>> jcn::Connector::force(std::vector<std::vector<fl
     xla::Literal literal_x = xla::LiteralUtil::CreateFromArray(position_array);
     xla::Literal literal_y = xla::LiteralUtil::CreateFromArray(neighbor_array);
 
-    auto buffer_or_status = client->BufferFromHostLiteral(literal_x, client->addressable_devices()[0]);
+    auto buffer_or_status = connect_instance->client->BufferFromHostLiteral(literal_x, connect_instance->client->addressable_devices()[0]);
 
     std::cout << "Buffer creation status: " << buffer_or_status.status().ToString() << std::endl;
 
     std::unique_ptr<xla::PjRtBuffer> param_x = std::move(buffer_or_status).value();
     std::unique_ptr<xla::PjRtBuffer> param_y =
-        client->BufferFromHostLiteral(literal_y, client->addressable_devices()[0])
+        connect_instance->client->BufferFromHostLiteral(literal_y, connect_instance->client->addressable_devices()[0])
           .value();
 
     std::cout << "Execute..." << std::endl;
@@ -152,7 +167,7 @@ std::vector<std::vector<float>> jcn::Connector::force(std::vector<std::vector<fl
     xla::ExecuteOptions execute_options;
     // One vector<buffer> for each device.
     std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>> results =
-        executable->Execute({{param_x.get(), param_y.get()}}, execute_options)
+        connect_instance->executable->Execute({{param_x.get(), param_y.get()}}, execute_options)
             .value();
 
     // Get result.

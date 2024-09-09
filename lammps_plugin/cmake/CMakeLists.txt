@@ -63,13 +63,13 @@ endif()
 # building the plugins
 
 set(SOURCE_DIR ${CMAKE_SOURCE_DIR}/../plugin)
-add_library(morse2plugin MODULE ${SOURCE_DIR}/morse2plugin.cpp ${SOURCE_DIR}/pair_morse2.cpp ${SOURCE_DIR}/pair_morse2_omp.cpp)
-add_library(jax_connector SHARED ${SOURCE_DIR}/../../connector/bazel-bin/liblibconnector.so)
-target_include_directories(morse2plugin PRIVATE "${LAMMPS_HEADER_DIR}/OPENMP")
+add_library(morse2plugin MODULE ${SOURCE_DIR}/jaxplugin.cpp ${SOURCE_DIR}/jax_connect.cpp)
+add_library(jax_connector SHARED ${SOURCE_DIR}/../../connector/libconnector.so)
+# target_include_directories(morse2plugin PRIVATE "${LAMMPS_HEADER_DIR}/OPENMP")
 target_link_libraries(morse2plugin PRIVATE lammps)
 
 set_target_properties(morse2plugin PROPERTIES PREFIX "" SUFFIX ".so")
-set_target_properties(jax_connector PROPERTIES LINKER_LANGUAGE CXX)
+set_target_properties(jax_connector PROPERTIES LINKER_LANGUAGE CXX CXX_STANDARD 17)
 
 
 # MacOS seems to need this
