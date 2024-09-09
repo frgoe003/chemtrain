@@ -63,31 +63,31 @@ endif()
 # building the plugins
 
 set(SOURCE_DIR ${CMAKE_SOURCE_DIR}/../plugin)
-add_library(morse2plugin MODULE ${SOURCE_DIR}/jaxplugin.cpp ${SOURCE_DIR}/jax_connect.cpp)
-add_library(jax_connector SHARED ${SOURCE_DIR}/../../connector/libconnector.so)
+add_library(jaxconnector MODULE ${SOURCE_DIR}/jaxplugin.cpp ${SOURCE_DIR}/jax_connect.cpp)
+# add_library(jax_connector SHARED ${SOURCE_DIR}/../../connector/libconnector.so)
 # target_include_directories(morse2plugin PRIVATE "${LAMMPS_HEADER_DIR}/OPENMP")
-target_link_libraries(morse2plugin PRIVATE lammps)
+target_link_libraries(jaxconnector PRIVATE lammps ${SOURCE_DIR}/../../connector/libconnector.so)
 
-set_target_properties(morse2plugin PROPERTIES PREFIX "" SUFFIX ".so")
-set_target_properties(jax_connector PROPERTIES LINKER_LANGUAGE CXX CXX_STANDARD 17)
+set_target_properties(jaxconnector PROPERTIES PREFIX "" SUFFIX ".so" LINKER_LANGUAGE CXX CXX_STANDARD 17)
+# set_target_properties(jax_connector PROPERTIES )
 
 
 # MacOS seems to need this
 if(CMAKE_SYSTEM_NAME STREQUAL Darwin)
-  set_target_properties(morse2plugin
+  set_target_properties(jaxconnector
     PROPERTIES LINK_FLAGS "-Wl,-undefined,dynamic_lookup")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
 # tell CMake to export all symbols to a .dll on Windows with special case for MinGW cross-compilers
-  set_target_properties(morse2plugin
+  set_target_properties(jaxconnector
     PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS TRUE)
   if(CMAKE_CROSSCOMPILING)
-    set_target_properties(morse2plugin
+    set_target_properties(jaxconnector
       PROPERTIES LINK_FLAGS "-Wl,--export-all-symbols")
   endif()
 else()
-  set_target_properties(morse2plugin PROPERTIES
+  set_target_properties(jaxconnector PROPERTIES
     LINK_FLAGS "-rdynamic")
 endif()
 
 add_custom_target(plugins ALL ${CMAKE_COMMAND} -E echo "Building Plugins"
-  DEPENDS morse2plugin)
+  DEPENDS jaxconnector)

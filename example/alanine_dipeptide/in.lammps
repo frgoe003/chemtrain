@@ -1,5 +1,7 @@
 # input script for simulation of alanine dipeptide
 
+plugin load ../../lammps_plugin/build/jaxconnector.so
+
 units		metal
 boundary 	p p p
 atom_style 	atomic

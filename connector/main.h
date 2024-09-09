@@ -2,31 +2,22 @@
 #define main_h
 
 #include <vector>
-#include <memory>
-
-//#include "xla/pjrt/pjrt_client.h"
-//#include "xla/pjrt/pjrt_c_api_client.h"
-//#include "xla/pjrt/pjrt_executable.h"
-//#include "xla/pjrt/pjrt_stream_executor_client.h"
-//
-//#include "xla/literal.h"
-//#include "xla/literal_util.h"
+#include <memory> // For std::unique_ptr
 
 namespace jcn {
-
-	void execute();
+    void execute();
 
     class Connector {
-        public:
-            // Compute the force by evaluating a HLO module from JAX
-            Connector();
-            std::vector<std::vector<float>> force(std::vector<std::vector<float>> position, std::vector<std::vector<int>> neighbors);
+    public:
+        Connector();
+        ~Connector();
+        // Function declaration remains the same, but without knowing about XLA types
+        std::vector<std::vector<float>> force(const std::vector<std::vector<float>>& position, const std::vector<std::vector<int>>& neighbors);
 
-          // Stores the compiled module
-        private:
-            class Connect;
-            std::unique_ptr<Connect> connect_instance;
+    private:
+        class Impl; // Forward declaration of the implementation class
+        std::unique_ptr<Impl> impl_; // Use unique_ptr to manage the implementation
     };
-};
+}
 
 #endif

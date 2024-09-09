@@ -22,3 +22,8 @@ docker exec xla ./configure.py --backend=CUDA --host_compiler=CLANG
 docker exec xla bazel build -c opt --spawn_strategy=sandboxed --experimental_repo_remote_exec --cxxopt='-std=c++17' --host_cxxopt='-std=c++17' :main
 ```
 
+```bash
+
+docker run --name lammps_plugin --gpus all -it -w /build -it -d --rm -v $PWD:/build -e HOST_PERMS="$(id -u):$(id -g)" tensorflow/build:latest-python3.11 bash
+
+```

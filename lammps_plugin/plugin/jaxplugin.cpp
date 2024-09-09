@@ -21,6 +21,8 @@ extern "C" void lammpsplugin_init(void *lmp, void *handle, void *regfunc)
   lammpsplugin_t plugin;
   lammpsplugin_regfunc register_plugin = (lammpsplugin_regfunc) regfunc;
 
+  jcn::execute();
+
   // register plain morse2 pair style
   plugin.version = LAMMPS_VERSION;
   plugin.style = "pair";
