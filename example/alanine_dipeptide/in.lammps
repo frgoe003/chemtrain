@@ -1,0 +1,28 @@
+# input script for simulation of alanine dipeptide
+
+units		metal
+boundary 	p p p
+atom_style 	atomic
+
+neighbor 	2.0 bin
+neigh_modify 	every 10 delay 0 check no
+
+read_data 	alanine_dipeptide.lmp
+mass 		1 12.01078
+mass 		2 12.01078
+mass 		3 12.01078
+mass 		4 14.00672
+mass 		5 15.99943
+
+pair_style 	allegro
+pair_coeff	* * final_model.pth A B C D E
+
+velovity 	all create 298.15 23456789
+
+fix 		1 all nvt temp 298.15 298.15 $(100.0*dt)
+timestep 	0.0005
+thermo_style 	custom step pe ke etotal temp vol
+thermo 		100
+dump 		1 all custom 100 alanine_dipeptide.dump id type x y z
+
+run 		1000
