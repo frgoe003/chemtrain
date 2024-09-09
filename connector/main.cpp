@@ -44,7 +44,12 @@ limitations under the License.
 
 #include "xla/literal.h"
 #include "xla/literal_util.h"
+
 #include "xla/pjrt/pjrt_client.h"
+#include "xla/pjrt/pjrt_c_api_client.h"
+#include "xla/pjrt/pjrt_executable.h"
+#include "xla/pjrt/pjrt_stream_executor_client.h"
+
 
 #include "xla/pjrt/tfrt_cpu_pjrt_client.h"
 // #include "xla/pjrt/gpu/se_gpu_pjrt_client.h"
@@ -120,6 +125,7 @@ void jcn::execute(int atoms) {
   // Compile XlaComputation to PjRtExecutable.
   xla::XlaComputation xla_computation(test_module_proto);
   xla::CompileOptions compile_options;
+
   std::unique_ptr<xla::PjRtLoadedExecutable> executable =
       client->Compile(xla_computation, compile_options).value();
 

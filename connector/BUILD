@@ -26,13 +26,37 @@ cc_binary(
         "@xla//xla:status",
         "@xla//xla:statusor",
         "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_c_api_client",
+        "@xla//xla/pjrt:pjrt_executable",
+        "@xla//xla/pjrt:pjrt_stream_executor_client",
         "@xla//xla/pjrt:tfrt_cpu_pjrt_client",
         "@xla//xla/service:hlo_proto_cc",
         "@xla//xla/service:hlo_parser",
-        # "@cla//xla/pjrt/gpu:se_gpu_pjrt_client.h"
         # "@xla//xla/tools:hlo_module_loader",
     ],
 )
+
+cc_binary(
+    name = "pjrt_c_api_gpu_plugin.so",
+    linkopts = [
+        "-Wl,--version-script,$(location @xla//xla/pjrt/c:pjrt_c_api_gpu_version_script.lds)",
+        "-Wl,--no-undefined",
+    ],
+    tags = [
+        "noasan",
+        "nomac",  # No GPU on mac.
+        "nomsan",
+        "notsan",
+    ],
+    linkshared = True,
+    deps = [
+        "@xla//xla/pjrt/c:pjrt_c_api_gpu",
+        "@xla//xla/pjrt/c:pjrt_c_api_gpu_version_script.lds",
+        "@xla//xla/service:gpu_plugin",
+        "@xla//xla/stream_executor:cuda_platform",
+    ]
+)
+
 
 cc_library(
     name = "libconnector",
@@ -51,7 +75,8 @@ cc_library(
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:tfrt_cpu_pjrt_client",
         "@xla//xla/service:hlo_proto_cc",
-        "@xla//xla/service:hlo_parser"
+        "@xla//xla/service:hlo_parser",
+        "@xla//xla/pjrt:pjrt_c_api_client"
         # "@xla//xla/tools:hlo_module_loader",
     ],
 )
