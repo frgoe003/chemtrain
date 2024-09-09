@@ -62,9 +62,120 @@ limitations under the License.
 #include "tsl/platform/path.h"
 #include "tsl/platform/protobuf.h"
 
+template <typename T>
+void print2DVector(const std::vector<std::vector<T>>& vec) {
+    for (const auto& row : vec) {
+        for (const auto& elem : row) {
+            std::cout << elem << " ";  // Print each element followed by a space
+        }
+        std::cout << std::endl;  // Print a newline at the end of each row
+    }
+}
+
+jcn::Connector::Connector() {
+    // Load HloModule from file.
+    std::string hlo_filename = "./fn_hlo.txt";
+
+    std::string hlo_string;
+    tsl::ReadFileToString(tsl::Env::Default(), hlo_filename, &hlo_string);
+    hlo_string = jcn::StripLogHeaders(hlo_string);
 
 
-std::string StripLogHeaders(std::string_view hlo_string) {
+    std::unique_ptr<xla::HloModule> test_module = ParseAndReturnUnverifiedModule(hlo_string, xla::HloModuleConfig()).value();
+    const xla::HloModuleProto test_module_proto = test_module->ToProto();
+
+    // Run it using JAX C++ Runtime (PJRT).
+
+
+    // Get a CPU client.
+    client = xla::GetTfrtCpuClient(/*asynchronous=*/false).value();
+
+    // Compile XlaComputation to PjRtExecutable.
+    xla::XlaComputation xla_computation(test_module_proto);
+    xla::CompileOptions compile_options;
+
+    // We initialized the module
+    auto executable_or_status =
+        client->Compile(xla_computation, compile_options);
+
+    std::cout << "Client creation status: " << executable_or_status.status().ToString() << std::endl;
+
+    executable = std::move(executable_or_status).value();
+
+    std::cout << "Executable created" << std::endl;
+
+}
+
+
+std::vector<std::vector<float>> jcn::Connector::force(std::vector<std::vector<float>> position, std::vector<std::vector<int>> neighbors) {
+
+    // Could be set to a better value
+    // int max_neighbors = 9;
+    int max_neighbors = 4;
+
+
+    // Create arrays in the correct format. Directly fill in the neighbor list
+    // with invalid values.
+    xla::Array2D<float> position_array = xla::Array2D<float>(position.size(), 3);
+    xla::Array2D<int> neighbor_array = xla::Array2D<int>(neighbors.size(), max_neighbors, neighbors.size());
+
+    // Fill in the data of the arrays
+    for (int i = 0; i < position.size(); i++) {
+         // Fill in all positions
+        for (int j = 0; j < 3; j++) {
+            position_array(i, j) = position[i][j];
+        }
+
+        // Fill in all neighbors
+        for (int j = 0; j < neighbors[i].size(); j++) {
+            neighbor_array(i, j) = neighbors[i][j];
+        }
+
+    }
+
+    // Create the literal from the Array2D
+    xla::Literal literal_x = xla::LiteralUtil::CreateFromArray(position_array);
+    xla::Literal literal_y = xla::LiteralUtil::CreateFromArray(neighbor_array);
+
+    auto buffer_or_status = client->BufferFromHostLiteral(literal_x, client->addressable_devices()[0]);
+
+    std::cout << "Buffer creation status: " << buffer_or_status.status().ToString() << std::endl;
+
+    std::unique_ptr<xla::PjRtBuffer> param_x = std::move(buffer_or_status).value();
+    std::unique_ptr<xla::PjRtBuffer> param_y =
+        client->BufferFromHostLiteral(literal_y, client->addressable_devices()[0])
+          .value();
+
+    std::cout << "Execute..." << std::endl;
+
+    // Execute on CPU.
+    xla::ExecuteOptions execute_options;
+    // One vector<buffer> for each device.
+    std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>> results =
+        executable->Execute({{param_x.get(), param_y.get()}}, execute_options)
+            .value();
+
+    // Get result.
+    std::shared_ptr<xla::Literal> result_literal =
+        results[0][0]->ToLiteralSync().value();
+    auto flat_results = result_literal->data<float>();
+
+    // Copy result into vector
+    std::vector<std::vector<float>> result;
+    for (int i = 0; i < position.size(); i++) {
+        std::vector<float> new_col;
+
+        for (int j = 0; j < 3; j++) {
+            new_col.push_back(flat_results[i * 3 + j]);
+        }
+        result.push_back(new_col);
+    }
+
+    return result;
+}
+
+
+std::string jcn::StripLogHeaders(std::string_view hlo_string) {
   // I0521 12:04:45.883483    1509 service.cc:186] ...
   static RE2* matcher = new RE2(
       "[IWEF]\\d{4} "
@@ -86,106 +197,55 @@ std::string StripLogHeaders(std::string_view hlo_string) {
 int main(int argc, char** argv) {
   tsl::port::InitMain("", &argc, &argv);
 
-  const int atoms = int(*argv[1] - '0');
-  jcn::execute(atoms);
+  jcn::execute();
 
     return 0;
 }
 
 
-void jcn::execute(int atoms) {
+void jcn::execute() {
 
-  // Load HloModule from file.
-  std::string hlo_filename = "./fn_hlo.txt";
-//  std::function<void(xla::HloModuleConfig*)> config_modifier_hook =
-//      [](xla::HloModuleConfig* config) { config->set_seed(42); };
+  jcn::Connector connector;
 
-  std::cout << "Read in file" << std::endl;
+  int atoms = 5;
 
-  std::string hlo_string;
-  tsl::ReadFileToString(tsl::Env::Default(), hlo_filename, &hlo_string);
-
-  std::cout << "File is: " << hlo_string << std::endl;
-
-  hlo_string = StripLogHeaders(hlo_string);
-
-  std::cout << "Stripped log headers: " << hlo_string << std::endl;
-
-   std::unique_ptr<xla::HloModule> test_module = ParseAndReturnUnverifiedModule(hlo_string, xla::HloModuleConfig()).value();
-   const xla::HloModuleProto test_module_proto = test_module->ToProto();
-
-  // Run it using JAX C++ Runtime (PJRT).
-
-   std::cout << "Starting execution on client" << std::endl;
-
-  // Get a CPU client.
-  std::unique_ptr<xla::PjRtClient> client =
-      xla::GetTfrtCpuClient(/*asynchronous=*/true).value();
-
-  // Compile XlaComputation to PjRtExecutable.
-  xla::XlaComputation xla_computation(test_module_proto);
-  xla::CompileOptions compile_options;
-
-  std::unique_ptr<xla::PjRtLoadedExecutable> executable =
-      client->Compile(xla_computation, compile_options).value();
-
-  std::vector<std::vector<float>> data = {};
+  std::vector<std::vector<float>> position = {};
   for (float x = 0.f; x<atoms; x++){
 	std::vector<float> new_col = {0.1f * x, 0.1f * x + 1.0f, 0.1f * x - 1.0f};
-	data.push_back(new_col);
+	position.push_back(new_col);
   }
-  // xla::Shape x_shape = xla::ShapeUtil::MakeShape(xla::F32, absl::Span(std::vector<int>(x1, x2)));
 
-  // Prepare inputs.
-
-    // Define the data
-    //std::vector<std::vector<float>> data = {{1.0, 2.0}, {3.0, 4.0}, {5.0, 6.0}};
-
-    // Create an Array2D from the data
-    xla::Array<float> array2d = xla::Array2D<float>(data.size(), data[0].size());
-    for (int i = 0; i < data.size(); ++i) {
-        for (int j = 0; j < data[i].size(); ++j) {
-            array2d(i, j) = data[i][j];
-        }
-    }
-
-    xla::Array<int> nbrs = xla::Array2D<int>(data.size(), data.size() - 1);
-    for (int i = 0; i < data.size(); i++) {
-	    for (int j = 0 ; j < data.size(); j++) {
+  std::vector<std::vector<int>> neighbors = {};
+    for (int i = 0; i < position.size(); i++) {
+        std::vector<int> new_col;
+	    for (int j = 0 ; j < position.size(); j++) {
 		    if (i > j) {
-		            nbrs(i, j) = j;
+		        new_col.push_back(j);
 		    }
 		    if (i < j) {
-			    nbrs(i, j - 1) = j;
+			    new_col.push_back(j);
 		    }
 	    }
+         neighbors.push_back(new_col);
     }
 
-    // Create the literal from the Array2D
-    xla::Literal literal_x = xla::LiteralUtil::CreateFromArray(array2d);
-    xla::Literal literal_y = xla::LiteralUtil::CreateFromArray(nbrs);
+    std::cout << "Neighbors: " << std::endl;
+    print2DVector<int>(neighbors);
 
-    // Print the literal to verify
-    std::cout << literal_x.ToString() << std::endl;
-    std::cout << literal_y.ToString() << std::endl;
+    std::vector<std::vector<float>> result = connector.force(position, neighbors);
 
+    std::cout << "Result: " << std::endl;
+    print2DVector<float>(result);
 
-  std::unique_ptr<xla::PjRtBuffer> param_x =
-      client->BufferFromHostLiteral(literal_x, client->addressable_devices()[0])
-          .value();
-  std::unique_ptr<xla::PjRtBuffer> param_y =
-      client->BufferFromHostLiteral(literal_y, client->addressable_devices()[0])
-          .value();
+    position = {};
+    for (float x = 0.f; x<atoms; x++){
+        std::vector<float> new_col = {0.2f * x, 0.1f * x + 1.0f, 0.1f * x - 1.0f};
+        position.push_back(new_col);
+    }
 
-  // Execute on CPU.
-  xla::ExecuteOptions execute_options;
-  // One vector<buffer> for each device.
-  std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>> results =
-      executable->Execute({{param_x.get(), param_y.get()}}, execute_options)
-          .value();
+    result = connector.force(position, neighbors);
 
-  // Get result.
-  std::shared_ptr<xla::Literal> result_literal =
-      results[0][0]->ToLiteralSync().value();
-  LOG(INFO) << "result = " << *result_literal;
+    std::cout << "Result: " << std::endl;
+    print2DVector<float>(result);
+
 }

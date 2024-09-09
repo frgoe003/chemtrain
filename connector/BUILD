@@ -59,7 +59,7 @@ cc_binary(
 
 
 cc_library(
-    name = "libconnector",
+    name = "connector",
     srcs = ["main.cpp"],
     tags = ["manual"],
     hdrs = ["main.h"],
@@ -73,10 +73,12 @@ cc_library(
         "@xla//xla:status",
         "@xla//xla:statusor",
         "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_c_api_client",
+        "@xla//xla/pjrt:pjrt_executable",
+        "@xla//xla/pjrt:pjrt_stream_executor_client",
         "@xla//xla/pjrt:tfrt_cpu_pjrt_client",
         "@xla//xla/service:hlo_proto_cc",
         "@xla//xla/service:hlo_parser",
-        "@xla//xla/pjrt:pjrt_c_api_client"
         # "@xla//xla/tools:hlo_module_loader",
     ],
 )
