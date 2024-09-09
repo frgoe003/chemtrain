@@ -45,7 +45,10 @@ limitations under the License.
 #include "xla/literal.h"
 #include "xla/literal_util.h"
 #include "xla/pjrt/pjrt_client.h"
+
 #include "xla/pjrt/tfrt_cpu_pjrt_client.h"
+// #include "xla/pjrt/gpu/se_gpu_pjrt_client.h"
+
 #include "xla/status.h"
 #include "xla/statusor.h"
 #include "tsl/platform/init_main.h"
@@ -53,6 +56,7 @@ limitations under the License.
 #include "tsl/platform/env.h"
 #include "tsl/platform/path.h"
 #include "tsl/platform/protobuf.h"
+
 
 
 std::string StripLogHeaders(std::string_view hlo_string) {

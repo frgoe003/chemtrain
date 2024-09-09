@@ -14,7 +14,7 @@
 
 cc_binary(
     name = "main",
-    srcs = ["main.cpp"],
+    srcs = ["main.cpp", "main.h"],
     tags = ["manual"],
     deps = [
         "@com_google_absl//absl/status:statusor",
@@ -28,7 +28,8 @@ cc_binary(
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:tfrt_cpu_pjrt_client",
         "@xla//xla/service:hlo_proto_cc",
-        "@xla//xla/service:hlo_parser"
+        "@xla//xla/service:hlo_parser",
+        # "@cla//xla/pjrt/gpu:se_gpu_pjrt_client.h"
         # "@xla//xla/tools:hlo_module_loader",
     ],
 )
@@ -38,7 +39,7 @@ cc_library(
     srcs = ["main.cpp"],
     tags = ["manual"],
     hdrs = ["main.h"],
-    deps = [ 
+    deps = [
         "@com_google_absl//absl/status:statusor",
         "@tsl//tsl/platform:logging",
         "@tsl//tsl/platform:platform_port",
