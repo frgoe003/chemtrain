@@ -19,17 +19,19 @@ n_species = 5
 r_cut = 0.5
 
 displacement_fn, shift_fn = space.periodic_general(
-    box, fractional_coordinates=False)
+    box, fractional_coordinates=True)
 
 # Initialize a box tensor but do not use fractional coordinates
 box_tensor, _ = custom_space.init_fractional_coordinates(box)
+inv_box = jnp.asarray(onp.linalg.inv(box_tensor))
 
 neighbor_fn = partition.neighbor_list(
     displacement_fn, box_tensor, r_cut, disable_cell_list=True,
-    fractional_coordinates=False, capacity_multiplier=1.5
+    fractional_coordinates=True, capacity_multiplier=1.5
 )
 
 nbrs_init = neighbor_fn.allocate(r_init, extra_capacity=1)
+nbrs_init = nbrs_init.set(idx=jnp.ones((10, 9), dtype=int))
 
 print(f"The neighborlist has max. {nbrs_init.idx.shape[1]} neighbors per atom.")
 
@@ -67,6 +69,7 @@ def energy_fn(position, neighbor_idx):
 
     # We transfrom from angstrom back to nm
     position *= 0.1
+    position = jnp.einsum("ij, nj->ni", inv_box, position)
 
     pot = 0.0
     pot += gnn_energy_fn(params, position, nbrs)
