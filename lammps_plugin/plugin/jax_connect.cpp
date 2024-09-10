@@ -17,8 +17,10 @@
 #include "force.h"
 #include "memory.h"
 #include "neigh_list.h"
+
 #include <cmath>
 #include <cstring>
+#include <iostream>
 
 using namespace LAMMPS_NS;
 
@@ -41,8 +43,8 @@ JaxConnect::~JaxConnect()
 
   // No allocation means no destruction
 
-  //    memory->destroy(setflag);
-  //    memory->destroy(cutsq);
+  memory->destroy(setflag);
+  memory->destroy(cutsq);
   //
   //    memory->destroy(cut);
   //    memory->destroy(d0);
@@ -60,6 +62,8 @@ void JaxConnect::compute(int eflag, int vflag)
 
   // The interesting stuff goes on in this function. We need to transform the neighbor list
   // in the exepected formations and also the positions into the expected format.
+
+  std::cout << "Start computing forces" << std::endl;
 
   std::vector<std::vector<int>> neighbors;
   std::vector<std::vector<float>> positions;
@@ -87,7 +91,7 @@ void JaxConnect::compute(int eflag, int vflag)
   }
 
   // Compute the forces using the JAX connector
-  std::vector<std::vector<float>> forces = connector.force(positions, neighbors);
+  std::vector<std::vector<float>> forces = connector->force(positions, neighbors);
 
   // Assign the force back to lammps
   for (int i = 0; i < atom->nlocal; i++) {
@@ -173,12 +177,19 @@ void JaxConnect::compute(int eflag, int vflag)
 void JaxConnect::allocate()
 {
   allocated = 1;
+  std::cout << "Allocated and set flag to: " << allocated << std::endl;
+
   int n = atom->ntypes;
 
   // No need to create something for now
   //
   // memory->create(cut, n + 1, n + 1, "pair:cut");
+  memory->create(setflag, n + 1, n + 1, "pair:setflag");
+   memory->create(cutsq, n + 1, n + 1, "pair:cutsq");
 
+  for (int i = 1; i <= n; i++) {
+      for (int j = 1; j <= n; j++) setflag[i][j] = 0;
+  }
 }
 
 /* ----------------------------------------------------------------------
@@ -207,12 +218,40 @@ void JaxConnect::settings(int narg, char **arg)
 
 void JaxConnect::coeff(int narg, char **arg)
 {
+  	std::cout << "Start setting coefficients after checking allocation: " << allocated << std::endl;
+
+	if (!allocated) allocate();
+
+    std::cout << "Allocation is now set to: " << allocated << std::endl;
+
+
+    std::cout << "Number of arguments: " << narg << std::endl;
+    for (int i = 0; i < narg; ++i) {
+        std::cout << "arg[" << i << "]: " << arg[i] << std::endl;
+    }
+
+    const int max_neighbors = std::stoi(arg[2]);
+    std::string hlo_filename = arg[3];
+
+    std::cout << "Initialize JAX connector on module " << hlo_filename << " with " << max_neighbors << " neighbors" << std::endl;
+
+    connector = std::make_unique<jcn::Connector>(max_neighbors, hlo_filename);
+
 //  if (narg < 5 || narg > 6) error->all(FLERR, "Incorrect args for pair coefficients");
-//  if (!allocated) allocate();
 //
-//  int ilo, ihi, jlo, jhi;
-//  utils::bounds(FLERR, arg[0], 1, atom->ntypes, ilo, ihi, error);
-//  utils::bounds(FLERR, arg[1], 1, atom->ntypes, jlo, jhi, error);
+	int ilo, ihi, jlo, jhi;
+	utils::bounds(FLERR, arg[0], 1, atom->ntypes, ilo, ihi, error);
+	utils::bounds(FLERR, arg[1], 1, atom->ntypes, jlo, jhi, error);
+
+    int count = 0;
+	for (int i = ilo; i <= ihi; i++) {
+    	for (int j = MAX(jlo, i); j <= jhi; j++) {
+      		setflag[i][j] = 1;
+      		count++;
+    	}
+  	}
+
+
 //
 //  double d0_one = utils::numeric(FLERR, arg[2], false, lmp);
 //  double alpha_one = utils::numeric(FLERR, arg[3], false, lmp);
@@ -233,7 +272,18 @@ void JaxConnect::coeff(int narg, char **arg)
 //    }
 //  }
 //
+
+  std::cout << "Finished allocation" << std::endl;
+
 //  if (count == 0) error->all(FLERR, "Incorrect args for pair coefficients");
+}
+
+
+void JaxConnect::init_style()
+{
+  // need a full neighbor list
+  // TODO: Request full neighbor list
+  // neighbor->add_request(this,NeighConst::REQ_FULL);
 }
 
 /* ----------------------------------------------------------------------

@@ -27,6 +27,7 @@ class JaxConnect : public Pair {
 
   void settings(int, char **) override;
   void coeff(int, char **) override;
+  void init_style() override;
   // double init_one(int, int) override;
   // void write_restart(FILE *) override;
   // void read_restart(FILE *) override;
@@ -38,9 +39,11 @@ class JaxConnect : public Pair {
   void *extract(const char *, int &) override;
 
  protected:
+//  bool allocated;
+
   double cut_global;
 
-  jcn::Connector connector;
+  std::unique_ptr<jcn::Connector> connector;
 
   virtual void allocate();
 };

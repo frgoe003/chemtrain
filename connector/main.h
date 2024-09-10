@@ -9,7 +9,7 @@ namespace jcn {
 
     class Connector {
     public:
-        Connector();
+        Connector(const int max_neighbors, std::string hlo_filename);
         ~Connector();
         // Function declaration remains the same, but without knowing about XLA types
         std::vector<std::vector<float>> force(const std::vector<std::vector<float>>& position, const std::vector<std::vector<int>>& neighbors);

@@ -22,6 +22,12 @@ docker exec xla ./configure.py --backend=CUDA --host_compiler=CLANG
 docker exec xla bazel build -c opt --spawn_strategy=sandboxed --experimental_repo_remote_exec --cxxopt='-std=c++17' --host_cxxopt='-std=c++17' :libmain.so
 ```
 
+To test the compiled binary, run:
+
+```bash
+docker exec xla ./bazel-bin/libmain.so
+```
+
 ## Building Lammps Plugin
 
 ```bash
@@ -29,6 +35,14 @@ docker run --name lammps_plugin -w /mnt/lammps_plugin/build -it -d --rm -v $PWD:
 docker exec lammps_plugin cmake -D LAMMPS_HEADER_DIR=../../lammps/src ../cmake
 docker exec lammps_plugin make
 ```
+
+Note: When changing the connector, you need to recompile the connector and the plugin using:
+
+```bash
+docker exec lammps_plugin cmake --build . --clean-first
+```
+
+To build lammps with plugin support, run:
 
 ```bash
 docker run --name lammps -w /mnt/lammps/build -it -d --rm -v $PWD:/mnt lammps-build bash
@@ -48,4 +62,21 @@ Then, we can run LAMMPS inside the container:
 
 ```bash
 docker exec lammps ./lmp -i input.lmp
+```
+
+## Execute an example
+
+```bash
+docker run --name lmp_example -w /mnt/example/alanine_dipeptide -it -d --rm -v $PWD:/mnt lammps-build bash
+docker exec lmp_example ../../lammps/build/lmp -i input.lmp
+docker exec lmp_example ../../lammps/build/lmp -i in.lammps
+```
+
+
+## You want to acces your own files?
+
+You can get back ownership of the docker output by running:
+
+```bash
+docker exec lammps chown -R `stat -c "%u:%g" /mnt` /mnt
 ```

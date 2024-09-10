@@ -2,7 +2,7 @@
 
 plugin load ../../lammps_plugin/build/jaxconnector.so
 
-units		metal
+units		real
 boundary 	p p p
 atom_style 	atomic
 
@@ -16,10 +16,10 @@ mass 		3 12.01078
 mass 		4 14.00672
 mass 		5 15.99943
 
-pair_style 	allegro
-pair_coeff	* * final_model.pth A B C D E
+pair_style  jaxnn
+pair_coeff	* * 9 alanine_dipeptide_hlo.txt
 
-velovity 	all create 298.15 23456789
+velocity 	all create 298.15 23456789
 
 fix 		1 all nvt temp 298.15 298.15 $(100.0*dt)
 timestep 	0.0005

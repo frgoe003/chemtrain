@@ -33,9 +33,11 @@ void print2DVector(const std::vector<std::vector<T>>& vec) {
 namespace jcn {
     class Connector::Impl {
     public:
-        Impl() {
+        Impl(const int max_neighbors, std::string hlo_filename) : max_neighbors(max_neighbors) {
+
+          	std::cout << "Load HLO file " << hlo_filename << " for max_neighbors " << max_neighbors << std::endl;
+
             // Initialization code related to XLA
-            std::string hlo_filename = "./fn_hlo.txt";
             std::string hlo_string;
             tsl::ReadFileToString(tsl::Env::Default(), hlo_filename, &hlo_string);
             hlo_string = StripLogHeaders(hlo_string);
@@ -54,7 +56,6 @@ namespace jcn {
         }
 
         std::vector<std::vector<float>> execute(const std::vector<std::vector<float>>& position, const std::vector<std::vector<int>>& neighbors) {
-            int max_neighbors = 4;
 
             xla::Array2D<float> position_array(position.size(), 3);
             xla::Array2D<int> neighbor_array(neighbors.size(), max_neighbors, neighbors.size());
@@ -98,6 +99,9 @@ namespace jcn {
         }
 
     private:
+
+        const int max_neighbors;
+
         std::unique_ptr<xla::PjRtLoadedExecutable> executable_;
         std::unique_ptr<xla::PjRtClient> client_;
 
@@ -119,7 +123,7 @@ namespace jcn {
         }
     };
 
-    Connector::Connector() : impl_(std::make_unique<Impl>()) {}
+    Connector::Connector(const int max_neighbors, const std::string hlo_path) : impl_(std::make_unique<Impl>(max_neighbors, hlo_path)) {}
     Connector::~Connector() = default;
 
     std::vector<std::vector<float>> Connector::force(const std::vector<std::vector<float>>& position, const std::vector<std::vector<int>>& neighbors) {
@@ -127,7 +131,9 @@ namespace jcn {
     }
 
     void execute() {
-        Connector connector;
+
+        const int max_neighbors = 5;
+        Connector connector = Connector(max_neighbors, "./fn_hlo.txt");
 
         int atoms = 5;
         std::vector<std::vector<float>> position;

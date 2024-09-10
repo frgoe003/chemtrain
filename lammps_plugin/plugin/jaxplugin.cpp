@@ -21,12 +21,10 @@ extern "C" void lammpsplugin_init(void *lmp, void *handle, void *regfunc)
   lammpsplugin_t plugin;
   lammpsplugin_regfunc register_plugin = (lammpsplugin_regfunc) regfunc;
 
-  jcn::execute();
-
   // register plain morse2 pair style
   plugin.version = LAMMPS_VERSION;
   plugin.style = "pair";
-  plugin.name = "JAX-NN";
+  plugin.name = "jaxnn";
   plugin.info = "Potential in JAX";
   plugin.author = "Paul Fuchs (paul.fuchs@tum.de)";
   plugin.creator.v1 = (lammpsplugin_factory1 *) &jaxNNCreator;
