@@ -170,3 +170,8 @@ namespace jcn {
         print2DVector<float>(result);
     }
 }
+
+int main(int argc, char** argv){
+    jcn::execute();
+    return 0;
+}

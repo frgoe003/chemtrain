@@ -45,8 +45,16 @@ else()
 endif()
 
 # C++11 is required
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+set(CMAKE_C_COMPILER "/usr/lib/llvm-18/bin/clang")
+set(CMAKE_CXX_COMPILER "/usr/lib/llvm-18/bin/clang++")
+
+
+set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--version-script")
+
+add_compile_options(-std=c++17)
 
 # Need -restrict with Intel compilers
 if(CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
@@ -66,7 +74,7 @@ set(SOURCE_DIR ${CMAKE_SOURCE_DIR}/../plugin)
 add_library(jaxconnector MODULE ${SOURCE_DIR}/jaxplugin.cpp ${SOURCE_DIR}/jax_connect.cpp)
 # add_library(jax_connector SHARED ${SOURCE_DIR}/../../connector/libconnector.so)
 # target_include_directories(morse2plugin PRIVATE "${LAMMPS_HEADER_DIR}/OPENMP")
-target_link_libraries(jaxconnector PRIVATE lammps ${SOURCE_DIR}/../../connector/libconnector.so)
+target_link_libraries(jaxconnector PRIVATE lammps ${SOURCE_DIR}/../../connector/libmain.so)
 
 set_target_properties(jaxconnector PROPERTIES PREFIX "" SUFFIX ".so" LINKER_LANGUAGE CXX CXX_STANDARD 17)
 # set_target_properties(jax_connector PROPERTIES )

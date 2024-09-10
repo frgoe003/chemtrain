@@ -13,7 +13,7 @@
 # limitations under the License.
 
 cc_binary(
-    name = "main",
+    name = "libmain.so",
     srcs = ["main.cpp", "main.h"],
     tags = ["manual"],
     deps = [
@@ -34,6 +34,11 @@ cc_binary(
         "@xla//xla/service:hlo_parser",
         # "@xla//xla/tools:hlo_module_loader",
     ],
+    # linkopts=['-static'],
+    linkopts = [
+        "-Wl,--no-undefined",
+    ],
+    linkshared=True
 )
 
 cc_binary(

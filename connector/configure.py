@@ -497,7 +497,12 @@ def main():
     )
 
     bazelrc_path = _XLA_SRC_ROOT / _XLA_BAZELRC_NAME
-    bazelrc_contents = "build --action_env=BAZEL_CXXOPTS=\"-std=c++17\"\n" + "\n".join(bazelrc_lines) + "\n"
+    bazelrc_contents = (
+        "build --action_env=BAZEL_CXXOPTS=\"-std=c++17\"\n"
+        "build --action_env"
+        "\n".join(bazelrc_lines)
+        "\n"
+    )
 
     with (bazelrc_path).open("w") as f:
         logging.info("Writing bazelrc to %s...", bazelrc_path)
