@@ -22,7 +22,7 @@ pair_coeff	* * 9 alanine_dipeptide_hlo.txt
 velocity 	all create 298.15 23456789
 
 fix 		1 all nvt temp 298.15 298.15 $(100.0*dt)
-timestep 	0.0005
+timestep 	0.5
 thermo_style 	custom step pe ke etotal temp vol
 thermo 		100
 dump 		1 all custom 100 alanine_dipeptide.dump id type x y z

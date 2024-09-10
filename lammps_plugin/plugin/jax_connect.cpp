@@ -16,7 +16,9 @@
 #include "error.h"
 #include "force.h"
 #include "memory.h"
+#include "neighbor.h"
 #include "neigh_list.h"
+#include "neigh_request.h"
 
 #include <cmath>
 #include <cstring>
@@ -45,8 +47,7 @@ JaxConnect::~JaxConnect()
 
   memory->destroy(setflag);
   memory->destroy(cutsq);
-  //
-  //    memory->destroy(cut);
+  memory->destroy(cut);
   //    memory->destroy(d0);
   //    memory->destroy(alpha);
   //    memory->destroy(r0);
@@ -65,8 +66,12 @@ void JaxConnect::compute(int eflag, int vflag)
 
   std::cout << "Start computing forces" << std::endl;
 
+  ev_init(eflag, vflag);
+
   std::vector<std::vector<int>> neighbors;
   std::vector<std::vector<float>> positions;
+
+  std::cout << "Initialize neighbor list and collect positions" << std::endl;
 
   // Create an empty list of neighbors and collect all positions
   for (int i = 0; i < atom->nlocal; i++) {
@@ -76,19 +81,28 @@ void JaxConnect::compute(int eflag, int vflag)
     std::vector<float> r;
     for (int j = 0; j < 3; j++) {
       r.push_back((float) atom->x[i][j]);
+      std::cout << "Read position of atom " << i << ": " << r[0] << ", " << r[1] << ", " << r[2] << std::endl;
     }
     positions.push_back(r);
   }
 
   // Enter the neighbors into the JAX, M.D. neighbor list format
-  for (int i = 0; i < list->inum; i++) {
-    for (int j = 0; j < list->numneigh[i]; j++) {
-      int a_idx = list->ilist[i];
-      int b_idx = list->firstneigh[i][j];
+  for (int ii = 0; ii < list->inum; ii++) {
+    int i = list->ilist[ii];
+    std::cout << "[" << i << "] ";
+    for (int jj = 0; jj < list->numneigh[i]; jj++) {
+      int j = list->firstneigh[i][jj];
 
-      neighbors[a_idx].push_back(b_idx);
+       std::cout << j << " ";
+
+      // Lammps does index with 1
+      neighbors[i].push_back(j);
     }
+    std::cout << std::endl;
   }
+
+
+  std::cout << "Evaluate using JAX connector" << std::endl;
 
   // Compute the forces using the JAX connector
   std::vector<std::vector<float>> forces = connector->force(positions, neighbors);
@@ -98,6 +112,8 @@ void JaxConnect::compute(int eflag, int vflag)
     atom->f[i][0] = (double) forces[i][0];
     atom->f[i][1] = (double) forces[i][1];
     atom->f[i][2] = (double) forces[i][2];
+
+    std::cout << "Write force on atom " << i << ": " << (double) forces[i][0] << ", " << (double) forces[i][1] << ", " << (double) forces[i][2] << std::endl;
   }
 
 //  int i, j, ii, jj, inum, jnum, itype, jtype;
@@ -185,7 +201,9 @@ void JaxConnect::allocate()
   //
   // memory->create(cut, n + 1, n + 1, "pair:cut");
   memory->create(setflag, n + 1, n + 1, "pair:setflag");
-   memory->create(cutsq, n + 1, n + 1, "pair:cutsq");
+  memory->create(cutsq, n + 1, n + 1, "pair:cutsq");
+  memory->create(cut, n + 1, n + 1, "pair:cut");
+
 
   for (int i = 1; i <= n; i++) {
       for (int j = 1; j <= n; j++) setflag[i][j] = 0;
@@ -247,6 +265,8 @@ void JaxConnect::coeff(int narg, char **arg)
 	for (int i = ilo; i <= ihi; i++) {
     	for (int j = MAX(jlo, i); j <= jhi; j++) {
       		setflag[i][j] = 1;
+            cutsq[i][j] = 25.;
+            cut[i][j] = 5.;
       		count++;
     	}
   	}
@@ -283,17 +303,17 @@ void JaxConnect::init_style()
 {
   // need a full neighbor list
   // TODO: Request full neighbor list
-  // neighbor->add_request(this,NeighConst::REQ_FULL);
+  neighbor->add_request(this,NeighConst::REQ_FULL);
 }
 
 /* ----------------------------------------------------------------------
    init for one type pair i,j and corresponding j,i
 ------------------------------------------------------------------------- */
 
-//double JaxConnect::init_one(int i, int j)
-//{
-//  if (setflag[i][j] == 0) error->all(FLERR, "All pair coeffs are not set");
-//
+double JaxConnect::init_one(int i, int j)
+{
+  if (setflag[i][j] == 0) error->all(FLERR, "All pair coeffs are not set");
+
 //  morse1[i][j] = 2.0 * d0[i][j] * alpha[i][j];
 //
 //  if (offset_flag) {
@@ -307,9 +327,9 @@ void JaxConnect::init_style()
 //  r0[j][i] = r0[i][j];
 //  morse1[j][i] = morse1[i][j];
 //  offset[j][i] = offset[i][j];
-//
-//  return cut[i][j];
-//}
+
+  return cut[i][j];
+}
 
 /* ----------------------------------------------------------------------
    proc 0 writes to restart file
@@ -429,11 +449,11 @@ void JaxConnect::init_style()
 
 /* ---------------------------------------------------------------------- */
 
-void *JaxConnect::extract(const char *str, int &dim)
-{
-  dim = 2;
-//  if (strcmp(str, "d0") == 0) return (void *) d0;
-//  if (strcmp(str, "r0") == 0) return (void *) r0;
-//  if (strcmp(str, "alpha") == 0) return (void *) alpha;
-  return nullptr;
-}
+//void *JaxConnect::extract(const char *str, int &dim)
+//{
+//  dim = 2;
+////  if (strcmp(str, "d0") == 0) return (void *) d0;
+////  if (strcmp(str, "r0") == 0) return (void *) r0;
+////  if (strcmp(str, "alpha") == 0) return (void *) alpha;
+//  return nullptr;
+//}

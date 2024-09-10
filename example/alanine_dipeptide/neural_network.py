@@ -2,7 +2,7 @@
 
 import jax
 import jax.numpy as jnp
-from jax import tree_util
+from jax import tree_util, debug
 
 from jax_md_mod.model import neural_networks, prior
 from jax_md_mod import io, custom_space
