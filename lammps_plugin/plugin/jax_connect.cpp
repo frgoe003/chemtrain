@@ -64,14 +64,14 @@ void JaxConnect::compute(int eflag, int vflag)
   // The interesting stuff goes on in this function. We need to transform the neighbor list
   // in the exepected formations and also the positions into the expected format.
 
-  std::cout << "Start computing forces" << std::endl;
+  // std::cout << "Start computing forces" << std::endl;
 
   ev_init(eflag, vflag);
 
   std::vector<std::vector<int>> neighbors;
   std::vector<std::vector<float>> positions;
 
-  std::cout << "Initialize neighbor list and collect positions" << std::endl;
+  // std::cout << "Initialize neighbor list and collect positions" << std::endl;
 
   // Create an empty list of neighbors and positions
   for (int i = 0; i < atom->nlocal; i++) {
@@ -108,41 +108,40 @@ void JaxConnect::compute(int eflag, int vflag)
 
       neighbors[idx].push_back(jdx);
     }
-    std::cout << std::endl;
   }
 
-  // For debugging: Print neighbor list and positions
-  std::cout << "Neighbors: " << std::endl;
-  for (int ii = 0; ii < atom->nlocal; ii++) {
-    std::cout << "[" << ii << "]" << ": ";
-    for (int jj = 0; jj < neighbors[ii].size(); jj++) {
-      std::cout << neighbors[ii][jj] << " ";
-    }
-    std::cout << std::endl;
-  }
+//  // For debugging: Print neighbor list and positions
+//  std::cout << "Neighbors: " << std::endl;
+//  for (int ii = 0; ii < atom->nlocal; ii++) {
+//    std::cout << "[" << ii << "]" << ": ";
+//    for (int jj = 0; jj < neighbors[ii].size(); jj++) {
+//      std::cout << neighbors[ii][jj] << " ";
+//    }
+//    std::cout << std::endl;
+//  }
+//
+//  std::cout << "Positions: " << std::endl;
+//  for (int ii = 0; ii < atom->nlocal; ii++) {
+//    std::cout << "[" << ii << "]" << ": ";
+//    for (int jj = 0; jj < 3; jj++) {
+//      std::cout << positions[ii][jj] << " ";
+//    }
+//    std::cout << std::endl;
+//  }
 
-  std::cout << "Positions: " << std::endl;
-  for (int ii = 0; ii < atom->nlocal; ii++) {
-    std::cout << "[" << ii << "]" << ": ";
-    for (int jj = 0; jj < 3; jj++) {
-      std::cout << positions[ii][jj] << " ";
-    }
-    std::cout << std::endl;
-  }
-
-  std::cout << "Evaluate using JAX connector" << std::endl;
+  // std::cout << "Evaluate using JAX connector" << std::endl;
 
   // Compute the forces using the JAX connector
   std::vector<std::vector<float>> forces = connector->force(positions, neighbors);
 
-  std::cout << "Forces: " << std::endl;
-  for (int ii = 0; ii < atom->nlocal; ii++) {
-    std::cout << "[" << ii << "]" << ": ";
-    for (int jj = 0; jj < 3; jj++) {
-      std::cout << forces[ii][jj] << " ";
-    }
-    std::cout << std::endl;
-  }
+//  std::cout << "Forces: " << std::endl;
+//  for (int ii = 0; ii < atom->nlocal; ii++) {
+//    std::cout << "[" << ii << "]" << ": ";
+//    for (int jj = 0; jj < 3; jj++) {
+//      std::cout << forces[ii][jj] << " ";
+//    }
+//    std::cout << std::endl;
+//  }
 
   // Assign the force back to lammps. Again, we have to consider that the order
   // of atoms is not preserved.
@@ -150,11 +149,11 @@ void JaxConnect::compute(int eflag, int vflag)
   for (int ii = 0; ii < atom->nlocal; ii++) {
   	int idx = atom->tag[ii] - 1;
 
-    atom->f[ii][0] = (double) forces[idx][0];
-    atom->f[ii][1] = (double) forces[idx][1];
-    atom->f[ii][2] = (double) forces[idx][2];
+    for (int jj = 0; jj < 3; jj++) {
+    	atom->f[ii][jj] = (double) forces[idx][jj];
+	}
 
-    std::cout << "Write force on atom " << idx << ": " << (double) forces[ii][0] << ", " << (double) forces[ii][1] << ", " << (double) forces[ii][2] << std::endl;
+  // std::cout << "Write force on atom " << idx << ": " << (double) forces[ii][0] << ", " << (double) forces[ii][1] << ", " << (double) forces[ii][2] << std::endl;
   }
 
 //  int i, j, ii, jj, inum, jnum, itype, jtype;

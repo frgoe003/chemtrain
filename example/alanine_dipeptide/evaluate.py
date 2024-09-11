@@ -14,7 +14,7 @@ box, *_ = io.load_box("alanine_heavy_2_7nm.gro")
 
 top = mdtraj.load_topology("alanine_heavy_2_7nm.gro")
 r_frac = mdtraj.load_lammpstrj("alanine_dipeptide.lammpstrj", top).xyz / box
-r_frac = r_frac[100:, ...]
+r_frac = r_frac[10:5800, ...]
 
 displacement_fn, _ = space.periodic_general(box, fractional_coordinates=True)
 
@@ -88,11 +88,11 @@ phi, psi = postprocess_fn(r_frac)
 print(f"Phi angles: {phi}")
 print(f"Psi angles: {psi}")
 
-labels = ["LAMMPS"]
+labels = ["100", "1000", "10000", "All"]
 
 fig, (ax1, ax2) = plt.subplots(1, 2, layout="constrained", figsize=(9, 3), sharey=True)
-ax1 = plot_1d_dihedral(ax1, [phi], labels, xlabel="$\phi\ [deg]$")
-ax2 = plot_1d_dihedral(ax2, [psi], labels, xlabel="$\psi\ [deg]$", ylabel=False)
+ax1 = plot_1d_dihedral(ax1, [phi[:100, ...], phi[:1000, ...], phi[:10000, ...], phi], labels, xlabel="$\phi\ [deg]$")
+ax2 = plot_1d_dihedral(ax2, [psi[:100, ...], psi[:1000, ...], psi[:10000, ...], psi], labels, xlabel="$\psi\ [deg]$", ylabel=False)
 
 
 fig, ax1 = plt.subplots(1, 1, layout="constrained", figsize=(3, 3), sharey=True)

@@ -92,12 +92,12 @@ namespace jcn {
             xla::Literal literal_y = xla::LiteralUtil::CreateFromArray(neighbor_array);
 
             auto buffer_or_status = client_->BufferFromHostLiteral(literal_x, client_->addressable_devices()[0]);
-            std::cout << "Buffer creation status: " << buffer_or_status.status().ToString() << std::endl;
+            // std::cout << "Buffer creation status: " << buffer_or_status.status().ToString() << std::endl;
 
             std::unique_ptr<xla::PjRtBuffer> param_x = std::move(buffer_or_status).value();
             std::unique_ptr<xla::PjRtBuffer> param_y = client_->BufferFromHostLiteral(literal_y, client_->addressable_devices()[0]).value();
 
-            std::cout << "Execute..." << std::endl;
+            // std::cout << "Execute..." << std::endl;
             xla::ExecuteOptions execute_options;
             std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>> results = executable_->Execute({{param_x.get(), param_y.get()}}, execute_options).value();
 
