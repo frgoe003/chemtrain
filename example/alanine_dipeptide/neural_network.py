@@ -30,7 +30,7 @@ neighbor_fn = partition.neighbor_list(
     fractional_coordinates=True, capacity_multiplier=1.5
 )
 
-nbrs_init = neighbor_fn.allocate(r_init, extra_capacity=5)
+nbrs_init = neighbor_fn.allocate(r_init / box, extra_capacity=1)
 
 nbrs_init_idx = onp.ones((10, 9), dtype=int)
 for i in range(10):
@@ -66,6 +66,11 @@ def mapping(name="", residue="", **kwargs):
 
 topology = prior.Topology.from_mdtraj(top, mapping)
 
+species = topology.get_atom_species()
+masses, *_ = force_field.get_nonbonded_params(species)[0].T
+
+print(f"Species: {species}")
+print(f"Masses: {masses}")
 
 prior_energy_fn = prior_energy(topology, force_field)
 
@@ -74,7 +79,7 @@ _, gnn_energy_fn = neural_networks.dimenetpp_neighborlist(
 )
 
 def energy_fn(position, neighbor_idx):
-    # We transfrom from angstrom back to nm
+    # We transfrom from angstrom back to nm and into fractional coordinates
     position *= 0.1
     position = jnp.dot(inv_box, position.T).T
 
@@ -83,12 +88,11 @@ def energy_fn(position, neighbor_idx):
     nbrs = nbrs.set(reference_position=position)
 
     pot = 0.0
-
-    pot += gnn_energy_fn(params, position, nbrs)
-    pot += prior_energy_fn(position, nbrs)
+    pot += gnn_energy_fn(params, position, neighbor=nbrs, species=species)
+    pot += prior_energy_fn(position, neighbor=nbrs)
 
     # Lammps unit system real expects kcal/mol instead of kJ/mol
-    pot *= 0.239006
+    pot /= 4.184
 
     return pot
 
@@ -98,7 +102,6 @@ force_fn = quantity.force(energy_fn)
 # unit in lammps
 comp = jax.jit(force_fn).lower(r_init * 10., nbrs_init.idx).compiler_ir('hlo')
 serialized_proto = comp.as_serialized_hlo_module_proto()
-debug_txt = comp.as_hlo_text()
 
 print("Example NL:")
 print(nbrs_init.idx)
