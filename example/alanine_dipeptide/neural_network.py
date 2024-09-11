@@ -30,8 +30,17 @@ neighbor_fn = partition.neighbor_list(
     fractional_coordinates=True, capacity_multiplier=1.5
 )
 
-nbrs_init = neighbor_fn.allocate(r_init, extra_capacity=1)
-nbrs_init = nbrs_init.set(idx=jnp.ones((10, 9), dtype=int))
+nbrs_init = neighbor_fn.allocate(r_init, extra_capacity=5)
+
+nbrs_init_idx = onp.ones((10, 9), dtype=int)
+for i in range(10):
+    for j in range(10):
+        if i < j:
+            nbrs_init_idx[i,j - 1] = j
+        if i > j:
+            nbrs_init_idx[i,j] = j
+
+nbrs_init = nbrs_init.set(idx=jnp.asarray(nbrs_init_idx))
 
 print(f"The neighborlist has max. {nbrs_init.idx.shape[1]} neighbors per atom.")
 
@@ -65,13 +74,16 @@ _, gnn_energy_fn = neural_networks.dimenetpp_neighborlist(
 )
 
 def energy_fn(position, neighbor_idx):
-    nbrs = nbrs_init.set(idx=neighbor_idx)
-
     # We transfrom from angstrom back to nm
     position *= 0.1
-    position = jnp.einsum("ij, nj->ni", inv_box, position)
+    position = jnp.dot(inv_box, position.T).T
+
+    # We use the neighbor list built by LAMMPS
+    nbrs = nbrs_init.set(idx=neighbor_idx)
+    nbrs = nbrs.set(reference_position=position)
 
     pot = 0.0
+
     pot += gnn_energy_fn(params, position, nbrs)
     pot += prior_energy_fn(position, nbrs)
 
@@ -88,6 +100,17 @@ comp = jax.jit(force_fn).lower(r_init * 10., nbrs_init.idx).compiler_ir('hlo')
 serialized_proto = comp.as_serialized_hlo_module_proto()
 debug_txt = comp.as_hlo_text()
 
-with open("alanine_dipeptide_hlo.txt", "w") as f:
-    f.write(debug_txt)
+print("Example NL:")
+print(nbrs_init.idx)
 
+print("Example positions:")
+print(r_init * 10.)
+
+print("Example forces:")
+print(jax.jit(force_fn)(r_init * 10., nbrs_init.idx))
+
+with open("alanine_dipeptide_hlo.txt", "w") as f:
+    f.write(comp.as_hlo_text())
+
+with open("alanine_dipeptide_hlo.pb", "wb") as f:
+    f.write(comp.as_serialized_hlo_module_proto())

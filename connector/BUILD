@@ -32,6 +32,7 @@ cc_binary(
         "@xla//xla/pjrt:tfrt_cpu_pjrt_client",
         "@xla//xla/service:hlo_proto_cc",
         "@xla//xla/service:hlo_parser",
+        "@xla//xla/service:dump"
         # "@xla//xla/tools:hlo_module_loader",
     ],
     # linkopts=['-static'],

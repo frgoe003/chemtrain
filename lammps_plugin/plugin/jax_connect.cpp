@@ -73,47 +73,88 @@ void JaxConnect::compute(int eflag, int vflag)
 
   std::cout << "Initialize neighbor list and collect positions" << std::endl;
 
-  // Create an empty list of neighbors and collect all positions
+  // Create an empty list of neighbors and positions
   for (int i = 0; i < atom->nlocal; i++) {
     std::vector<int> n;
-    neighbors.push_back(n);
-
     std::vector<float> r;
-    for (int j = 0; j < 3; j++) {
-      r.push_back((float) atom->x[i][j]);
-      std::cout << "Read position of atom " << i << ": " << r[0] << ", " << r[1] << ", " << r[2] << std::endl;
-    }
+    neighbors.push_back(n);
     positions.push_back(r);
+  }
+
+  // The tag of the atom is the actual index.
+  // Therefore, we have to collect the atom positions in a separate loop.
+  // Additionally, we have to correct that the tag is 1-based in lammps.
+
+  for (int ii = 0; ii < atom->nlocal; ii++){
+    int idx = atom->tag[ii] - 1;
+    auto pos = atom->x[ii];
+
+    for (int j = 0; j < 3; j++) {
+      positions[idx].push_back((float) pos[j]);
+    }
+
   }
 
   // Enter the neighbors into the JAX, M.D. neighbor list format
   for (int ii = 0; ii < list->inum; ii++) {
     int i = list->ilist[ii];
-    std::cout << "[" << i << "] ";
+
     for (int jj = 0; jj < list->numneigh[i]; jj++) {
       int j = list->firstneigh[i][jj];
 
-       std::cout << j << " ";
+      // We need to push the tag to the neighbor list
+      int idx = atom->tag[i] - 1;
+      int jdx = atom->tag[j] - 1;
 
-      // Lammps does index with 1
-      neighbors[i].push_back(j);
+      neighbors[idx].push_back(jdx);
     }
     std::cout << std::endl;
   }
 
+  // For debugging: Print neighbor list and positions
+  std::cout << "Neighbors: " << std::endl;
+  for (int ii = 0; ii < atom->nlocal; ii++) {
+    std::cout << "[" << ii << "]" << ": ";
+    for (int jj = 0; jj < neighbors[ii].size(); jj++) {
+      std::cout << neighbors[ii][jj] << " ";
+    }
+    std::cout << std::endl;
+  }
+
+  std::cout << "Positions: " << std::endl;
+  for (int ii = 0; ii < atom->nlocal; ii++) {
+    std::cout << "[" << ii << "]" << ": ";
+    for (int jj = 0; jj < 3; jj++) {
+      std::cout << positions[ii][jj] << " ";
+    }
+    std::cout << std::endl;
+  }
 
   std::cout << "Evaluate using JAX connector" << std::endl;
 
   // Compute the forces using the JAX connector
   std::vector<std::vector<float>> forces = connector->force(positions, neighbors);
 
-  // Assign the force back to lammps
-  for (int i = 0; i < atom->nlocal; i++) {
-    atom->f[i][0] = (double) forces[i][0];
-    atom->f[i][1] = (double) forces[i][1];
-    atom->f[i][2] = (double) forces[i][2];
+  std::cout << "Forces: " << std::endl;
+  for (int ii = 0; ii < atom->nlocal; ii++) {
+    std::cout << "[" << ii << "]" << ": ";
+    for (int jj = 0; jj < 3; jj++) {
+      std::cout << forces[ii][jj] << " ";
+    }
+    std::cout << std::endl;
+  }
 
-    std::cout << "Write force on atom " << i << ": " << (double) forces[i][0] << ", " << (double) forces[i][1] << ", " << (double) forces[i][2] << std::endl;
+  // Assign the force back to lammps. Again, we have to consider that the order
+  // of atoms is not preserved.
+
+  for (int ii = 0; ii < atom->nlocal; ii++) {
+  	int idx = atom->tag[ii] - 1;
+
+    atom->f[ii][0] = (double) forces[idx][0];
+    atom->f[ii][1] = (double) forces[idx][1];
+    atom->f[ii][2] = (double) forces[idx][2];
+
+    std::cout << "Write force on atom " << idx << ": " << (double) forces[ii][0] << ", " << (double) forces[ii][1] << ", " << (double) forces[ii][2] << std::endl;
   }
 
 //  int i, j, ii, jj, inum, jnum, itype, jtype;

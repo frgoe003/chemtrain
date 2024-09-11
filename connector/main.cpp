@@ -13,6 +13,7 @@
 #include "xla/pjrt/tfrt_cpu_pjrt_client.h"
 #include "xla/status.h"
 #include "xla/statusor.h"
+#include "xla/service/dump.h"
 #include "tsl/platform/init_main.h"
 #include "tsl/platform/logging.h"
 #include "tsl/platform/env.h"
@@ -42,7 +43,24 @@ namespace jcn {
             tsl::ReadFileToString(tsl::Env::Default(), hlo_filename, &hlo_string);
             hlo_string = StripLogHeaders(hlo_string);
 
-            std::unique_ptr<xla::HloModule> test_module = ParseAndReturnUnverifiedModule(hlo_string, xla::HloModuleConfig()).value();
+
+            // For HLO strings
+            // std::unique_ptr<xla::HloModule> test_module = ParseAndReturnUnverifiedModule(hlo_string, xla::HloModuleConfig()).value();
+            // const xla::HloModuleProto test_module_proto = test_module->ToProto();
+
+            // Load .pb file:
+            xla::HloSnapshot proto;
+            if (!proto.ParseFromString(hlo_string) &&
+                !proto.mutable_hlo()->ParseFromString(hlo_string) &&
+                !proto.mutable_hlo()->mutable_hlo_module()->ParseFromString(hlo_string)) {
+            	std::cout << "Failed to parse input as HLO protobuf binary" << std::endl;
+            }
+
+            // Note: We always call .value() since XLA always returns a status wrapper.
+            xla::DebugOptions debug_options = xla::GetDebugOptionsFromFlags();
+            xla::HloModuleConfig config = xla::HloModule::CreateModuleConfigFromProto(proto.hlo().hlo_module(), debug_options).value();
+            std::unique_ptr<xla::HloModule> test_module = xla::HloModule::CreateFromProto(proto.hlo().hlo_module(), config).value();
+
             const xla::HloModuleProto test_module_proto = test_module->ToProto();
 
             client_ = xla::GetTfrtCpuClient(/*asynchronous=*/false).value();
