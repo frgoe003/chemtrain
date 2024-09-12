@@ -48,8 +48,8 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(CMAKE_C_COMPILER "/usr/lib/llvm-18/bin/clang")
-set(CMAKE_CXX_COMPILER "/usr/lib/llvm-18/bin/clang++")
+# set(CMAKE_C_COMPILER "/usr/lib/llvm-18/bin/clang")
+# set(CMAKE_CXX_COMPILER "/usr/lib/llvm-18/bin/clang++")
 
 
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--version-script")

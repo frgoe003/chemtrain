@@ -14,7 +14,9 @@ box, *_ = io.load_box("alanine_heavy_2_7nm.gro")
 
 top = mdtraj.load_topology("alanine_heavy_2_7nm.gro")
 r_frac = mdtraj.load_lammpstrj("alanine_dipeptide.lammpstrj", top).xyz / box
-r_frac = r_frac[10:5800, ...]
+
+assert onp.all(onp.logical_and(r_frac >= 0, r_frac <= 1)), "Fractional coordinates are not within the box."
+# r_frac = r_frac[10:5800, ...]
 
 displacement_fn, _ = space.periodic_general(box, fractional_coordinates=True)
 
@@ -85,14 +87,14 @@ def plot_histogram_free_energy(ax, phi, psi, kbt, degrees=True, ylabel=False, ti
 
 phi, psi = postprocess_fn(r_frac)
 
-print(f"Phi angles: {phi}")
-print(f"Psi angles: {psi}")
+print(f"Phi angles ({phi.size}): {phi}")
+print(f"Psi angles ({psi.size}): {psi}")
 
 labels = ["100", "1000", "10000", "All"]
 
 fig, (ax1, ax2) = plt.subplots(1, 2, layout="constrained", figsize=(9, 3), sharey=True)
-ax1 = plot_1d_dihedral(ax1, [phi[:100, ...], phi[:1000, ...], phi[:10000, ...], phi], labels, xlabel="$\phi\ [deg]$")
-ax2 = plot_1d_dihedral(ax2, [psi[:100, ...], psi[:1000, ...], psi[:10000, ...], psi], labels, xlabel="$\psi\ [deg]$", ylabel=False)
+ax1 = plot_1d_dihedral(ax1, [phi[:1000, ...], phi[:10000, ...], phi[:100000, ...], phi], labels, xlabel="$\phi\ [deg]$")
+ax2 = plot_1d_dihedral(ax2, [psi[:1000, ...], psi[:10000, ...], psi[:100000, ...], psi], labels, xlabel="$\psi\ [deg]$", ylabel=False)
 
 
 fig, ax1 = plt.subplots(1, 1, layout="constrained", figsize=(3, 3), sharey=True)

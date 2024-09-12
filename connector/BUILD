@@ -14,7 +14,10 @@
 
 cc_binary(
     name = "libmain.so",
-    srcs = ["main.cpp", "main.h"],
+    srcs = [
+        "main.cpp",
+        "main.h",
+        ],
     tags = ["manual"],
     deps = [
         "@com_google_absl//absl/status:statusor",
@@ -33,6 +36,7 @@ cc_binary(
         "@xla//xla/service:hlo_proto_cc",
         "@xla//xla/service:hlo_parser",
         "@xla//xla/service:dump"
+
         # "@xla//xla/tools:hlo_module_loader",
     ],
     # linkopts=['-static'],

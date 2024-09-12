@@ -3,9 +3,11 @@
 #include <string>
 #include <vector>
 #include <memory>  // For std::unique_ptr
+#include <dlfcn.h>
 
 #include "xla/literal.h"
 #include "xla/literal_util.h"
+#include "xla/pjrt/pjrt_api.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_c_api_client.h"
 #include "xla/pjrt/pjrt_executable.h"
@@ -36,6 +38,59 @@ namespace jcn {
     public:
         Impl(const int max_neighbors, std::string hlo_filename) : max_neighbors(max_neighbors) {
 
+          	std::cout << "Try to load GPU Plugin" << std::endl;
+
+//            backend = dlopen("/venv/lib/python3.11/site-packages/jax_plugins/xla_cuda12/xla_cuda_plugin.so", RTLD_LAZY);
+//            if (!backend) {
+//                std::cerr << "Cannot open library: " << dlerror() << std::endl;
+//                return;
+//            }
+//
+//            *reinterpret_cast<void**>(&init_client_fn) = dlsym(library, "GetStreamExecutorGpuClient");
+//			*reinterpret_cast<void**>(&init_options_fn) = dlsym(library, "CreatePjRtClientOptions");
+//
+//            absl::StatusOr<std::unique_ptr<xla::PjRtClient>> client_or_status = init_client_fn(init_options_fn());
+//
+//            if (!client_or_status.ok()) {
+//                std::cerr << "Cannot create client: " << client_or_status.status().ToString() << std::endl;
+//                client_ = xla::GetTfrtCpuClient(/*asynchronous=*/false).value();
+//            } else {
+//             	client_ = std::move(client_or_status).value();
+//            }
+
+            // Load the CUDA plugin from JAX
+            absl::StatusOr<const PJRT_Api*> status_or_api = pjrt::LoadPjrtPlugin(
+                    "CUDA",
+                    "/venv/lib/python3.11/site-packages/jax_plugins/xla_cuda12/xla_cuda_plugin.so");
+
+            if (!status_or_api.ok()) {
+            	LOG(INFO) << "Failed to load CUDA plugin: " << status_or_api.status();
+                return;
+            }
+
+            if (!pjrt::IsPjrtPluginInitialized("CUDA").value()) {
+                std::cerr << "Initialize CUDA plugin" << std::endl;
+
+                pjrt::InitializePjrtPlugin("CUDA");
+            }
+
+            absl::StatusOr<std::unique_ptr<xla::PjRtClient>> client_or_status = xla::GetCApiClient("CUDA");
+            if (!client_or_status.ok()) {
+                std::cerr << "Cannot create client: " << client_or_status.status().ToString() << std::endl;
+                client_ = xla::GetTfrtCpuClient(/*asynchronous=*/true).value();
+            } else {
+                client_ = std::move(client_or_status).value();
+            }
+
+            // Create client to do buffer transfers
+            host_ = xla::GetTfrtCpuClient(/*asynchronous=*/false).value();
+
+            std::cout << "Found addressable devices: ";
+            for (int i = 0; i < client_->addressable_devices().size(); i++) {
+                std::cout << client_->addressable_devices()[i] << " ";
+            }
+            std::cout << std::endl;
+
           	std::cout << "Load HLO file " << hlo_filename << " for max_neighbors " << max_neighbors << std::endl;
 
             // Initialization code related to XLA
@@ -63,7 +118,6 @@ namespace jcn {
 
             const xla::HloModuleProto test_module_proto = test_module->ToProto();
 
-            client_ = xla::GetTfrtCpuClient(/*asynchronous=*/false).value();
             xla::XlaComputation xla_computation(test_module_proto);
             xla::CompileOptions compile_options;
 
@@ -91,15 +145,36 @@ namespace jcn {
             xla::Literal literal_x = xla::LiteralUtil::CreateFromArray(position_array);
             xla::Literal literal_y = xla::LiteralUtil::CreateFromArray(neighbor_array);
 
-            auto buffer_or_status = client_->BufferFromHostLiteral(literal_x, client_->addressable_devices()[0]);
-            // std::cout << "Buffer creation status: " << buffer_or_status.status().ToString() << std::endl;
+            // We have to create a buffer for the input data.
+            // Create the buffer on the host and transfer to the devices
+            std::cout << "Buffer creation..." << std::endl;
+            xla::Literal *literal_pointer;
 
-            std::unique_ptr<xla::PjRtBuffer> param_x = std::move(buffer_or_status).value();
-            std::unique_ptr<xla::PjRtBuffer> param_y = client_->BufferFromHostLiteral(literal_y, client_->addressable_devices()[0]).value();
+            std::unique_ptr<xla::PjRtBuffer> param_x = client_->BufferFromHostBuffer(
+            	literal_x.untyped_data(),
+        		literal_x.shape().element_type(),
+        		literal_x.shape().dimensions(), std::optional<absl::Span<int64_t const>>{},
+        		xla::PjRtClient::HostBufferSemantics::kImmutableZeroCopy,
+        		[]() { /* frees literal */ }, client_->addressable_devices()[0]).value();
 
-            // std::cout << "Execute..." << std::endl;
+            std::unique_ptr<xla::PjRtBuffer> param_y = client_->BufferFromHostBuffer(
+            	literal_y.untyped_data(),
+        		literal_y.shape().element_type(),
+        		literal_y.shape().dimensions(), std::optional<absl::Span<int64_t const>>{},
+        		xla::PjRtClient::HostBufferSemantics::kImmutableZeroCopy,
+        		[]() { /* frees literal */ }, client_->addressable_devices()[0]).value();
+
+
+            // # std::unique_ptr<xla::PjRtBuffer> param_y = host_->BufferFromHostLiteral(literal_y, host_->addressable_devices()[0]).value();
+            // std::unique_ptr<xla::PjRtBuffer> param_x_host = host_->BufferFromHostLiteral(literal_x, host_->addressable_devices()[0]);
+            // std::unique_ptr<xla::PjRtBuffer> param_y_host = host_->BufferFromHostLiteral(literal_y, host_->addressable_devices()[0]).value();
+
+
+            std::cout << "Execute..." << std::endl;
             xla::ExecuteOptions execute_options;
             std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>> results = executable_->Execute({{param_x.get(), param_y.get()}}, execute_options).value();
+
+            std::cout << "Finished execution" << std::endl;
 
             std::shared_ptr<xla::Literal> result_literal = results[0][0]->ToLiteralSync().value();
             auto flat_results = result_literal->data<float>();
@@ -120,8 +195,11 @@ namespace jcn {
 
         const int max_neighbors;
 
+        void * backend;
+
         std::unique_ptr<xla::PjRtLoadedExecutable> executable_;
         std::unique_ptr<xla::PjRtClient> client_;
+       	std::unique_ptr<xla::PjRtClient> host_;
 
         std::string StripLogHeaders(std::string_view hlo_string) {
             static RE2* matcher = new RE2(
