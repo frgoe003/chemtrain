@@ -2,3 +2,7 @@
 	path = lammps
 	url = https://github.com/lammps/lammps.git
 	branch = stable
+[submodule "connector/external/pybind11"]
+	path = connector/external/pybind11
+	url = git@github.com:pybind/pybind11.git
+	branch = v2.13
