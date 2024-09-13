@@ -33,14 +33,14 @@ python_init_pip()
 load("@pypi//:requirements.bzl", "install_deps")
 install_deps()
 
-# Optional, to facilitate testing against newest versions of Python
-load("@xla//third_party/py:python_repo.bzl", "custom_python_interpreter")
-custom_python_interpreter(
-    name = "python_dev",
-    urls = ["https://www.python.org/ftp/python/3.13.0/Python-{version}.tgz"],
-    strip_prefix = "Python-{version}",
-    version = "3.13.0a6",
-)
+## Optional, to facilitate testing against newest versions of Python
+#load("@xla//third_party/py:python_repo.bzl", "custom_python_interpreter")
+#custom_python_interpreter(
+#    name = "python_dev",
+#    urls = ["https://www.python.org/ftp/python/3.13.0/Python-{version}.tgz"],
+#    strip_prefix = "Python-{version}",
+#    version = "3.13.0a6",
+#)
 
 load("@xla//:workspace4.bzl", "xla_workspace4")
 xla_workspace4()

@@ -14,7 +14,7 @@
 
 """Bazel macros used by the JAX build."""
 
-load("@com_github_google_flatbuffers//:build_defs.bzl", _flatbuffer_cc_library = "flatbuffer_cc_library")
+# load("@com_github_google_flatbuffers//:build_defs.bzl", _flatbuffer_cc_library = "flatbuffer_cc_library")
 load("@local_config_cuda//cuda:build_defs.bzl", _cuda_library = "cuda_library", _if_cuda_is_configured = "if_cuda_is_configured")
 load("@local_config_rocm//rocm:build_defs.bzl", _if_rocm_is_configured = "if_rocm_is_configured", _rocm_library = "rocm_library")
 load("@python_version_repo//:py_version.bzl", "HERMETIC_PYTHON_VERSION")
@@ -32,7 +32,7 @@ pybind_extension = _pybind_extension
 if_cuda_is_configured = _if_cuda_is_configured
 if_rocm_is_configured = _if_rocm_is_configured
 if_windows = _if_windows
-flatbuffer_cc_library = _flatbuffer_cc_library
+# flatbuffer_cc_library = _flatbuffer_cc_library
 tf_exec_properties = _tf_exec_properties
 tf_cuda_tests_tags = _tf_cuda_tests_tags
 
@@ -62,7 +62,7 @@ _py_deps = {
     "colorama": ["@pypi_colorama//:pkg"],
     "epath": ["@pypi_etils//:pkg"],  # etils.epath
     "filelock": ["@pypi_filelock//:pkg"],
-    "flatbuffers": ["@pypi_flatbuffers//:pkg"],
+    # "flatbuffers": ["@pypi_flatbuffers//:pkg"],
     "hypothesis": ["@pypi_hypothesis//:pkg"],
     "matplotlib": ["@pypi_matplotlib//:pkg"],
     "opt_einsum": ["@pypi_opt_einsum//:pkg"],

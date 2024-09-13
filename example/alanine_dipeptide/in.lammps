@@ -18,7 +18,7 @@ mass 		4 14.007
 mass 		5 15.999
 
 pair_style  jaxnn
-pair_coeff	* * 9 alanine_dipeptide_hlo.pb
+pair_coeff	* * 9 ./neural_network.py
 
 velocity 	all create 300.0 23456789
 
@@ -30,6 +30,6 @@ timestep 	2
 # Log data
 thermo 		100
 thermo_style 	custom step pe ke etotal temp vol
-dump 		1 all custom 50 alanine_dipeptide.lammpstrj id type x y z
+dump 		1 all custom 500 alanine_dipeptide.lammpstrj id type x y z
 
 run 		10000000

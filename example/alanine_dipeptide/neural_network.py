@@ -4,14 +4,20 @@ import jax
 import jax.numpy as jnp
 from jax import tree_util, debug
 
+
+
 from jax_md_mod.model import neural_networks, prior
 from jax_md_mod import io, custom_space
+
+print("Imported jax_md_mod")
 
 from jax_md import space, partition, quantity
 
 import mdtraj
 
 import numpy as onp
+
+print("...Loading...")
 
 box, r_init, _, _ = io.load_box("alanine_heavy_2_7nm.gro")
 
@@ -96,24 +102,5 @@ def energy_fn(position, neighbor_idx):
 
     return pot
 
+# This must be defined
 force_fn = quantity.force(energy_fn)
-
-# Compile to hlo. We transfrom the initial positions to angstrom and use this
-# unit in lammps
-comp = jax.jit(force_fn).lower(r_init * 10., nbrs_init.idx).compiler_ir('hlo')
-serialized_proto = comp.as_serialized_hlo_module_proto()
-
-print("Example NL:")
-print(nbrs_init.idx)
-
-print("Example positions:")
-print(r_init * 10.)
-
-print("Example forces:")
-print(jax.jit(force_fn)(r_init * 10., nbrs_init.idx))
-
-with open("alanine_dipeptide_hlo.txt", "w") as f:
-    f.write(comp.as_hlo_text())
-
-with open("alanine_dipeptide_hlo.pb", "wb") as f:
-    f.write(comp.as_serialized_hlo_module_proto())

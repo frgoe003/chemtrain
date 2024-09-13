@@ -75,6 +75,7 @@ docker exec lammps ./lmp -i input.lmp
 
 ```bash
 docker run --name lmp_example --gpus all -w /mnt/example/alanine_dipeptide -it -d --rm -v $PWD:/mnt jaxconnector bash
+docker exec lmp_example pip install "chemtrain[all]" 
 docker exec lmp_example ../../lammps/build/lmp -i input.lmp
 docker exec lmp_example ../../lammps/build/lmp -i in.lammps
 ```

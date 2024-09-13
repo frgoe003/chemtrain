@@ -12,6 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("//jaxlib:jax.bzl",
+    "py_library_providing_imports_info",
+    "pybind_extension",
+    "pytype_library"
+)
+load("@rules_python//python:defs.bzl", "py_binary")
+
+py_runtime(
+    name = "my_py_runtime",
+    interpreter_path = "/usr/bin/python3",
+    python_version = "PY3",
+)
+
 cc_binary(
     name = "libmain.so",
     srcs = [
@@ -35,7 +48,8 @@ cc_binary(
         "@xla//xla/pjrt:tfrt_cpu_pjrt_client",
         "@xla//xla/service:hlo_proto_cc",
         "@xla//xla/service:hlo_parser",
-        "@xla//xla/service:dump"
+        "@xla//xla/service:dump",
+        ":compile"
 
         # "@xla//xla/tools:hlo_module_loader",
     ],
@@ -46,56 +60,18 @@ cc_binary(
     linkshared=True
 )
 
-cc_binary(
-    name = "pjrt_c_api_gpu_plugin.so",
-    linkopts = [
-        "-Wl,--version-script,$(location @xla//xla/pjrt/c:pjrt_c_api_gpu_version_script.lds)",
-        "-Wl,--no-undefined",
-    ],
-    tags = [
-        "noasan",
-        "nomac",  # No GPU on mac.
-        "nomsan",
-        "notsan",
-    ],
-    linkshared = True,
-    deps = [
-        "@xla//xla/pjrt/c:pjrt_c_api_gpu",
-        "@xla//xla/pjrt/c:pjrt_c_api_gpu_version_script.lds",
-        "@xla//xla/service:gpu_plugin",
-        "@xla//xla/stream_executor:cuda_platform",
-    ]
-)
-
-
 cc_library(
-    name = "connector",
-    srcs = ["main.cpp"],
-    tags = ["manual"],
-    hdrs = ["main.h"],
+    name = "compile",
+    srcs = ["compile.cpp",],
+    hdrs = ["compile.h"],
     deps = [
-        "@com_google_absl//absl/status:statusor",
-        "@tsl//tsl/platform:logging",
-        "@tsl//tsl/platform:platform_port",
-        "@xla//xla:literal",
-        "@xla//xla:literal_util",
-        "@xla//xla:shape_util",
-        "@xla//xla:status",
-        "@xla//xla:statusor",
-        "@xla//xla/pjrt:pjrt_client",
-        "@xla//xla/pjrt:pjrt_c_api_client",
-        "@xla//xla/pjrt:pjrt_executable",
-        "@xla//xla/pjrt:pjrt_stream_executor_client",
-        "@xla//xla/pjrt:tfrt_cpu_pjrt_client",
-        "@xla//xla/service:hlo_proto_cc",
+        "@xla//xla/client:xla_computation",
         "@xla//xla/service:hlo_parser",
-        # "@xla//xla/tools:hlo_module_loader",
+        "@xla//third_party/python_runtime:headers",
+        "@tsl//tsl/platform:platform_port",
+        "@tsl//tsl/platform:logging",
+        "@pybind11",
     ],
+    linkopts = ["-lpython3.11"],  # Adjust the version as necessary
 )
-
-
-# load("@xla//xla:xla_package_groups.bzl", "xla_packages")
-
-# visibility(xla_packages)
-
 

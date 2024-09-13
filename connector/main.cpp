@@ -22,6 +22,8 @@
 #include "tsl/platform/path.h"
 #include "tsl/platform/protobuf.h"
 
+#include "compile.h"
+
 template <typename T>
 void print2DVector(const std::vector<std::vector<T>>& vec) {
     for (const auto& row : vec) {
@@ -36,7 +38,7 @@ void print2DVector(const std::vector<std::vector<T>>& vec) {
 namespace jcn {
     class Connector::Impl {
     public:
-        Impl(const int max_neighbors, std::string hlo_filename) : max_neighbors(max_neighbors) {
+        Impl(const int max_neighbors, std::string hlo_filename) : max_neighbors(max_neighbors), compiler(hlo_filename) {
 
           	std::cout << "Try to load GPU Plugin" << std::endl;
 
@@ -91,30 +93,35 @@ namespace jcn {
             }
             std::cout << std::endl;
 
-          	std::cout << "Load HLO file " << hlo_filename << " for max_neighbors " << max_neighbors << std::endl;
+//            // Initialization code related to XLA
+//            std::string hlo_string;
+//            tsl::ReadFileToString(tsl::Env::Default(), hlo_filename, &hlo_string);
+//            hlo_string = StripLogHeaders(hlo_string);
+//
+//
+//            // For HLO strings
+//            // std::unique_ptr<xla::HloModule> test_module = ParseAndReturnUnverifiedModule(hlo_string, xla::HloModuleConfig()).value();
+//            // const xla::HloModuleProto test_module_proto = test_module->ToProto();
+//
+//            // Load .pb file:
+//            xla::HloSnapshot proto;
+//            if (!proto.ParseFromString(hlo_string) &&
+//                !proto.mutable_hlo()->ParseFromString(hlo_string) &&
+//                !proto.mutable_hlo()->mutable_hlo_module()->ParseFromString(hlo_string)) {
+//            	std::cout << "Failed to parse input as HLO protobuf binary" << std::endl;
+//            }
+//
+//            // Note: We always call .value() since XLA always returns a status wrapper.
+//            xla::DebugOptions debug_options = xla::GetDebugOptionsFromFlags();
+//            xla::HloModuleConfig config = xla::HloModule::CreateModuleConfigFromProto(proto.hlo().hlo_module(), debug_options).value();
+//            std::unique_ptr<xla::HloModule> test_module = xla::HloModule::CreateFromProto(proto.hlo().hlo_module(), config).value();
 
-            // Initialization code related to XLA
-            std::string hlo_string;
-            tsl::ReadFileToString(tsl::Env::Default(), hlo_filename, &hlo_string);
-            hlo_string = StripLogHeaders(hlo_string);
+            // New: Automatically compile
 
+            const int n_atoms = 10;
 
-            // For HLO strings
-            // std::unique_ptr<xla::HloModule> test_module = ParseAndReturnUnverifiedModule(hlo_string, xla::HloModuleConfig()).value();
-            // const xla::HloModuleProto test_module_proto = test_module->ToProto();
-
-            // Load .pb file:
-            xla::HloSnapshot proto;
-            if (!proto.ParseFromString(hlo_string) &&
-                !proto.mutable_hlo()->ParseFromString(hlo_string) &&
-                !proto.mutable_hlo()->mutable_hlo_module()->ParseFromString(hlo_string)) {
-            	std::cout << "Failed to parse input as HLO protobuf binary" << std::endl;
-            }
-
-            // Note: We always call .value() since XLA always returns a status wrapper.
-            xla::DebugOptions debug_options = xla::GetDebugOptionsFromFlags();
-            xla::HloModuleConfig config = xla::HloModule::CreateModuleConfigFromProto(proto.hlo().hlo_module(), debug_options).value();
-            std::unique_ptr<xla::HloModule> test_module = xla::HloModule::CreateFromProto(proto.hlo().hlo_module(), config).value();
+            std::cout << "Try to compie the file" << std::endl;
+            std::unique_ptr<xla::HloModule> test_module = compiler.compile(n_atoms, max_neighbors).value();
 
             const xla::HloModuleProto test_module_proto = test_module->ToProto();
 
@@ -147,7 +154,7 @@ namespace jcn {
 
             // We have to create a buffer for the input data.
             // Create the buffer on the host and transfer to the devices
-            std::cout << "Buffer creation..." << std::endl;
+            // std::cout << "Buffer creation..." << std::endl;
             xla::Literal *literal_pointer;
 
             std::unique_ptr<xla::PjRtBuffer> param_x = client_->BufferFromHostBuffer(
@@ -170,11 +177,11 @@ namespace jcn {
             // std::unique_ptr<xla::PjRtBuffer> param_y_host = host_->BufferFromHostLiteral(literal_y, host_->addressable_devices()[0]).value();
 
 
-            std::cout << "Execute..." << std::endl;
+            // std::cout << "Execute..." << std::endl;
             xla::ExecuteOptions execute_options;
             std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>> results = executable_->Execute({{param_x.get(), param_y.get()}}, execute_options).value();
 
-            std::cout << "Finished execution" << std::endl;
+            // std::cout << "Finished execution" << std::endl;
 
             std::shared_ptr<xla::Literal> result_literal = results[0][0]->ToLiteralSync().value();
             auto flat_results = result_literal->data<float>();
@@ -200,6 +207,8 @@ namespace jcn {
         std::unique_ptr<xla::PjRtLoadedExecutable> executable_;
         std::unique_ptr<xla::PjRtClient> client_;
        	std::unique_ptr<xla::PjRtClient> host_;
+
+        Compiler compiler;
 
         std::string StripLogHeaders(std::string_view hlo_string) {
             static RE2* matcher = new RE2(
