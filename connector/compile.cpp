@@ -75,70 +75,6 @@ namespace jcn {
 
 }
 
-
-struct ShapeRefinementPass : public mlir::PassWrapper<ShapeRefinementPass, mlir::OperationPass<mlir::ModuleOp>> {
-  // Constructor to accept shapes programmatically
-  ShapeRefinementPass(std::vector<std::vector<int64_t>> inputShapes) : inputShapes(inputShapes) {}
-
-  // Vector of vectors for shapes, where each vector represents the shape for an argument
-  std::vector<std::vector<int64_t>> inputShapes;
-
-  void runOnOperation() override {
-    mlir::ModuleOp module = getOperation();
-
-    // Iterate over each function in the module
-    module.walk([&](mlir::Operation *op) {
-      if (auto func = llvm::dyn_cast<mlir::func::FuncOp>(op)) {  // Cast Operation* to FuncOp in func dialect
-        if (func.getName() == "main") { // Specifically target the 'main' function
-          auto funcType = func.getFunctionType();
-          llvm::errs() << "Processing function: " << func.getName() << "\n";
-
-          // Get input types
-          llvm::ArrayRef<mlir::Type> inputTypes = funcType.getInputs();
-          llvm::SmallVector<mlir::Type, 4> refinedInputTypes;
-
-          // Refine each input type
-          for (size_t i = 0; i < inputTypes.size(); ++i) {
-            auto argType = inputTypes[i].dyn_cast<mlir::RankedTensorType>();
-            if (!argType) continue; // Skip non-tensor arguments
-
-            // If dynamic shape, refine to provided concrete shape
-            if (argType.hasStaticShape()) {
-              // Static shape, keep it as is
-              refinedInputTypes.push_back(argType);
-            } else {
-              if (i < inputShapes.size()) {
-                auto concreteShape = inputShapes[i];
-                auto elementType = argType.getElementType();
-                auto refinedType = mlir::RankedTensorType::get(concreteShape, elementType);
-                refinedInputTypes.push_back(refinedType);
-
-                llvm::errs() << "Refining argument " << i << " to shape: ";
-                for (auto dim : concreteShape) llvm::errs() << dim << " ";
-                llvm::errs() << "\n";
-              } else {
-                llvm::errs() << "No shape provided for argument " << i << "\n";
-                refinedInputTypes.push_back(argType);  // Keep original if no shape provided
-              }
-            }
-          }
-
-          // Create new function type with refined inputs and original outputs
-          auto newFuncType = mlir::FunctionType::get(func.getContext(), refinedInputTypes, funcType.getResults());
-
-          // Set the new type for the function
-          func.setType(newFuncType);
-        }
-      }
-    });
-  }
-};
-
-// Register the pass
-// static mlir::PassRegistration<ShapeRefinementPass> pass("shape-refinement", "Refine input shapes to concrete values.");
-
-
-
     Compiler::Compiler(std::string py_executable) {
 
         std::cout << "Initialize the compiler" << std::endl;
@@ -181,8 +117,8 @@ struct ShapeRefinementPass : public mlir::PassWrapper<ShapeRefinementPass, mlir:
                     n_atoms, max_neighbors = export.symbolic_shape(
                         "n_atoms, max_neighbors")
 
-                    # n_atoms = 10
-                    # max_neighbors = 9
+                    n_atoms = 10
+                    max_neighbors = 9
 
                     position = jax.ShapeDtypeStruct((n_atoms, 3), jnp.float32)
                     neighbor = jax.ShapeDtypeStruct((n_atoms, max_neighbors), jnp.int32)
@@ -290,24 +226,65 @@ struct ShapeRefinementPass : public mlir::PassWrapper<ShapeRefinementPass, mlir:
 
         std::vector<std::vector<int64_t>> inputShapes = {{n_atoms, 3}, {n_atoms, max_neighbor}};
 
+        // Create and configure the pass manager
         mlir::PassManager pm(&context);
-        // pm.addPass(mlir::mhlo::createShapeInferencePass());
-        pm.addPass(std::make_unique<ShapeRefinementPass>(inputShapes));
+
+        // Shape and Shape Refinement Passes
+        pm.addPass(mlir::mhlo::createSymbolicShapeOptimizationPass());
+        pm.addPass(mlir::mhlo::createLegalizeBroadcastToBroadcastInDimPass());
+        pm.addPass(mlir::mhlo::createBroadcastPropagationPass());
+
         pm.addPass(mlir::mhlo::createLegalizeHloToLinalgPass());
         pm.addPass(mlir::stablehlo::createStablehloRefineShapesPass());
         pm.addNestedPass<mlir::func::FuncOp>(mlir::createCanonicalizerPass());
+
+        pm.addPass(mlir::mhlo::createShapeLegalizeToHloPass());
+
         pm.addPass(mlir::mhlo::createStablehloLegalizeToHloPass());
+        pm.addPass(mlir::stablehlo_ext::createStablehloRefineShapesPass());
+        pm.addNestedPass<mlir::func::FuncOp>(
+            mlir::stablehlo_ext::createStablehloCanonicalizeDynamismPass());
+
         pm.addNestedPass<mlir::func::FuncOp>(
             mlir::mhlo::createChloLegalizeToHloPass());
         pm.addNestedPass<mlir::func::FuncOp>(
             mlir::mhlo::createSinkConstantsToControlFlowPass());
 
+        // Canonicalization and Simplification Passes
         pm.addPass(mlir::createInlinerPass());
         pm.addPass(mlir::createCSEPass());
         pm.addPass(mlir::stablehlo_ext::createChloRecomposeOpsPass());
+
+        // Additional Shape and Shape Refinement Passes (if needed)
+        pm.addPass(mlir::mhlo::createSymbolicShapeOptimizationPass());
+        pm.addPass(mlir::mhlo::createLegalizeBroadcastToBroadcastInDimPass());
+        pm.addPass(mlir::mhlo::createBroadcastPropagationPass());
+
+        // Ensure the passes are added in the correct order
+        pm.addPass(mlir::mhlo::createLegalizeBroadcastToBroadcastInDimPass());
+        pm.addPass(mlir::mhlo::createLegalizeHloToLinalgPass());
+        pm.addPass(mlir::stablehlo::createStablehloRefineShapesPass());
+        pm.addNestedPass<mlir::func::FuncOp>(mlir::createCanonicalizerPass());
+
+        pm.addPass(mlir::mhlo::createShapeLegalizeToHloPass());
+        pm.addPass(mlir::mhlo::createStablehloLegalizeToHloPass());
         pm.addPass(mlir::stablehlo_ext::createStablehloRefineShapesPass());
         pm.addNestedPass<mlir::func::FuncOp>(
             mlir::stablehlo_ext::createStablehloCanonicalizeDynamismPass());
+
+        pm.addNestedPass<mlir::func::FuncOp>(
+            mlir::mhlo::createChloLegalizeToHloPass());
+        pm.addNestedPass<mlir::func::FuncOp>(
+            mlir::mhlo::createSinkConstantsToControlFlowPass());
+
+        // Final Symbolic Shape Optimization Pass (if needed)
+        pm.addPass(mlir::mhlo::createSymbolicShapeOptimizationPass());
+
+        // Additional Final Optimizations (if needed)
+        pm.addPass(mlir::createInlinerPass());
+        pm.addPass(mlir::createCSEPass());
+        pm.addPass(mlir::stablehlo_ext::createChloRecomposeOpsPass());
+
         // pm.addNestedPass<mlir::func::FuncOp>(
         //     std::make_unique<CheckShapeAssertionsPass>(enable_shape_assertions));
         if (!mlir::succeeded(pm.run(*module))) {

@@ -89,7 +89,7 @@ def energy_fn(position, neighbor_idx):
     n_atoms, dim = position.shape
     _, max_neighbors = neighbor_idx.shape
 
-    position *= 0.1
+    position *= jax.lax.broadcast_in_dim(jnp.asarray([[0.1]]), (n_atoms, 3), (0, 1))
     position = jnp.dot(inv_box, position.T).T
 
     # We use the neighbor list built by LAMMPS
