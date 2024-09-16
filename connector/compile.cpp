@@ -5,6 +5,7 @@
 
 #include "pybind11/embed.h"
 
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <cstdlib>
@@ -117,8 +118,8 @@ namespace jcn {
                     n_atoms, max_neighbors = export.symbolic_shape(
                         "n_atoms, max_neighbors")
 
-                    n_atoms = 10
-                    max_neighbors = 9
+                    # n_atoms = 10
+                    # max_neighbors = 9
 
                     position = jax.ShapeDtypeStruct((n_atoms, 3), jnp.float32)
                     neighbor = jax.ShapeDtypeStruct((n_atoms, max_neighbors), jnp.int32)
@@ -207,6 +208,7 @@ namespace jcn {
             registry.insert<mlir::func::FuncDialect>();
             registry.insert<mlir::ml_program::MLProgramDialect>();
             registry.insert<mlir::shape::ShapeDialect>();
+            mlir::chlo::regsusterAllChloDialects(registry);
             mlir::func::registerAllExtensions(registry);
             mlir::mhlo::registerAllMhloDialects(registry);
             mlir::sdy::registerAllDialects(registry);
@@ -229,67 +231,30 @@ namespace jcn {
         // Create and configure the pass manager
         mlir::PassManager pm(&context);
 
-        // Shape and Shape Refinement Passes
-        pm.addPass(mlir::mhlo::createSymbolicShapeOptimizationPass());
-        pm.addPass(mlir::mhlo::createLegalizeBroadcastToBroadcastInDimPass());
-        pm.addPass(mlir::mhlo::createBroadcastPropagationPass());
+        // Essential Shape and Shape Refinement Passes
+        pm.addPass(mlir::stablehlo::createStablehloRefineShapesPass()); // Refines StableHLO shapes
+        pm.addPass(mlir::mhlo::createSymbolicShapeOptimizationPass());  // Optimizes symbolic shapes
+        pm.addPass(mlir::mhlo::createLegalizeBroadcastToBroadcastInDimPass()); // Legalizes broadcast
 
-        pm.addPass(mlir::mhlo::createLegalizeHloToLinalgPass());
-        pm.addPass(mlir::stablehlo::createStablehloRefineShapesPass());
-        pm.addNestedPass<mlir::func::FuncOp>(mlir::createCanonicalizerPass());
+        // Essential Canonicalization and Simplification Passes
+        pm.addPass(mlir::createCanonicalizerPass()); // Simplifies operations
+        pm.addPass(mlir::createInlinerPass()); // Inlines functions
+        pm.addPass(mlir::createCSEPass()); // Common subexpression elimination
 
-        pm.addPass(mlir::mhlo::createShapeLegalizeToHloPass());
+        // Essential Legalization Passes
+        pm.addPass(mlir::mhlo::createLegalizeHloToLinalgPass()); // Converts HLO to Linalg
+        pm.addPass(mlir::mhlo::createShapeLegalizeToHloPass()); // Legalizes shape operations
 
-        pm.addPass(mlir::mhlo::createStablehloLegalizeToHloPass());
-        pm.addPass(mlir::stablehlo_ext::createStablehloRefineShapesPass());
-        pm.addNestedPass<mlir::func::FuncOp>(
-            mlir::stablehlo_ext::createStablehloCanonicalizeDynamismPass());
-
-        pm.addNestedPass<mlir::func::FuncOp>(
-            mlir::mhlo::createChloLegalizeToHloPass());
-        pm.addNestedPass<mlir::func::FuncOp>(
-            mlir::mhlo::createSinkConstantsToControlFlowPass());
-
-        // Canonicalization and Simplification Passes
-        pm.addPass(mlir::createInlinerPass());
-        pm.addPass(mlir::createCSEPass());
-        pm.addPass(mlir::stablehlo_ext::createChloRecomposeOpsPass());
-
-        // Additional Shape and Shape Refinement Passes (if needed)
-        pm.addPass(mlir::mhlo::createSymbolicShapeOptimizationPass());
-        pm.addPass(mlir::mhlo::createLegalizeBroadcastToBroadcastInDimPass());
-        pm.addPass(mlir::mhlo::createBroadcastPropagationPass());
-
-        // Ensure the passes are added in the correct order
-        pm.addPass(mlir::mhlo::createLegalizeBroadcastToBroadcastInDimPass());
-        pm.addPass(mlir::mhlo::createLegalizeHloToLinalgPass());
-        pm.addPass(mlir::stablehlo::createStablehloRefineShapesPass());
-        pm.addNestedPass<mlir::func::FuncOp>(mlir::createCanonicalizerPass());
-
-        pm.addPass(mlir::mhlo::createShapeLegalizeToHloPass());
-        pm.addPass(mlir::mhlo::createStablehloLegalizeToHloPass());
-        pm.addPass(mlir::stablehlo_ext::createStablehloRefineShapesPass());
-        pm.addNestedPass<mlir::func::FuncOp>(
-            mlir::stablehlo_ext::createStablehloCanonicalizeDynamismPass());
-
-        pm.addNestedPass<mlir::func::FuncOp>(
-            mlir::mhlo::createChloLegalizeToHloPass());
-        pm.addNestedPass<mlir::func::FuncOp>(
-            mlir::mhlo::createSinkConstantsToControlFlowPass());
-
-        // Final Symbolic Shape Optimization Pass (if needed)
-        pm.addPass(mlir::mhlo::createSymbolicShapeOptimizationPass());
-
-        // Additional Final Optimizations (if needed)
-        pm.addPass(mlir::createInlinerPass());
-        pm.addPass(mlir::createCSEPass());
-        pm.addPass(mlir::stablehlo_ext::createChloRecomposeOpsPass());
 
         // pm.addNestedPass<mlir::func::FuncOp>(
         //     std::make_unique<CheckShapeAssertionsPass>(enable_shape_assertions));
         if (!mlir::succeeded(pm.run(*module))) {
-            std::cout << absl::StrCat("Module shape refinement failed: ",
+            std::ofstream myfile;
+            myfile.open ("pass.log");
+            myfile << absl::StrCat("Module shape refinement failed: ",
                              diag_handler.ConsumeStatus().ToString()) << std::endl;
+            myfile.close();
+            std::cout << "ERROR in doing something" << std::endl;
         }
 
         // pm.addPass(mlir::mhlo::createShapeLegalizeToHloPass());

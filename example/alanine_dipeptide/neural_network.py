@@ -106,4 +106,5 @@ def energy_fn(position, neighbor_idx):
     return pot
 
 # This must be defined
-force_fn = quantity.force(energy_fn)
+def force_fn(position, neighbor_idx):
+    return quantity.force(energy_fn)(position, neighbor_idx)
