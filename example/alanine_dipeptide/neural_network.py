@@ -86,6 +86,9 @@ _, gnn_energy_fn = neural_networks.dimenetpp_neighborlist(
 
 def energy_fn(position, neighbor_idx):
     # We transfrom from angstrom back to nm and into fractional coordinates
+    n_atoms, dim = position.shape
+    _, max_neighbors = neighbor_idx.shape
+
     position *= 0.1
     position = jnp.dot(inv_box, position.T).T
 
@@ -95,7 +98,7 @@ def energy_fn(position, neighbor_idx):
 
     pot = 0.0
     pot += gnn_energy_fn(params, position, neighbor=nbrs, species=species)
-    pot += prior_energy_fn(position, neighbor=nbrs)
+    # pot += prior_energy_fn(position, neighbor=nbrs)
 
     # Lammps unit system real expects kcal/mol instead of kJ/mol
     pot /= 4.184

@@ -60,6 +60,13 @@ cc_binary(
     linkshared=True
 )
 
+alias(
+    name = "mlir_to_hlo_alias",
+    actual = "@xla//xla/pjrt:mlir_to_hlo",
+    visibility = ["//visibility:public"],  # This alias is publicly accessible
+)
+
+
 cc_library(
     name = "compile",
     srcs = ["compile.cpp",],
@@ -67,9 +74,33 @@ cc_library(
     deps = [
         "@xla//xla/client:xla_computation",
         "@xla//xla/service:hlo_parser",
+        "@xla//xla/mlir_hlo:stablehlo_extension_passes",
+        ":mlir_to_hlo_alias",
         "@xla//third_party/python_runtime:headers",
+        "@xla//xla/mlir_hlo:hlo_dialect_registration",
+        "@xla//xla/mlir_hlo:mhlo_passes",
         "@tsl//tsl/platform:platform_port",
         "@tsl//tsl/platform:logging",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:BytecodeWriter",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:FuncExtensions",
+        # "@llvm-project//mlir:Function",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:MLProgramDialect",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:ReconcileUnrealizedCasts",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:Transforms",
+        "@shardy//shardy/dialect/sdy/ir:register",
+        "@stablehlo//:chlo_ops",
+        "@stablehlo//:register",
+        "@stablehlo//:stablehlo_ops",
+        "@stablehlo//:stablehlo_passes",
+        "@stablehlo//:stablehlo_serialization",
+        "@stablehlo//:version",
         "@pybind11",
     ],
     linkopts = ["-lpython3.11"],  # Adjust the version as necessary

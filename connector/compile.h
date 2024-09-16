@@ -6,6 +6,40 @@
 
 #include <string>
 #include "xla/service/hlo_parser.h"
+#include "xla/client/xla_computation.h"
+
+#include "llvm/ADT/STLFunctionalExtras.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/TypeSwitch.h"
+#include "llvm/Support/Casting.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
+#include "mlir/Bytecode/BytecodeWriter.h"
+#include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/Extensions/AllExtensions.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MLProgram/IR/MLProgram.h"
+#include "mlir/IR/Attributes.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/OwningOpRef.h"
+#include "mlir/IR/Visitors.h"
+#include "mlir/Parser/Parser.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Support/LLVM.h"
+#include "mlir/Support/LogicalResult.h"
+#include "mlir/Transforms/Passes.h"
+#include "shardy/dialect/sdy/ir/register.h"
+#include "stablehlo/dialect/ChloOps.h"
+#include "stablehlo/dialect/Register.h"
+#include "stablehlo/dialect/Serialization.h"
+#include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/dialect/Version.h"
+#include "stablehlo/transforms/Passes.h"
 
 #ifndef COMPILE_H
 #define COMPILE_H
@@ -20,16 +54,19 @@ namespace jcn {
 
         // Takes the python file and compiles the force_fn givent the number of
         // particles and the maxmimum number of neighbors
-        absl::StatusOr<std::unique_ptr<xla::HloModule>> compile(
-            const int n_atoms, const int max_neighbor);
+        mlir::OwningOpRef<mlir::ModuleOp> compile(const int n_atoms, const int max_neighbors, mlir::MLIRContext& context);
 
     private:
-        py::object force_compiler;
+        // py::object force_compiler;
+        std::string bytestring;
 
         // Keeps the interpreter alive as long as the class exists.
         py::scoped_interpreter guard{};
 
     };
+
+    mlir::OwningOpRef<mlir::ModuleOp> ParseMlirModuleString(
+            absl::string_view mlir_module_str, mlir::MLIRContext& context);
 }
 
 

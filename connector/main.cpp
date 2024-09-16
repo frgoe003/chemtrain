@@ -120,15 +120,16 @@ namespace jcn {
 
             const int n_atoms = 10;
 
-            std::cout << "Try to compie the file" << std::endl;
-            std::unique_ptr<xla::HloModule> test_module = compiler.compile(n_atoms, max_neighbors).value();
+            std::cout << "Try to compile the file" << std::endl;
+            mlir::MLIRContext context;
+            mlir::OwningOpRef<mlir::ModuleOp> module = compiler.compile(n_atoms, max_neighbors, context);
 
-            const xla::HloModuleProto test_module_proto = test_module->ToProto();
+            // module->dump();
 
-            xla::XlaComputation xla_computation(test_module_proto);
+            std::cout << "Compile the module" << std::endl;
+
             xla::CompileOptions compile_options;
-
-            auto executable_or_status = client_->Compile(xla_computation, compile_options);
+            auto executable_or_status = client_->Compile(*module, compile_options);
             std::cout << "Client creation status: " << executable_or_status.status().ToString() << std::endl;
             executable_ = std::move(executable_or_status).value();
             std::cout << "Executable created" << std::endl;
