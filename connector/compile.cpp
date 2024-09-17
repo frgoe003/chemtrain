@@ -11,6 +11,7 @@
 #include <cstdlib>
 
 #include "compile.h"
+#include "xla_call_module_loader.h"
 
 #include "xla/client/xla_computation.h"
 #include "xla/service/hlo_parser.h"
@@ -126,7 +127,7 @@ namespace jcn {
 
                     # Import the force function
                     self.force_fn: export.Exported = export.export(
-                        jax.jit(module.force_fn)# , platforms='cuda'
+                        jax.jit(module.force_fn), platforms=['cuda']
                     )(position, neighbor)
 
                     print("In and out avals")
@@ -135,7 +136,19 @@ namespace jcn {
 
                     print("Return traced model")
 
-                    self.bytestring = self.force_fn.mlir_module()
+                    # bytestring = "\n".join([
+                    #     line for line in self.force_fn.mlir_module().splitlines()
+                    #     if not line.lstrip().startswith("stablehlo.custom_call")
+                    # ])
+
+                    bytestring = self.force_fn.mlir_module()
+
+                    with open("module.mlir", "w") as f:
+                        f.write(bytestring)
+
+                    with open("module.mlir", "r") as f:
+                        self.bytestring = f.read()
+
 
                 def compile(self, n_atoms, max_neighbors):
                     # To avoid specifying data, we use only a ShapedArray for
@@ -158,9 +171,10 @@ namespace jcn {
             // We import the lowering class using pybind
             py::object force_compiler = ForceModule(py_executable);
 
+            std::cout << "Get the bytestring" << std::endl;
             bytestring = force_compiler.attr("bytestring").cast<std::string>();
 
-            // std::cout << "Module: " << bytestring << std::endl;
+            std::cout << "Module: " << bytestring << std::endl;
 
         } catch (const py::error_already_set& e) {
             std::cerr << "Python error: " << e.what() << std::endl;
@@ -169,7 +183,7 @@ namespace jcn {
         std::cout << "Finished initialization" << std::endl;
     }
 
-    mlir::OwningOpRef<mlir::ModuleOp> Compiler::compile(
+    xla::XlaComputation Compiler::compile(
         const int n_atoms, const int max_neighbor, mlir::MLIRContext& context) {
 //        xla::HloSnapshot proto;
 //        std::unique_ptr<xla::HloModule> module;
@@ -200,88 +214,73 @@ namespace jcn {
         // absl::Status load_status = xla::ParseMlirModuleStringAndConvertToXlaComputation(
         //    bytestring, computation, false, false);
 
-        std::cout << "Start parsing the bytestring" << std::endl;
-        mlir::BaseScopedDiagnosticHandler diag_handler(&context);
+        std::cout << "Load dialects" << std::endl;
 
         mlir::DialectRegistry registry;
-            registry.insert<mlir::arith::ArithDialect>();
-            registry.insert<mlir::func::FuncDialect>();
-            registry.insert<mlir::ml_program::MLProgramDialect>();
-            registry.insert<mlir::shape::ShapeDialect>();
-            mlir::chlo::regsusterAllChloDialects(registry);
-            mlir::func::registerAllExtensions(registry);
-            mlir::mhlo::registerAllMhloDialects(registry);
-            mlir::sdy::registerAllDialects(registry);
-            mlir::stablehlo::registerAllDialects(registry);
-            context.appendDialectRegistry(registry);
+        registry.insert<mlir::arith::ArithDialect>();
+        registry.insert<mlir::func::FuncDialect>();
+        registry.insert<mlir::ml_program::MLProgramDialect>();
+        registry.insert<mlir::shape::ShapeDialect>();
+        mlir::func::registerAllExtensions(registry);
+        mlir::mhlo::registerAllMhloDialects(registry);
+        mlir::sdy::registerAllDialects(registry);
+        mlir::stablehlo::registerAllDialects(registry);
+        context.appendDialectRegistry(registry);
 
-        // mlir::ScopedDiagnosticHandler diagnostic_handler(&context);
-        mlir::OwningOpRef<mlir::ModuleOp> module =
-          mlir::parseSourceString<mlir::ModuleOp>(
-              llvm::StringRef(bytestring.data(), bytestring.size()),
-              // IR may be invalid because some fields may be using DenseElements
-              // instead of DenseArray. We rectify that below and verify after.
-              mlir::ParserConfig{&context, /*verifyAfterParse=*/false});
-        if (!module) {
-        // return diagnostic_handler.ConsumeStatus();
+        std::cout << "Start parsing the bytestring" << std::endl;
+
+        xla::Shape position_shape = xla::ShapeUtil::MakeShape(xla::F32, absl::Span<const int64_t>{10, 3});
+        xla::Shape neighbor_shape = xla::ShapeUtil::MakeShape(xla::S32, absl::Span<const int64_t>{10, 9});
+
+        std::vector<xla::Shape> inputShapes = {position_shape, neighbor_shape};
+
+        std::cout << "Start loading the module" << std::endl;
+
+        // std::vector<std::string> disabled_checks = {"shape_assertions"};
+        std::vector<std::string> disabled_checks = {};
+        std::vector<std::string> platforms = {"cuda"};
+        std::unique_ptr<XlaCallModuleLoader> module_loader = XlaCallModuleLoader::Create(
+            &context, 8, bytestring, disabled_checks, platforms, 2, false).value();
+
+        absl::Status status;
+
+        std::cout << "Validate dialect" << std::endl;
+
+        status = module_loader->ValidateDialect();
+        if (!status.ok()) {
+            std::cerr << "Failed to validate dialect: " << status.message() << std::endl;
         }
 
-        std::vector<std::vector<int64_t>> inputShapes = {{n_atoms, 3}, {n_atoms, max_neighbor}};
+        std::cout << "Start setting the platform index" << std::endl;
 
-        // Create and configure the pass manager
-        mlir::PassManager pm(&context);
-
-        // Essential Shape and Shape Refinement Passes
-        pm.addPass(mlir::stablehlo::createStablehloRefineShapesPass()); // Refines StableHLO shapes
-        pm.addPass(mlir::mhlo::createSymbolicShapeOptimizationPass());  // Optimizes symbolic shapes
-        pm.addPass(mlir::mhlo::createLegalizeBroadcastToBroadcastInDimPass()); // Legalizes broadcast
-
-        // Essential Canonicalization and Simplification Passes
-        pm.addPass(mlir::createCanonicalizerPass()); // Simplifies operations
-        pm.addPass(mlir::createInlinerPass()); // Inlines functions
-        pm.addPass(mlir::createCSEPass()); // Common subexpression elimination
-
-        // Essential Legalization Passes
-        pm.addPass(mlir::mhlo::createLegalizeHloToLinalgPass()); // Converts HLO to Linalg
-        pm.addPass(mlir::mhlo::createShapeLegalizeToHloPass()); // Legalizes shape operations
-
-
-        // pm.addNestedPass<mlir::func::FuncOp>(
-        //     std::make_unique<CheckShapeAssertionsPass>(enable_shape_assertions));
-        if (!mlir::succeeded(pm.run(*module))) {
-            std::ofstream myfile;
-            myfile.open ("pass.log");
-            myfile << absl::StrCat("Module shape refinement failed: ",
-                             diag_handler.ConsumeStatus().ToString()) << std::endl;
-            myfile.close();
-            std::cout << "ERROR in doing something" << std::endl;
+        status = module_loader->SetPlatformIndex("cuda");
+        if (!status.ok()) {
+            std::cerr << "Failed to set platform index: " << status.message() << std::endl;
         }
 
-        // pm.addPass(mlir::mhlo::createShapeLegalizeToHloPass());
-        // pm.addPass(mlir::stablehlo::createStablehloCanonicalizeDynamismPass());
+        std::cout << "Start refining the dynamic shapes" << std::endl;
 
-
-        // In order to export to XLA, we must sink constants to control flow
-        // regions, since XLA uses functional control flow.
-
-        // In
-        // https://github.com/google/jax/commit/184e3a88004680dbf34328b05c5fc0d869cc4a93,
-        // fields on some ops were changed to use Dense{Bool,I64}ArrayAttr instead of
-        // I64DenseElementsAttr (DenseIntElementsAttr). Some clients still expect
-        // dense elements, not dense arrays, so when serializing we always convert the
-        // arrays to elements. The elements need to be converted back to arrays when
-        // deserializing.
-        // TODO: b/320507168 - Remove the conversion code, and verifyAfterParse.
-        // xla::TF_RETURN_IF_ERROR(UpgradeVersionedStablehlo(*module));
-        if (failed(module->verifyInvariants())) {
-        VLOG(1) << "MLIR verification failed.";
-        //    module->dump();
-        // return diagnostic_handler.ConsumeStatus();
+        status = module_loader->RefineDynamicShapes(inputShapes);
+        if (!status.ok()) {
+            std::cerr << "Failed to refine dynamic shapes: " << status.message() << std::endl;
         }
 
-        std::cout << "Finished parsing the bytestring" << std::endl;
+        std::cout << "Start lowering the module to MHLO" << std::endl;
 
-        return std::move(module);
+        status = module_loader->LowerModuleToMhlo();
+        if (!status.ok()) {
+            std::cerr << "Failed to refine dynamic shapes: " << status.message() << std::endl;
+        }
+
+        std::cout << "Finished preparing the XLA computation" << std::endl;
+
+        auto res = module_loader->ToXlaComputation();
+        if (!res.ok()) {
+            std::cerr << "Failed to convert the module to XLA computation: " << res.status().message() << std::endl;
+        }
+
+        return std::move(res).value();
+
     }
 
 

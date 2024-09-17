@@ -72,6 +72,7 @@ cc_library(
     srcs = ["compile.cpp",],
     hdrs = ["compile.h"],
     deps = [
+        ":xla_call_module_loader",
         "@xla//xla/client:xla_computation",
         "@xla//xla/service:hlo_parser",
         "@xla//xla/mlir_hlo:stablehlo_extension_passes",
@@ -104,5 +105,39 @@ cc_library(
         "@pybind11",
     ],
     linkopts = ["-lpython3.11"],  # Adjust the version as necessary
+)
+
+cc_library(
+    name = "xla_call_module_loader",
+    srcs = ["xla_call_module_loader.cpp"],
+    hdrs = ["xla_call_module_loader.h"],
+    deps = [
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:Transforms",
+        "@tsl//tsl/platform:errors",
+        "@tsl//tsl/platform:statusor",
+        "@xla//xla:shape_util",
+        "@xla//xla/client:xla_computation",
+        "@xla//xla/mlir/utils:type_util",
+        "@xla//xla/mlir_hlo",
+        "@xla//xla/mlir_hlo:mhlo_passes",
+        "@xla//xla/python:refine_polymorphic_shapes",
+        "@xla//xla/service:hlo_proto_cc",
+        "@xla//xla/translate/mhlo_to_hlo:mlir_hlo_to_hlo",
+        "@stablehlo//:chlo_ops",
+        "@stablehlo//:stablehlo_ops",
+        "@stablehlo//:stablehlo_serialization",
+        "@stablehlo//:vhlo_ops",
+    ],
 )
 

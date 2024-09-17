@@ -54,7 +54,7 @@ namespace jcn {
 
         // Takes the python file and compiles the force_fn givent the number of
         // particles and the maxmimum number of neighbors
-        mlir::OwningOpRef<mlir::ModuleOp> compile(const int n_atoms, const int max_neighbors, mlir::MLIRContext& context);
+        xla::XlaComputation compile(const int n_atoms, const int max_neighbors, mlir::MLIRContext& context);
 
     private:
         // py::object force_compiler;

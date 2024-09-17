@@ -122,14 +122,16 @@ namespace jcn {
 
             std::cout << "Try to compile the file" << std::endl;
             mlir::MLIRContext context;
-            mlir::OwningOpRef<mlir::ModuleOp> module = compiler.compile(n_atoms, max_neighbors, context);
+            // mlir::OwningOpRef<mlir::ModuleOp> module = compiler.compile(n_atoms, max_neighbors, context);
+            xla::XlaComputation computation = compiler.compile(n_atoms, max_neighbors, context);
 
             // module->dump();
 
             std::cout << "Compile the module" << std::endl;
 
             xla::CompileOptions compile_options;
-            auto executable_or_status = client_->Compile(*module, compile_options);
+            // auto executable_or_status = client_->Compile(*module, compile_options);
+            auto executable_or_status = client_->Compile(computation, compile_options);
             std::cout << "Client creation status: " << executable_or_status.status().ToString() << std::endl;
             executable_ = std::move(executable_or_status).value();
             std::cout << "Executable created" << std::endl;
