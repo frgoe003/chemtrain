@@ -1,11 +1,16 @@
 import os
 import functools
+import sys
+
+import argparse
 
 from pathlib import Path
 
 import tomli_w
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+if len(sys.argv) > 1:
+    os.environ["CUDA_VISIBLE_DEVICES"] = sys.argv[1]
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.95"
 
 import numpy as onp
 
@@ -45,16 +50,25 @@ from chemtrain.trainers import ForceMatching
 import data_utils
 
 def get_default_config():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("device", type=str, default="-1")
+    parser.add_argument("--cutoff", type=float, default=0.5)
+    parser.add_argument("--epochs", type=int, default=250)
+    parser.add_argument("--batch", type=int, default=20)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    args = parser.parse_args()
+
+    print(f"Run on device {args.device}")
     return OrderedDict(
         model=OrderedDict(
-            r_cutoff=0.3,
+            r_cutoff=args.cutoff,
             edge_multiplier=1.15,
         ),
         optimizer=OrderedDict(
-            init_lr=0.001,
+            init_lr=args.lr,
             lr_decay=0.01,
-            epochs=250,
-            batch=25,
+            epochs=args.epochs,
+            batch=args.batch,
             cache=8
         ),
         gammas=OrderedDict(
@@ -66,6 +80,8 @@ def get_default_config():
 
 
 def main():
+
+
 
     config = get_default_config()
     out_dir = create_out_dir(config)

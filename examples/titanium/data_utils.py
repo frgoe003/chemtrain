@@ -218,7 +218,7 @@ def estimate_edge_and_triplet_count(dataset, displacement_fn, r_cutoff=0.5, capa
             # assert onp.all(position <= 1.0), f"Fractional coordinates are wrong."
 
             max_edges, max_triplets, overflow, neighbor = compute_and_check(
-                position[idx], neighbor, box[idx], overflow
+                jnp.asarray(position[idx]), neighbor, jnp.asarray(box[idx]), overflow
             )
 
             all_max_edges[n_iter] = int(max_edges)
