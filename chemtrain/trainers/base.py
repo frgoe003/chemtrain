@@ -697,8 +697,13 @@ class DataParallelTrainer(MLETrainerTemplate):
         self.batch_cache = batch_cache
         self.batch_size = batch_per_device * device_count()
 
-        # replicate params and optimizer states for pmap
-        opt_state = optimizer.init(init_params)  # initialize optimizer state
+        # Todo: Maybe make optimizer optional to simplify initiaization
+        #       of trainer for evaluation
+        if optimizer is None:
+            print(f"No optimizer specified")
+            opt_state = None
+        else:
+            opt_state = optimizer.init(init_params)  # initialize optimizer state
         init_state = util.TrainerState(params=init_params, opt_state=opt_state)
 
         super().__init__(

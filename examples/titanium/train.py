@@ -46,8 +46,7 @@ from chemtrain.ensemble import sampling
 from chemtrain import quantity, trainers, util as chem_util
 from chemtrain.trainers import ForceMatching
 
-
-import data_utils
+import data_utils, train_utils
 
 def get_default_config():
     parser = argparse.ArgumentParser()
@@ -81,12 +80,14 @@ def get_default_config():
 
 def main():
 
-
-
     config = get_default_config()
-    out_dir = create_out_dir(config)
+    out_dir = train_utils.create_out_dir(config)
 
     dataset = data_utils.download_dataset("./")
+
+    # Estimate per-particle shift
+    config["model"]["energy_shift"] = onp.mean(
+        dataset["training"]["U"] / dataset["training"]["R"].shape[1])
 
     displacement_fn, _ = space.periodic_general(1.0, fractional_coordinates=True)
 
@@ -108,9 +109,9 @@ def main():
     config["model"]["max_triplets"] = max_triplets
     config["model"]["max_neighbor"] = nbrs_init.idx.shape[1]
 
-    energy_fn_template, init_params = define_model(config, dataset, nbrs_init, max_edges, max_triplets)
+    energy_fn_template, init_params = train_utils.define_model(config, dataset, nbrs_init, max_edges, max_triplets)
 
-    optimizer = init_optimizer(config, dataset)
+    optimizer = train_utils.init_optimizer(config, dataset)
 
     trainer_fm = trainers.ForceMatching(
         init_params, optimizer, energy_fn_template, nbrs_init,
@@ -141,108 +142,7 @@ def main():
     # Train and save the results to a new folder
     trainer_fm.train(config["optimizer"]["epochs"])
 
-    save_results(config, out_dir, trainer_fm)
-
-
-def define_model(config, dataset, nbrs_init, max_edges, max_triplets):
-    """Initializes a concrete model for a system given path to model parameters."""
-
-    # Set up NN model
-    r_init = jnp.asarray(dataset['training']['R'][0])
-    species_init = jnp.ones(r_init.shape[0], dtype=jnp.int32)
-    box_init = jnp.asarray(dataset['training']['box'][0])
-
-    n_species = 10
-
-    fractional = True
-    displacement_fn, shift_fn = space.periodic_general(
-        box_init, fractional_coordinates=fractional)
-
-    key = random.PRNGKey(21)
-    mlp_init = {
-        'b_init': hk.initializers.Constant(0.),
-        'w_init': layers.OrthogonalVarianceScalingInit(scale=1.)
-    }
-
-    init_fn, gnn_energy_fn = neural_networks.dimenetpp_neighborlist(
-        displacement_fn, config["model"]["r_cutoff"], n_species, embed_size=32,
-        init_kwargs=mlp_init, max_edges=max_edges, max_triplets=max_triplets
-    )
-
-    # Load a pretrained model
-    init_params = init_fn(key, r_init, nbrs_init, species=species_init, box=box_init)
-
-    def energy_fn_template(energy_params):
-        def energy_fn(pos, neighbor, **dynamic_kwargs):
-            assert 'box' in dynamic_kwargs.keys(), 'box not in dynamic_kwargs'
-
-            # We only have one type of particle
-            species = jnp.ones(pos.shape[0], dtype=int)
-
-            gnn_energy = gnn_energy_fn(
-                energy_params, pos, neighbor, species=species, **dynamic_kwargs
-            )
-
-            return gnn_energy
-
-        return energy_fn
-
-    return energy_fn_template, init_params
-
-
-def init_optimizer(config, dataset):
-
-    transition_steps = int(
-        config["optimizer"]["epochs"] * dataset['training']['U'].size
-    ) // config["optimizer"]["batch"]
-
-    lr_schedule_fm = optax.exponential_decay(
-        config["optimizer"]["init_lr"], transition_steps, config["optimizer"]["lr_decay"])
-    optimizer_fm = optax.chain(
-        optax.scale_by_adam(),
-        optax.scale_by_learning_rate(lr_schedule_fm, flip_sign=True)
-    )
-
-    return optimizer_fm
-
-
-def create_out_dir(config):
-    def _get_hash(subdict):
-        tmpstr = ""
-        for value in subdict.values():
-            if isinstance(value, dict):
-                tmpstr += _get_hash(value)
-                continue
-
-            try:
-               tmpstr += hash(value)
-            except TypeError:
-               tmpstr += str(value)
-
-        return tmpstr
-
-    id_str = hash(_get_hash(config))
-    name = f"titanium_r_cutoff_{config['model']['r_cutoff']}_{id_str}"
-
-    out_dir = Path("output") / name
-    out_dir.mkdir(exist_ok=False, parents=True)
-
-    # Save the config values
-    with open(out_dir / "config.toml", "wb") as f:
-        tomli_w.dump(config, f)
-
-    return out_dir
-
-
-def save_results(config, out_dir, trainer: ForceMatching):
-    # Save the config values
-    with open(out_dir / "config.toml", "wb") as f:
-        tomli_w.dump(config, f)
-
-    # Save all the outputs
-    trainer.save_energy_params(out_dir / "best_params.pkl", ".pkl", best=True)
-    trainer.save_energy_params(out_dir / "final_params.pkl", ".pkl", best=True)
-    trainer.save_trainer(out_dir / "trainer.pkl", ".pkl")
+    train_utils.save_training_results(config, out_dir, trainer_fm)
 
 
 if __name__ == "__main__":
