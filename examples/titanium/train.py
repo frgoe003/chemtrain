@@ -46,6 +46,8 @@ from chemtrain.ensemble import sampling
 from chemtrain import quantity, trainers, util as chem_util
 from chemtrain.trainers import ForceMatching
 
+import e3nn_jax
+
 import data_utils, train_utils
 
 def get_default_config():
@@ -60,6 +62,7 @@ def get_default_config():
     print(f"Run on device {args.device}")
     return OrderedDict(
         model=OrderedDict(
+            type="Allegro",
             r_cutoff=args.cutoff,
             edge_multiplier=1.15,
         ),
@@ -115,7 +118,7 @@ def main():
 
     trainer_fm = trainers.ForceMatching(
         init_params, optimizer, energy_fn_template, nbrs_init,
-        batch_per_device=config["optimizer"]["batch"],
+        batch_per_device=config["optimizer"]["batch"] // len(jax.devices()),
         batch_cache=config["optimizer"]["cache"],
         gammas=config["gammas"],
         additional_targets={

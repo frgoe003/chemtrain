@@ -5,8 +5,12 @@ import datetime
 import tomli_w
 
 import numpy as onp
+from flax.core.lift import switch
 
-from jax import tree_util, lax, random
+import functools
+
+import jax
+from jax import tree_util, lax, random, nn
 
 import jax.numpy as jnp
 
@@ -19,6 +23,11 @@ from jax_md_mod.model import layers, neural_networks, prior
 import optax
 
 import haiku as hk
+
+import e3nn_jax
+
+from allegro_jax import AllegroHaiku
+
 from chemtrain.trainers import ForceMatching
 
 import data_utils
@@ -34,51 +43,130 @@ def define_model(config, dataset, nbrs_init, max_edges, max_triplets):
     species_init = jnp.ones(r_init.shape[0], dtype=jnp.int32)
     box_init = jnp.asarray(dataset['training']['box'][0])
 
-    n_species = 10
+    key = random.PRNGKey(21)
 
     fractional = True
     displacement_fn, shift_fn = space.periodic_general(
         box_init, fractional_coordinates=fractional)
 
-    key = random.PRNGKey(21)
-    mlp_init = {
-        'b_init': hk.initializers.Constant(0.),
-        'w_init': layers.OrthogonalVarianceScalingInit(scale=1.)
-    }
+    model = config["model"].get("type", "DimeNet")
+    if model == "DimeNet":
+        n_species = 10
 
-    init_fn, gnn_energy_fn = neural_networks.dimenetpp_neighborlist(
-        displacement_fn, config["model"]["r_cutoff"], n_species, embed_size=32,
-        init_kwargs=mlp_init, max_edges=max_edges, max_triplets=max_triplets
-    )
+        mlp_init = {
+            'b_init': hk.initializers.Constant(0.),
+            'w_init': layers.OrthogonalVarianceScalingInit(scale=1.)
+        }
 
-    # Load a pretrained model
-    init_params = init_fn(key, r_init, nbrs_init, species=species_init, box=box_init)
-    init_params['learnable_shift'] = 0.0
+        init_fn, gnn_energy_fn = neural_networks.dimenetpp_neighborlist(
+            displacement_fn, config["model"]["r_cutoff"], n_species, embed_size=32,
+            init_kwargs=mlp_init, max_edges=max_edges, max_triplets=max_triplets
+        )
 
-    def energy_fn_template(energy_params):
-        def energy_fn(pos, neighbor, **dynamic_kwargs):
-            assert 'box' in dynamic_kwargs.keys(), 'box not in dynamic_kwargs'
+        # Load a pretrained model
+        init_params = init_fn(key, r_init, nbrs_init, species=species_init, box=box_init)
+        init_params['learnable_shift'] = 0.0
 
-            if pot_shift is not None:
-                shift = pot_shift * pos.shape[0]
-            else:
-                shift = 0.0
+        def energy_fn_template(energy_params):
+            def energy_fn(pos, neighbor, **dynamic_kwargs):
+                assert 'box' in dynamic_kwargs.keys(), 'box not in dynamic_kwargs'
 
-            # Remove this parameter again from the dictionary
-            params = {key: value for key, value in energy_params.items()
-                      if key != "learnable_shift"}
-            shift += energy_params.get('learnable_shift', 0.0) * pos.shape[0]
+                if pot_shift is not None:
+                    shift = pot_shift * pos.shape[0]
+                else:
+                    shift = 0.0
 
-            # We only have one type of particle
-            species = jnp.ones(pos.shape[0], dtype=int)
+                # Remove this parameter again from the dictionary
+                params = {key: value for key, value in energy_params.items()
+                          if key != "learnable_shift"}
+                shift += energy_params.get('learnable_shift', 0.0) * pos.shape[0]
 
-            gnn_energy = gnn_energy_fn(
-                params, pos, neighbor, species=species, **dynamic_kwargs
+                # We only have one type of particle
+                species = jnp.ones(pos.shape[0], dtype=int)
+
+                gnn_energy = gnn_energy_fn(
+                    params, pos, neighbor, species=species, **dynamic_kwargs
+                )
+
+                return gnn_energy + shift
+
+            return energy_fn
+
+    elif model == "Allegro":
+        n_species = 10
+
+        default_kwargs = dict(
+            max_ell = 3,
+            irreps = 128 * e3nn_jax.Irreps("0o + 1o + 1e + 2e + 2o + 3o + 3e"),
+            mlp_n_hidden = 1024,
+            mlp_n_layers = 3,
+            n_radial_basis = 8,
+            output_irreps = e3nn_jax.Irreps("0e"),
+            num_layers = 1,  # 3,
+        )
+
+        @hk.without_apply_rng
+        @hk.transform
+        def haiku_model(pos, neighbor, box=None, **dynamic_kwargs):
+            allegro_model = AllegroHaiku(
+                avg_num_neighbors=max_edges / r_init.shape[0],
+                radial_cutoff=config["model"]["r_cutoff"] * 10.,  # In angstrom
+                **default_kwargs,
             )
 
-            return gnn_energy + shift
+            # Convert the units into angstrom
+            box *= 10.
 
-        return energy_fn
+            # Create a neighbor list with maximum capacity first
+            dense_idx = neighbor.idx
+            senders = jnp.arange(dense_idx.shape[0]).repeat(dense_idx.shape[1])
+            receivers = dense_idx.ravel()
+
+            # Sort the indices of the receivers (invalids will be last)
+            # and only keep a pre-defined amount
+            _, sorted_idx = lax.top_k(-receivers, max_edges)
+            senders = senders[sorted_idx]
+            receivers = receivers[sorted_idx]
+
+            # Assemble the Allegro Haiku Model
+            species = jnp.ones(pos.shape[0], dtype=int)
+            node_attrs = nn.one_hot(species, n_species)
+
+            displacements = jax.vmap(
+                functools.partial(displacement_fn, box=box)
+            )(pos[senders, :], pos[receivers, :])
+
+            vectors = e3nn_jax.IrrepsArray("1o", displacements)
+
+            maybe_energy = allegro_model(node_attrs, vectors, senders, receivers).array
+
+            return util.high_precision_sum(maybe_energy)
+
+
+        init_params = haiku_model.init(key, r_init, nbrs_init, box=box_init)
+        init_params['learnable_shift'] = 0.0
+
+        def energy_fn_template(energy_params):
+
+            def energy_fn(pos, neighbor, **dynamic_kwargs):
+                if pot_shift is not None:
+                    shift = pot_shift * pos.shape[0]
+                else:
+                    shift = 0.0
+
+                # Remove this parameter again from the dictionary
+                params = {key: value for key, value in energy_params.items()
+                          if key != "learnable_shift"}
+                shift += energy_params.get('learnable_shift', 0.0) * pos.shape[0]
+
+                gnn_energy = haiku_model.apply(params, pos, neighbor, **dynamic_kwargs)
+
+                return gnn_energy + shift
+
+            return energy_fn
+
+    else:
+        raise NotImplementedError(f"Model {model} not implemented.")
 
     return energy_fn_template, init_params
 
@@ -102,7 +190,8 @@ def init_optimizer(config, dataset):
 def create_out_dir(config):
     now = datetime.datetime.now()
 
-    name = f"titanium_r_cutoff_{config['model']['r_cutoff']}_{now.year}_{now.month}_{now.day}_{uuid.uuid4()}"
+    model = config["model"].get("type", "DimeNet")
+    name = f"titanium_{model}_r_cutoff_{config['model']['r_cutoff']}_{now.year}_{now.month}_{now.day}_{uuid.uuid4()}"
 
     out_dir = Path("output") / name
     out_dir.mkdir(exist_ok=False, parents=True)
