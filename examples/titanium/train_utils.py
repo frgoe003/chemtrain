@@ -95,14 +95,17 @@ def define_model(config, dataset, nbrs_init, max_edges, max_triplets):
     elif model == "Allegro":
         n_species = 10
 
+        model_kwargs = config["model"].get("model_kwargs", {})
         default_kwargs = dict(
-            max_ell = 3,
-            irreps = 128 * e3nn_jax.Irreps("0o + 1o + 1e + 2e + 2o + 3o + 3e"),
-            mlp_n_hidden = 1024,
-            mlp_n_layers = 3,
-            n_radial_basis = 8,
+            max_ell = model_kwargs.get("max_ell", 3),
+            irreps = model_kwargs.get("n_irreps", 128) * e3nn_jax.Irreps(
+                model_kwargs.get("irreps", "0o + 1o + 1e + 2e + 2o + 3o + 3e")),
+            mlp_n_hidden = model_kwargs.get("hidden_dim", 1024),
+            mlp_n_layers = model_kwargs.get("n_layer", 3),
+            n_radial_basis = model_kwargs.get("n_radial_basis", 8),
             output_irreps = e3nn_jax.Irreps("0e"),
-            num_layers = 1,  # 3,
+            num_layers = model_kwargs.get("num_layers", 1),  # 3,
+            p=model_kwargs.get("p", 6),
         )
 
         @hk.without_apply_rng
@@ -128,6 +131,9 @@ def define_model(config, dataset, nbrs_init, max_edges, max_triplets):
             senders = senders[sorted_idx]
             receivers = receivers[sorted_idx]
 
+            # Mask out all invalid neighbors
+            mask = receivers < pos.shape[0]
+
             # Assemble the Allegro Haiku Model
             species = jnp.ones(pos.shape[0], dtype=int)
             node_attrs = nn.one_hot(species, n_species)
@@ -139,6 +145,7 @@ def define_model(config, dataset, nbrs_init, max_edges, max_triplets):
             vectors = e3nn_jax.IrrepsArray("1o", displacements)
 
             maybe_energy = allegro_model(node_attrs, vectors, senders, receivers).array
+            maybe_energy = (maybe_energy.T * mask).T
 
             return util.high_precision_sum(maybe_energy)
 
@@ -160,6 +167,10 @@ def define_model(config, dataset, nbrs_init, max_edges, max_triplets):
                 shift += energy_params.get('learnable_shift', 0.0) * pos.shape[0]
 
                 gnn_energy = haiku_model.apply(params, pos, neighbor, **dynamic_kwargs)
+
+                # Disable the learned energy shift
+                if config["model"].get("no_shift", False):
+                    return gnn_energy
 
                 return gnn_energy + shift
 
@@ -227,7 +238,7 @@ def plot_predictions(predictions, reference_data, out_dir, name):
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(11, 5),
                                         layout="constrained")
 
-    fig.suptitle("Predictions on Testset")
+    fig.suptitle("Predictions")
 
     mae = onp.mean(onp.abs(
         predictions['U'] - reference_data['U'])) / scale_energy / 256

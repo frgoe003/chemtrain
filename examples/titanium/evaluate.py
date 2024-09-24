@@ -37,23 +37,23 @@ def main():
     with open(out_dir / "config.toml", "rb") as f:
         config = tomli.load(f)
 
-    with jax.default_device(jax.devices("cpu")[0]):
-        # Use the same script to also test how big one can scale the supercell
-        dataset = data_utils.download_dataset('./')
-        if args.n_samples > 0:
-            for split in dataset.keys():
-                dataset[split] = {key: arr[0:args.n_samples, ...] for key, arr in dataset[split].items()}
+    # with jax.default_device(jax.devices("cpu")[0]):
+    #     # Use the same script to also test how big one can scale the supercell
+    #     dataset = data_utils.download_dataset('./')
+    #     if args.n_samples > 0:
+    #         for split in dataset.keys():
+    #             dataset[split] = {key: arr[0:args.n_samples, ...] for key, arr in dataset[split].items()}
 
-        dataset = data_utils.make_supercell(dataset, args.a, args.b, args.c)
-
+    #    dataset = data_utils.make_supercell(dataset, args.a, args.b, args.c)
+    dataset = data_utils.download_dataset('./')
     displacement_fn, _ = space.periodic_general(1.0, fractional_coordinates=True)
 
     # We estimate the maximum number of edges and triplets and also initialize
     # a sufficiently big neighbor list.
-    with jax.default_device(jax.devices("cpu")[0]):
-        max_neighbor, max_edges, max_triplets, nbrs_init = data_utils.estimate_edge_and_triplet_count(
-            dataset, displacement_fn, r_cutoff=config["model"]["r_cutoff"], capacity_multiplier=1.25
-        )
+    # with jax.default_device(jax.devices("cpu")[0]):
+    max_neighbor, max_edges, max_triplets, nbrs_init = data_utils.estimate_edge_and_triplet_count(
+        dataset, displacement_fn, r_cutoff=config["model"]["r_cutoff"], capacity_multiplier=1.25
+    )
 
     print(f"Estimated: "
           f"\tMax. neighbors: {max_neighbor.max()},"
@@ -87,6 +87,14 @@ def main():
     energy_params = tree_util.tree_map(
         jnp.asarray, energy_params
     )
+
+    print(tree_util.tree_structure(init_params))
+    print(tree_util.tree_structure(energy_params))
+
+    for key in init_params.keys():
+        assert key in energy_params.keys(), (
+            f"Key {key} not contained in the loaded parameters."
+        )
 
     # Compute a new batch size
     batch_size = max([
