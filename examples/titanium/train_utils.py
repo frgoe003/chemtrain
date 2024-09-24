@@ -117,7 +117,7 @@ def define_model(config, dataset, nbrs_init, max_edges, max_triplets):
                 **default_kwargs,
             )
 
-            # Convert the units into angstrom
+            # Convert the length units into angstrom
             box *= 10.
 
             # Create a neighbor list with maximum capacity first

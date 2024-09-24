@@ -28,10 +28,10 @@ class DenseNeighborGraph:
         return DenseNeighborGraph(idx, species)
 
 
-class NeighborList(NamedTuple, metaclass=abc.ABCMeta):
+class NeighborList(NamedTuple):
 
-    @abc.abstractmethod
     @staticmethod
+    @abc.abstractmethod
     def create_symbolic_input_format(max_atoms, scope):
         """Creates a symbolic representation of the graph.
 
@@ -60,7 +60,7 @@ class SimpleSparseNeighborList(NamedTuple):
     @staticmethod
     def create_symbolic_input_format(max_atoms, scope):
         # We do not need
-        max_neighbors = export.symbolic_shape("graph_max_neighbors", scope=scope)
+        max_neighbors, = export.symbolic_shape("graph_max_neighbors", scope=scope)
 
         senders = jax.ShapeDtypeStruct((max_neighbors,), jnp.int32)
         receivers = jax.ShapeDtypeStruct((max_neighbors,), jnp.int32)
@@ -81,12 +81,13 @@ class Exporter(metaclass=abc.ABCMeta):
     graph_type: NeighborList = SimpleSparseNeighborList
 
     @abc.abstractmethod
-    def energy_fn(self, position, graph):
+    def energy_fn(self, position, species, graph):
         """Computes the energy for positions and a graph representation.
 
         Args:
             position: (N, dim) Array of particle positions, including ghost
                 atoms that are not within the local domain.
+            species: (N) Array of atoms species.
             graph: Graph representation of the neighborhood around atoms.
 
         Returns:
@@ -95,9 +96,12 @@ class Exporter(metaclass=abc.ABCMeta):
         """
         pass
 
-    def _energy_fn(self, position, graph, ghost_mask):
+    def _energy_fn(self, position, species, ghost_mask, *graph_args):
         # TODO: Maybe do some preprocessing
-        per_atom_energies = self.energy_fn(position, graph)
+        print(f"Params are {self.energy_params}")
+
+        graph = self.graph_type.create_from_args(position, species, *graph_args)
+        per_atom_energies = self.energy_fn(position, species, graph)
         return jnp.sum(per_atom_energies), jnp.sum(per_atom_energies * ghost_mask)
 
     def export(self):
@@ -110,20 +114,26 @@ class Exporter(metaclass=abc.ABCMeta):
         # TODO: For different types of graphs, we need different input arguments.
         #       for now, we just use the neighbor idx as before
         scope = export.SymbolicScope()
-        n_atoms = export.symbolic_shape("n_atoms", scope=scope)
+        n_atoms, = export.symbolic_shape("n_atoms", scope=scope)
 
         position_def = jax.ShapeDtypeStruct((n_atoms, 3), jnp.float32)
         ghost_mask_def = jax.ShapeDtypeStruct((n_atoms,), jnp.bool)
         species_def = jax.ShapeDtypeStruct((n_atoms,), jnp.int32)
         graph_def = self.graph_type.create_symbolic_input_format(n_atoms, scope)
 
+        print(f"Shapes defs are: \n"
+              f"\tpositions: {position_def}\n"
+              f"\tghost_mask: {ghost_mask_def}\n"
+              f"\tspecies: {species_def}\n"
+              f"\tgraph_def: {graph_def}")
+
         exp: export.Exported = export.export(
-            jax.jit(force_and_energy_fn), platforms=["cpu", "CUDA"]
-        )(position_def, species_def, *graph_def, ghost_mask_def)
+            jax.jit(force_and_energy_fn), platforms="CUDA"
+        )(position_def, species_def, ghost_mask_def, *graph_def)
 
         mlir_str = "\n".join([
             line for line in exp.mlir_module().splitlines()
-            if not line.lstrp().startswith("#")
+            if not line.lstrip().startswith("#")
         ])
 
         return mlir_str

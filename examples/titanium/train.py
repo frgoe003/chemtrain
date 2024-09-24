@@ -67,13 +67,13 @@ def get_default_config():
             edge_multiplier=1.15,
             model_kwargs=OrderedDict(
                 max_ell=3,
-                n_irreps=128,
+                n_irreps=64,
                 irreps="0o + 1o + 1e + 2e + 2o + 3o + 3e",
-                mlp_n_hidden=1024,
+                mlp_n_hidden=64,
                 mlp_n_layers=3,
                 n_radial_basis=8,
                 num_layer=3,
-                p=6,
+                p=48,
             ),
             no_shift=True
         ),
@@ -86,8 +86,8 @@ def get_default_config():
         ),
         gammas=OrderedDict(
             virial=4e-6,
-            U=1e-6,
-            F=1e-2,
+            U=1e-5,
+            F=1e-0,
         )
     )
 
