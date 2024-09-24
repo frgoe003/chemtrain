@@ -12,24 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//jaxlib:jax.bzl",
-    "py_library_providing_imports_info",
-    "pybind_extension",
-    "pytype_library"
-)
-load("@rules_python//python:defs.bzl", "py_binary")
-
-py_runtime(
-    name = "my_py_runtime",
-    interpreter_path = "/usr/bin/python3",
-    python_version = "PY3",
-)
-
 cc_binary(
-    name = "libmain.so",
+    name = "libconnector.so",
     srcs = [
-        "main.cpp",
-        "main.h",
+        "libconnector.cpp",
+        "libconnector.h",
         ],
     tags = ["manual"],
     deps = [
@@ -60,34 +47,28 @@ cc_binary(
     linkshared=True
 )
 
-alias(
-    name = "mlir_to_hlo_alias",
-    actual = "@xla//xla/pjrt:mlir_to_hlo",
-    visibility = ["//visibility:public"],  # This alias is publicly accessible
-)
-
 
 cc_library(
-    name = "compile",
-    srcs = ["compile.cpp",],
-    hdrs = ["compile.h"],
+    name = "graph_builder",
+    srcs = ["graph_builder.cpp"],
+    hdrs = ["graph_builder.h"],
+    deps = [
+        "@com_google_absl//absl/types:span",
+        "@xla//xla:literal_util",
+    ]
+)
+
+cc_library(
+    name = "compiler",
+    srcs = ["compiler.cpp",],
+    hdrs = ["compiler.h"],
     deps = [
         ":xla_call_module_loader",
-        "@xla//xla/client:xla_computation",
-        "@xla//xla/service:hlo_parser",
-        "@xla//xla/mlir_hlo:stablehlo_extension_passes",
-        ":mlir_to_hlo_alias",
-        "@xla//third_party/python_runtime:headers",
-        "@xla//xla/mlir_hlo:hlo_dialect_registration",
-        "@xla//xla/mlir_hlo:mhlo_passes",
-        "@tsl//tsl/platform:platform_port",
-        "@tsl//tsl/platform:logging",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:BytecodeWriter",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:FuncExtensions",
-        # "@llvm-project//mlir:Function",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:MLProgramDialect",
         "@llvm-project//mlir:Parser",
@@ -102,7 +83,13 @@ cc_library(
         "@stablehlo//:stablehlo_passes",
         "@stablehlo//:stablehlo_serialization",
         "@stablehlo//:version",
-        "@pybind11",
+        "@tsl//tsl/platform:logging",
+        "@tsl//tsl/platform:platform_port",
+        "@xla//xla/client:xla_computation",
+        "@xla//xla/mlir_hlo:hlo_dialect_registration",
+        "@xla//xla/mlir_hlo:mhlo_passes",
+        "@xla//xla/mlir_hlo:stablehlo_extension_passes",
+        "@xla//xla/service:hlo_parser",
     ],
     linkopts = ["-lpython3.11"],  # Adjust the version as necessary
 )

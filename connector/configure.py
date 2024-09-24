@@ -499,7 +499,8 @@ def main():
     bazelrc_path = _XLA_SRC_ROOT / _XLA_BAZELRC_NAME
     bazelrc_contents = (
         "build --action_env=BAZEL_CXXOPTS=\"-std=c++17\"\n"
-        "build --action_env"
+        "build --action_env\n"
+        "build --experimental_repo_remote_exec\n"
         "\n".join(bazelrc_lines)
         "\n"
     )

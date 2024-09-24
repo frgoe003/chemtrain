@@ -2,9 +2,8 @@
 // Created by Paul Fuchs on 13.09.24.
 //
 
-#include "pybind11/embed.h"
-
 #include <string>
+
 #include "xla/service/hlo_parser.h"
 #include "xla/client/xla_computation.h"
 
@@ -41,32 +40,40 @@
 #include "stablehlo/dialect/Version.h"
 #include "stablehlo/transforms/Passes.h"
 
+#include "absl/types/span.h"
+
+
 #ifndef COMPILE_H
 #define COMPILE_H
 
-namespace py = pybind11;
 
 namespace jcn {
     class Compiler {
     public:
-        Compiler(std::string py_executable);
+        Compiler(std::string module_path);
         ~Compiler() = default;
 
-        // Takes the python file and compiles the force_fn givent the number of
-        // particles and the maxmimum number of neighbors
-        xla::XlaComputation compile(const int n_atoms, const int max_neighbors, mlir::MLIRContext& context);
+        /**
+        * @brief Prepares the MLIR module for XLA by performing dynamic shape refinement.
+        *
+        * @param n_atoms The number of atoms in the system (including ghost atoms)
+        *     and invalid atoms to be masked out. Determines also the size of
+        *     the species array and the ghost mask.
+        * @param graph_shapes A list of shapes for each graph argument.
+        * @param graph_types A list of types for each graph argument.
+        * @return Returns the compiled XLA computation with refined shapes.
+        */
+        xla::XlaComputation compile(
+            const int n_atoms,
+            absl::Span<absl::Span<int64_t>> graph_shapes,
+            absl::Span<xla::PrimitiveType> graph_types
+        );
 
     private:
-        // py::object force_compiler;
-        std::string bytestring;
-
-        // Keeps the interpreter alive as long as the class exists.
-        py::scoped_interpreter guard{};
+	    mlir::MLIRContext context;
+        std::string mlir_module;
 
     };
-
-    mlir::OwningOpRef<mlir::ModuleOp> ParseMlirModuleString(
-            absl::string_view mlir_module_str, mlir::MLIRContext& context);
 }
 
 
