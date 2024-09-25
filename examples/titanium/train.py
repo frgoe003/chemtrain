@@ -67,9 +67,9 @@ def get_default_config():
             edge_multiplier=1.15,
             model_kwargs=OrderedDict(
                 max_ell=3,
-                n_irreps=64,
+                n_irreps=128,
                 irreps="0o + 1o + 1e + 2e + 2o + 3o + 3e",
-                mlp_n_hidden=64,
+                mlp_n_hidden=128,
                 mlp_n_layers=3,
                 n_radial_basis=8,
                 num_layer=3,
@@ -82,14 +82,16 @@ def get_default_config():
             lr_decay=0.01,
             epochs=args.epochs,
             batch=args.batch,
-            cache=8
+            cache=8,
+            weight_decay=1e-3
         ),
         gammas=OrderedDict(
-            virial=4e-6,
+            virial=4e-5,
             U=1e-5,
             F=1e-0,
         )
     )
+
 
 
 def main():

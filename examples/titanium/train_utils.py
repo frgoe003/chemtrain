@@ -113,12 +113,9 @@ def define_model(config, dataset, nbrs_init, max_edges, max_triplets):
         def haiku_model(pos, neighbor, box=None, **dynamic_kwargs):
             allegro_model = AllegroHaiku(
                 avg_num_neighbors=max_edges / r_init.shape[0],
-                radial_cutoff=config["model"]["r_cutoff"] * 10.,  # In angstrom
+                radial_cutoff=config["model"]["r_cutoff"],  # In nm
                 **default_kwargs,
             )
-
-            # Convert the length units into angstrom
-            box *= 10.
 
             # Create a neighbor list with maximum capacity first
             dense_idx = neighbor.idx
@@ -141,6 +138,7 @@ def define_model(config, dataset, nbrs_init, max_edges, max_triplets):
             displacements = jax.vmap(
                 functools.partial(displacement_fn, box=box)
             )(pos[senders, :], pos[receivers, :])
+            displacements = jnp.where(mask[:, None], displacements, config["model"]["r_cutoff"])
 
             vectors = e3nn_jax.IrrepsArray("1o", displacements)
 
@@ -189,13 +187,29 @@ def init_optimizer(config, dataset):
     ) // config["optimizer"]["batch"]
 
     lr_schedule_fm = optax.exponential_decay(
-        config["optimizer"]["init_lr"], transition_steps, config["optimizer"]["lr_decay"])
+        config["optimizer"]["init_lr"], transition_steps, decay_rate=0.33, end_value=config["optimizer"]["lr_decay"])
     optimizer_fm = optax.chain(
-        optax.scale_by_adam(),
-        optax.scale_by_learning_rate(lr_schedule_fm, flip_sign=True)
+        optax.scale_by_adam(
+            b1=0.5,
+            b2=0.99,
+            eps=1e-8,
+            eps_root=1e-16,
+            nesterov=True,
+        ),
+        optax.scale_by_belief(0.5, 0.995),
+        # optax.transforms.add_decayed_weights(config["optimizer"].get("weight_decay", 1e-2)),
+        optax.scale_by_learning_rate(lr_schedule_fm, flip_sign=True),
+        # optax.add_noise(1e-4, 0.55, 11)
     )
 
     return optimizer_fm
+
+
+def dropout_key_split(trainer: ForceMatching, *args, **kwargs):
+    # Update the dropout key
+    params = trainer.params
+    params["key"] = random.split(params["key"])
+    trainer.params = params
 
 
 def create_out_dir(config):
