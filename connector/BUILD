@@ -20,6 +20,7 @@ cc_binary(
         ],
     tags = ["manual"],
     deps = [
+        ":runner",
         "@com_google_absl//absl/status:statusor",
         "@tsl//tsl/platform:logging",
         "@tsl//tsl/platform:platform_port",
@@ -36,15 +37,41 @@ cc_binary(
         "@xla//xla/service:hlo_proto_cc",
         "@xla//xla/service:hlo_parser",
         "@xla//xla/service:dump",
-        ":compile"
-
-        # "@xla//xla/tools:hlo_module_loader",
     ],
-    # linkopts=['-static'],
     linkopts = [
         "-Wl,--no-undefined",
     ],
     linkshared=True
+)
+
+cc_library(
+    name = "runner",
+    srcs = [
+        "runner.cpp",
+        "runner.h",
+        "libconnector.h",
+        ],
+    deps = [
+        ":compiler",
+        ":graph_builder",
+        ":xla_call_module_loader",
+        "@com_google_absl//absl/status:statusor",
+        "@tsl//tsl/platform:logging",
+        "@tsl//tsl/platform:platform_port",
+        "@xla//xla:literal",
+        "@xla//xla:literal_util",
+        "@xla//xla:shape_util",
+        "@xla//xla:status",
+        "@xla//xla:statusor",
+        "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_c_api_client",
+        "@xla//xla/pjrt:pjrt_executable",
+        "@xla//xla/pjrt:pjrt_stream_executor_client",
+        "@xla//xla/pjrt:tfrt_cpu_pjrt_client",
+        "@xla//xla/service:hlo_proto_cc",
+        "@xla//xla/service:hlo_parser",
+        "@xla//xla/service:dump",
+    ],
 )
 
 

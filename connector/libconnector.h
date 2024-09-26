@@ -2,17 +2,28 @@
 #define main_h
 
 #include <vector>
-#include <memory> // For std::unique_ptr
+#include <memory>
+#include <string>
 
 namespace jcn {
-    void execute();
+
+    struct ConnectorConfig{
+        std::string mlir_module;
+
+
+        std::string neighbor_list_type;
+
+        std::string backend;
+        int device;
+    };
 
     class Connector {
     public:
-        Connector(const int max_neighbors, std::string hlo_filename);
+        Connector(ConnectorConfig config);
         ~Connector();
-        // Function declaration remains the same, but without knowing about XLA types
-        std::vector<std::vector<float>> force(const std::vector<std::vector<float>>& position, const std::vector<std::vector<int>>& neighbors);
+
+        double compute_force(int inum, int gnum, double **x, double** f, int *type, int *ilist,
+            int *numneigh, int **firstneigh);
 
     private:
         class Impl; // Forward declaration of the implementation class

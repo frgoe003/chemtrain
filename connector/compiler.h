@@ -50,7 +50,7 @@
 namespace jcn {
     class Compiler {
     public:
-        Compiler(std::string module_path);
+        Compiler(std::string mlir_module);
         ~Compiler() = default;
 
         /**
@@ -65,8 +65,8 @@ namespace jcn {
         */
         xla::XlaComputation compile(
             const int n_atoms,
-            absl::Span<absl::Span<int64_t>> graph_shapes,
-            absl::Span<xla::PrimitiveType> graph_types
+            std::vector<std::vector<int64_t>> graph_shapes,
+            std::vector<xla::PrimitiveType> graph_types
         );
 
     private:

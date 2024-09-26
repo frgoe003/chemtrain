@@ -30,7 +30,9 @@ namespace jcn {
             reallocate = true;
         }
 
-        // Allocate sender and receiver literals
+        // Allocate sender and receiver literals.
+        // We fill up the arrays with the maximum number of atoms which the
+        // energy model will interpret as padding and mask out.
         xla::Array<int> senders(std::vector<int64_t>{n_edges}, max_atoms);
         xla::Array<int> receivers(std::vector<int64_t>{n_edges}, max_atoms);
 
@@ -38,13 +40,11 @@ namespace jcn {
         int edge_counter = 0;
         for (int i = 0; i < inum; i++) {
             for (int j = 0; j < numneigh[i]; j++) {
-                // Make the edges undirected but add them only once.
-                // The ghost atom indices are larger than the local atom indices
-                if (i < j) {
-                    senders(edge_counter) = ilist[i];
-                    receivers(edge_counter) = firstneigh[i][j];
-                    edge_counter++;
-                }
+                // Add directed edges originating from the local atoms.
+                // Ghost atoms can be receivers, but wont be senders
+                senders(edge_counter) = ilist[i];
+                receivers(edge_counter) = firstneigh[i][j];
+                edge_counter++;
             }
         }
 

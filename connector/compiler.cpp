@@ -33,22 +33,7 @@
 
 namespace jcn {
 
-    Compiler::Compiler(std::string module_path) {
-
-        std::ifstream inputFile(module_path);
-
-        if (!inputFile.is_open()) {
-            throw std::runtime_error("Error: Could not open the file");
-        }
-
-        // Read the entire file into a string using stringstream
-        std::stringstream buffer;
-        buffer << inputFile.rdbuf();  // Load the file into buffer
-
-        // Convert buffer to string and print
-        std::string mlir_module = buffer.str();
-
-        inputFile.close();
+    Compiler::Compiler(std::string mlir_module) : mlir_module(mlir_module) {
 
         // We add some dialects to interpret the MLIR module from JAX
 
@@ -69,8 +54,8 @@ namespace jcn {
 
     xla::XlaComputation Compiler::compile(
         const int n_atoms,
-        absl::Span<absl::Span<int64_t>> graph_shapes,
-        absl::Span<xla::PrimitiveType> graph_types
+        std::vector<std::vector<int64_t>> graph_shapes,
+        std::vector<xla::PrimitiveType> graph_types
         ) {
 
         // For shape refinement, we have to provide the shapes of the input tensors
