@@ -27,6 +27,8 @@
 
 namespace jcn {
 
+    Connector::~Connector() = default;
+
     class Connector::Impl {
     public:
         Impl(ConnectorConfig config) : runner(config) {};

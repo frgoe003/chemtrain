@@ -5,6 +5,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <chrono>
 #include <memory>  // For std::unique_ptr
 #include <dlfcn.h>
 
@@ -62,8 +63,9 @@ namespace jcn {
         // buffers
         bool reallocate = false;
 
+        auto start = std::chrono::high_resolution_clock::now();
         if ((inum + gnum) > max_atoms) {
-            max_atoms = atom_multiplier * (inum + gnum);
+            max_atoms = static_cast<int>(std::ceil(atom_multiplier * (inum + gnum)));
             reallocate = true;
         }
 
@@ -84,16 +86,28 @@ namespace jcn {
             species(i) = type[i] - 1;
         }
 
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> duration = end - start;
+        std::cout << "Time taken for atom array creation: " << duration.count() << " seconds" << std::endl;
+
+        start = std::chrono::high_resolution_clock::now();
+
         // Create literals
         std::unique_ptr<xla::Literal> positions_literal = std::make_unique<xla::Literal>(xla::LiteralUtil::CreateFromArray(positions));
         std::unique_ptr<xla::Literal> species_literal = std::make_unique<xla::Literal>(xla::LiteralUtil::CreateFromArray(species));
         std::unique_ptr<xla::Literal> ghost_mask_literal = std::make_unique<xla::Literal>(xla::LiteralUtil::CreateFromArray(ghost_mask));
+
+        end = std::chrono::high_resolution_clock::now();
+        duration = end - start;
+        std::cout << "Time taken for atom literal creation: " << duration.count() << " seconds" << std::endl;
 
         return Atoms{max_atoms, reallocate, std::move(positions_literal), std::move(species_literal), std::move(ghost_mask_literal)};
 
     }
 
     double AtomBuilder::evaluate_domain(int inum, double **f, std::shared_ptr<xla::Literal> forces, std::shared_ptr<xla::Literal> potential) {
+        auto start = std::chrono::high_resolution_clock::now();
+
         absl::Span<float> force_data = forces->data<float>();
         absl::Span<float> potential_data = potential->data<float>();
 
@@ -105,20 +119,27 @@ namespace jcn {
             }
         }
 
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> duration = end - start;
+        std::cout << "Time taken for force backtransfer: " << duration.count() << " seconds" << std::endl;
+
         return (double) potential_data[0];
 
     }
 
     Runner::Runner(ConnectorConfig config) :
-        neighbor_list(1.5, 1.5), // Hard-coded the multipliers for now
+        neighbor_list(1.5), // Hard-coded the multipliers for now
         atom_builder(1.5),
         compiler(config.mlir_module)
     {
 
+        // TODO: Maybe move this stuff to some better place
+        initialize();
+
         // Initialize the possible backends in the libconnector file
         absl::StatusOr<std::unique_ptr<xla::PjRtClient>> client_or_status = xla::GetCApiClient(config.backend);
         if (!client_or_status.ok()) {
-            std::cerr << "Cannot create client: " << client_or_status.status().ToString() << std::endl;
+            throw std::runtime_error("Cannot create client: " + client_or_status.status().ToString());
             client = xla::GetTfrtCpuClient(/*asynchronous=*/true).value();
         } else {
             client = std::move(client_or_status).value();
@@ -153,19 +174,28 @@ namespace jcn {
                 executable = std::move(executable_or_status).value();
             }
 
+            // TODO: Seems to be necessary somehow. Find out what it does
+            std::unique_ptr<xla::Literal> platform_index = std::make_unique<xla::Literal>(
+                xla::LiteralUtil::CreateR0<int32_t>(0)
+            );
+
             // Now we have the executable, we have to move the data
-            std::vector<std::unique_ptr<xla::Literal>> literals;
-            literals.push_back(std::move(atoms.positions));
-            literals.push_back(std::move(atoms.species));
-            literals.push_back(std::move(atoms.ghost_mask));
+            std::vector<xla::Literal*> literals;
+            // literals.push_back(std::move(platform_index));
+            literals.push_back(atoms.positions.get());
+            literals.push_back(atoms.species.get());
+            literals.push_back(atoms.ghost_mask.get());
 
             for (int i = 0; i < neighbors.graph_values.size(); i++) {
                 literals.push_back(std::move(neighbors.graph_values[i]));
             }
 
+            auto start = std::chrono::high_resolution_clock::now();
+
             // Now we have to create the buffers, i.e., copy the data onto
             // the device
-            std::vector<xla::PjRtBuffer*> buffers;
+            std::vector<std::unique_ptr<xla::PjRtBuffer>> buffers;
+            std::vector<xla::PjRtBuffer*> buffer_ptrs;
             for (int i = 0; i < literals.size(); i++) {
                 // TODO: Make the addressable device a parameter
                 absl::StatusOr<std::unique_ptr<xla::PjRtBuffer>> input_buffer = client->BufferFromHostBuffer(
@@ -182,12 +212,29 @@ namespace jcn {
                     throw std::runtime_error("Failed to create buffer: " + input_buffer.status().ToString());
                 }
 
-                buffers.push_back(std::move(input_buffer).value().get());
+                // There must be a better way than storing twice a reference
+                // to the buffers
+                buffer_ptrs.push_back(input_buffer.value().get());
+                buffers.push_back(std::move(input_buffer).value());
             }
-            std::vector<std::vector<xla::PjRtBuffer*>> arg_handles = {buffers};
+
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> duration = end - start;
+            std::cout << "Time taken for buffer creation: " << duration.count() << " seconds" << std::endl;
+
+
+            std::vector<std::vector<xla::PjRtBuffer*>> arg_handles = {buffer_ptrs};
+
+            // Check if arg_handles is correctly populated
+            if (arg_handles.empty() || arg_handles[0].empty()) {
+                throw std::runtime_error("arg_handles is empty or not properly populated");
+            }
 
             // No idea what to specify here...
             xla::ExecuteOptions execute_options;
+
+            start = std::chrono::high_resolution_clock::now();
+
 
             absl::StatusOr<std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>> results;
             results = executable->Execute(
@@ -195,9 +242,14 @@ namespace jcn {
                 execute_options
             );
 
+            end = std::chrono::high_resolution_clock::now();
+            duration = end - start;
+            std::cout << "Time taken for computation: " << duration.count() << " seconds" << std::endl;
+
             if (!results.ok()) {
                 throw std::runtime_error("Failed to execute: " + results.status().ToString());
             }
+
 
             // Now we have to copy the results back to the host
             std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>> results_buffers = std::move(results).value();
@@ -207,6 +259,7 @@ namespace jcn {
             if (!force_literal.ok() || !energy_literal.ok()) {
                 throw std::runtime_error("Failed to copy results: " + force_literal.status().ToString() + " " + energy_literal.status().ToString());
             }
+
 
             // Write back the results
             double potential = atom_builder.evaluate_domain(

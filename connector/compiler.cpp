@@ -59,6 +59,7 @@ namespace jcn {
         ) {
 
         // For shape refinement, we have to provide the shapes of the input tensors
+        xla::Shape platform_index = xla::ShapeUtil::MakeShape(xla::S32, absl::Span<const int64_t>{});
         xla::Shape position_shape = xla::ShapeUtil::MakeShape(xla::F32, absl::Span<const int64_t>{n_atoms, 3});
         xla::Shape species_shape = xla::ShapeUtil::MakeShape(xla::S32, absl::Span<const int64_t>{n_atoms});
         xla::Shape ghost_mask_shape = xla::ShapeUtil::MakeShape(xla::PRED, absl::Span<const int64_t>{n_atoms});
@@ -75,9 +76,17 @@ namespace jcn {
             input_args++;
         }
 
+        for (const auto& shape : inputShapes) {
+            std::cout << "Shape: " << shape.ToString() << std::endl;
+            std::cout << "Element Type: " << xla::PrimitiveType_Name(shape.element_type()) << std::endl;
+        }
+
+        std::cout << "Input arguments: " << input_args << std::endl;
+
         std::cout << "Start loading the module" << std::endl;
         std::vector<std::string> disabled_checks = {};
         std::vector<std::string> platforms = {"cuda"};
+
         std::unique_ptr<XlaCallModuleLoader> module_loader = XlaCallModuleLoader::Create(
             &context, 9, mlir_module, disabled_checks, platforms, input_args, false).value();
 

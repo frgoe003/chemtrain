@@ -11,6 +11,9 @@
    See the README file in the top-level LAMMPS directory.
 ------------------------------------------------------------------------- */
 #include "jax_connect.h"
+
+#include "../../connector/libconnector.h"
+
 #include "atom.h"
 #include "comm.h"
 #include "error.h"
@@ -23,6 +26,8 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <fstream>
+#include <chrono>
 
 using namespace LAMMPS_NS;
 
@@ -68,93 +73,23 @@ void JaxConnect::compute(int eflag, int vflag)
 
   ev_init(eflag, vflag);
 
-  std::vector<std::vector<int>> neighbors;
-  std::vector<std::vector<float>> positions;
+  auto start = std::chrono::high_resolution_clock::now();
+  std::cout << "Neighborlist creation history: " << neighbor->ago << std::endl;
 
-  // std::cout << "Initialize neighbor list and collect positions" << std::endl;
+  double potential = connector->compute_force(
+      atom->nlocal, atom->nghost, atom->x, atom->f, atom->type, list->ilist, list->numneigh,
+      list->firstneigh
+  );
 
-  // Create an empty list of neighbors and positions
-  for (int i = 0; i < atom->nlocal; i++) {
-    std::vector<int> n;
-    std::vector<float> r;
-    neighbors.push_back(n);
-    positions.push_back(r);
+  // Pass the evaluated potential energy to LAMMPS
+  if (eflag) {
+    eng_vdwl = potential;
   }
 
-  // The tag of the atom is the actual index.
-  // Therefore, we have to collect the atom positions in a separate loop.
-  // Additionally, we have to correct that the tag is 1-based in lammps.
+  auto end = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double> duration = end - start;
+  std::cout << "Computed potential " + std::to_string(potential) << " in " << duration.count() << " seconds with JAX connector." << std::endl;
 
-  for (int ii = 0; ii < atom->nlocal; ii++){
-    int idx = atom->tag[ii] - 1;
-    auto pos = atom->x[ii];
-
-    for (int j = 0; j < 3; j++) {
-      positions[idx].push_back((float) pos[j]);
-    }
-
-  }
-
-  // Enter the neighbors into the JAX, M.D. neighbor list format
-  for (int ii = 0; ii < list->inum; ii++) {
-    int i = list->ilist[ii];
-
-    for (int jj = 0; jj < list->numneigh[i]; jj++) {
-      int j = list->firstneigh[i][jj];
-
-      // We need to push the tag to the neighbor list
-      int idx = atom->tag[i] - 1;
-      int jdx = atom->tag[j] - 1;
-
-      neighbors[idx].push_back(jdx);
-    }
-  }
-
-//  // For debugging: Print neighbor list and positions
-//  std::cout << "Neighbors: " << std::endl;
-//  for (int ii = 0; ii < atom->nlocal; ii++) {
-//    std::cout << "[" << ii << "]" << ": ";
-//    for (int jj = 0; jj < neighbors[ii].size(); jj++) {
-//      std::cout << neighbors[ii][jj] << " ";
-//    }
-//    std::cout << std::endl;
-//  }
-//
-//  std::cout << "Positions: " << std::endl;
-//  for (int ii = 0; ii < atom->nlocal; ii++) {
-//    std::cout << "[" << ii << "]" << ": ";
-//    for (int jj = 0; jj < 3; jj++) {
-//      std::cout << positions[ii][jj] << " ";
-//    }
-//    std::cout << std::endl;
-//  }
-
-  // std::cout << "Evaluate using JAX connector" << std::endl;
-
-  // Compute the forces using the JAX connector
-  std::vector<std::vector<float>> forces = connector->force(positions, neighbors);
-
-//  std::cout << "Forces: " << std::endl;
-//  for (int ii = 0; ii < atom->nlocal; ii++) {
-//    std::cout << "[" << ii << "]" << ": ";
-//    for (int jj = 0; jj < 3; jj++) {
-//      std::cout << forces[ii][jj] << " ";
-//    }
-//    std::cout << std::endl;
-//  }
-
-  // Assign the force back to lammps. Again, we have to consider that the order
-  // of atoms is not preserved.
-
-  for (int ii = 0; ii < atom->nlocal; ii++) {
-  	int idx = atom->tag[ii] - 1;
-
-    for (int jj = 0; jj < 3; jj++) {
-    	atom->f[ii][jj] = (double) forces[idx][jj];
-	}
-
-  // std::cout << "Write force on atom " << idx << ": " << (double) forces[ii][0] << ", " << (double) forces[ii][1] << ", " << (double) forces[ii][2] << std::endl;
-  }
 
 //  int i, j, ii, jj, inum, jnum, itype, jtype;
 //  double xtmp, ytmp, ztmp, delx, dely, delz, evdwl, fpair;
@@ -293,7 +228,18 @@ void JaxConnect::coeff(int narg, char **arg)
 
     std::cout << "Initialize JAX connector on module " << hlo_filename << " with " << max_neighbors << " neighbors" << std::endl;
 
-    connector = std::make_unique<jcn::Connector>(max_neighbors, hlo_filename);
+    std::ifstream file(hlo_filename);
+    if (!file.is_open()) {
+        throw std::runtime_error("Could not open file: " + hlo_filename);
+    }
+
+    std::string mlir_module((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+
+    std::cout << "Read MLIR module with " << mlir_module.size() << " bytes" << std::endl;
+
+    jcn::ConnectorConfig config{mlir_module, "NONE", "CUDA", 0};
+
+    connector = std::make_unique<jcn::Connector>(config);
 
 //  if (narg < 5 || narg > 6) error->all(FLERR, "Incorrect args for pair coefficients");
 //

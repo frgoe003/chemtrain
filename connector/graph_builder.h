@@ -19,13 +19,13 @@ namespace jcn {
         bool reallocate;
 
         // The actual values of the
-        std::vector<std::unique_ptr<xla::Literal>> graph_values;
+        std::vector<xla::Literal*> graph_values;
     };
 
     class SimpleSparseNeighborList {
 
         public:
-            SimpleSparseNeighborList(float atom_multiplier, float edge_multiplier);
+            SimpleSparseNeighborList(float edge_multiplier);
             ~SimpleSparseNeighborList() = default;
 
             // TODO: Documentation
@@ -37,10 +37,12 @@ namespace jcn {
                 int max_atoms, int inum, int *ilist, int *numneigh, int **firstneigh);
 
         private:
-            float atom_multiplier;
             float edge_multiplier;
 
-            size_t n_edges;
+            std::unique_ptr<xla::Literal> senders_literal;
+            std::unique_ptr<xla::Literal> receivers_literal;
+
+            int n_edges = 0;
 
     };
 
