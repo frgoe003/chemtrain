@@ -39,20 +39,23 @@ namespace jcn {
         std::cout << "Try to load GPU Plugin" << std::endl;
 
         // Load the CUDA plugin from JAX
+        // TODO: Currently only finds devices if the pre-built plugin is used.
         absl::StatusOr<const PJRT_Api*> status_or_api = pjrt::LoadPjrtPlugin(
-                "CUDA",
-                "/venv/lib/python3.11/site-packages/jax_plugins/xla_cuda12/xla_cuda_plugin.so");
+            "cuda",
+            "/home/paul/miniconda3/envs/chemtrain/lib/python3.11/site-packages/jax_plugins/xla_cuda12/xla_cuda_plugin.so");
 
         if (!status_or_api.ok()) {
             LOG(INFO) << "Failed to load CUDA plugin: " << status_or_api.status();
             return;
         }
 
-        if (!pjrt::IsPjrtPluginInitialized("CUDA").value()) {
+        std::cout << "Try to initiliaze plugin" << std::endl;
+        if (!pjrt::IsPjrtPluginInitialized("cuda").value()) {
             std::cerr << "Initialize CUDA plugin" << std::endl;
 
-            pjrt::InitializePjrtPlugin("CUDA");
+            pjrt::InitializePjrtPlugin("cuda");
         }
+        std::cout << "Finished initialization" << std::endl;
 
 
     }
@@ -137,6 +140,7 @@ namespace jcn {
         initialize();
 
         // Initialize the possible backends in the libconnector file
+        std::cout << "Try to create client" << std::endl;
         absl::StatusOr<std::unique_ptr<xla::PjRtClient>> client_or_status = xla::GetCApiClient(config.backend);
         if (!client_or_status.ok()) {
             throw std::runtime_error("Cannot create client: " + client_or_status.status().ToString());

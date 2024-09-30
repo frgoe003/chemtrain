@@ -12,7 +12,7 @@
 ------------------------------------------------------------------------- */
 #include "jax_connect.h"
 
-#include "../../connector/libconnector.h"
+#include "libconnector.h"
 
 #include "atom.h"
 #include "comm.h"
@@ -237,7 +237,7 @@ void JaxConnect::coeff(int narg, char **arg)
 
     std::cout << "Read MLIR module with " << mlir_module.size() << " bytes" << std::endl;
 
-    jcn::ConnectorConfig config{mlir_module, "NONE", "CUDA", 0};
+    jcn::ConnectorConfig config{mlir_module, "NONE", "cuda", 0};
 
     connector = std::make_unique<jcn::Connector>(config);
 

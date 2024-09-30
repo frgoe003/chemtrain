@@ -7,8 +7,6 @@
 
 #include "jax_connect.h"
 
-#include "../../connector/main.h"
-
 using namespace LAMMPS_NS;
 
 static Pair *jaxNNCreator(LAMMPS *lmp)

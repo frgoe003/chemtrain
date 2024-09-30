@@ -15,7 +15,7 @@
 #define LMP_PAIR_MORSE2_H
 
 #include "pair.h"
-#include "../../connector/libconnector.h"
+#include "libconnector.h"
 
 namespace LAMMPS_NS {
 

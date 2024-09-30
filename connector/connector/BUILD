@@ -118,7 +118,6 @@ cc_library(
         "@xla//xla/mlir_hlo:stablehlo_extension_passes",
         "@xla//xla/service:hlo_parser",
     ],
-    linkopts = ["-lpython3.11"],  # Adjust the version as necessary
 )
 
 cc_library(

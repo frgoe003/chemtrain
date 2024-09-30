@@ -61,19 +61,26 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -restrict")
 endif()
 
-set(CMAKE_MODULE_PATH ../plugin)
+set(SOURCE_DIR ${CMAKE_SOURCE_DIR})
+set(INCLUDE_DIR ${CMAKE_SOURCE_DIR}/../connector)
+set(LIB_DIR ${CMAKE_SOURCE_DIR}/../lib)
+
 include(CheckIncludeFileCXX)
 if(NOT LAMMPS_DIR)
-  include(../cmake/LAMMPSInterfaceCXX)
+  include(${SOURCE_DIR}/LAMMPSInterfaceCXX)
 endif()
 
 ##########################
 # building the plugins
 
-set(SOURCE_DIR ${CMAKE_SOURCE_DIR}/../plugin)
-add_library(jaxconnector MODULE ${SOURCE_DIR}/jaxplugin.cpp ${SOURCE_DIR}/jax_connect.cpp ${SOURCE_DIR}/../../connector/libconnector.h)
-target_link_libraries(jaxconnector PRIVATE lammps ${SOURCE_DIR}/../../connector/libconnector.so)
-
+include_directories(${INCLUDE_DIR})
+add_library(jaxconnector MODULE
+        ${SOURCE_DIR}/jaxplugin.cpp
+        ${SOURCE_DIR}/jax_connect.cpp
+        ${INCLUDE_DIR}/libconnector.h)
+target_link_libraries(
+        jaxconnector PRIVATE lammps ${LIB_DIR}/libconnector.so
+)
 set_target_properties(jaxconnector PROPERTIES PREFIX "" SUFFIX ".so" LINKER_LANGUAGE CXX CXX_STANDARD 17)
 
 

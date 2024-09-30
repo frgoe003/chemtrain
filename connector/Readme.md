@@ -6,6 +6,8 @@ evaluate the model in C++ via a shared library.
 
 ## Building Connector
 
+### Prepare Docker Container (Optional)
+
 It is best to use an official docker container for building, e.g., from TensorFlow.
 We use the TensorFlow docker container and install some additional dependencies.
 To build the container, use:
@@ -22,18 +24,17 @@ To download and run the container:
 ```bash
 docker run --name xla --gpus all -it -w /connector/connector -it -d --rm -v $PWD:/connector -e HOST_PERMS="$(id -u):$(id -g)" jaxconnector bash
 ```
-To compile the binary for testing:
 
-```bash
-docker exec xla ./configure.py --backend=CUDA --host_compiler=CLANG
-docker exec xla bazel build -c opt --spawn_strategy=sandboxed --experimental_repo_remote_exec --cxxopt='-std=c++17' --host_cxxopt='-std=c++17' :libmain.so
-```
+### Build Connector
 
-To test the compiled binary, run:
+The connector relies on the PJRT plugin to for GPU support.
+To build the plugin for an NVIDIA gpu:
 
-```bash
-docker exec xla ./bazel-bin/libmain.so
-```
+
+Next, the connector can be built using the following command:
+
+
+
 
 ## Building Lammps Plugin
 
