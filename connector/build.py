@@ -238,7 +238,7 @@ def write_bazelrc(*, remote_build,
                   clang_major_version, enable_cuda, enable_nccl, enable_rocm,
                   python_version):
 
-  with open("../.jax_configure.bazelrc", "w") as f:
+  with open("config.bazelrc", "w") as f:
     if not remote_build:
       f.write(textwrap.dedent("""\
         build --strategy=Genrule=standalone
@@ -443,7 +443,6 @@ def main():
       action="append", default=[
           "--experimental_repo_remote_exec",
           '--cxxopt=-std=c++17',
-          '--cxxopt=-Wno-error=deleted-function',
           '--host_cxxopt=-std=c++17',
       ],
       help="Additional options to pass to the main Bazel command to be "
@@ -579,8 +578,6 @@ def main():
       raise ValueError("Unsupported GPU plugin backend. Choose either 'cuda' or 'rocm'.")
     print(" ".join(build_pjrt_plugin_command))
     shell(build_pjrt_plugin_command)
-
-  shell([bazel_path] + args.bazel_startup_options + ["shutdown"])
 
 
 if __name__ == "__main__":
