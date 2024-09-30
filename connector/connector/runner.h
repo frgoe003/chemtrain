@@ -41,9 +41,9 @@ namespace jcn {
         bool reallocate;
 
         // These are pointers to the actual data
-        std::unique_ptr<xla::Literal> positions;
-        std::unique_ptr<xla::Literal> species;
-        std::unique_ptr<xla::Literal> ghost_mask;
+        xla::Literal* positions;
+        xla::Literal* species;
+        xla::Literal* ghost_mask;
 
     };
 
@@ -60,6 +60,10 @@ namespace jcn {
 
     private:
       int max_atoms;
+
+      std::unique_ptr<xla::Literal> position_literal;
+      std::unique_ptr<xla::Literal> species_literal;
+      std::unique_ptr<xla::Literal> ghosts_literal;
 
       float atom_multiplier;
 

@@ -72,22 +72,40 @@ namespace jcn {
             reallocate = true;
         }
 
-        xla::Array<float> positions(std::vector<int64_t>{max_atoms, 3}, 0);
-        xla::Array<int> species(std::vector<int64_t>{max_atoms}, 0);
-        xla::Array<bool> ghost_mask(std::vector<int64_t>{max_atoms}, 0);
+        // Only reallocate new memory if required
+        if (!position_literal ||reallocate) {
+            xla::Shape position_shape = xla::ShapeUtil::MakeShape(
+               xla::F32, absl::Span<const int64_t>{max_atoms, 3});
+            xla::Shape species_shape = xla::ShapeUtil::MakeShape(
+               xla::S32, absl::Span<const int64_t>{max_atoms,});
+            xla::Shape ghost_shape = xla::ShapeUtil::MakeShape(
+               xla::PRED, absl::Span<const int64_t>{max_atoms,});
+
+            position_literal = std::make_unique<xla::Literal>(xla::Literal::CreateFromShape(position_shape));
+            species_literal = std::make_unique<xla::Literal>(xla::Literal::CreateFromShape(species_shape));
+            ghosts_literal = std::make_unique<xla::Literal>(xla::Literal::CreateFromShape(ghost_shape));
+
+        }
+
+        float *position_data = position_literal->data<float>().data();
+        int *species_data = species_literal->data<int>().data();
+        bool *ghosts_data = ghosts_literal->data<bool>().data();
 
         // Collect data for all local atoms and ghost atoms
         for (int i = 0; i < inum + gnum; i++) {
             for (int j = 0; j < 3; j++) {
-                positions(i, j) = x[i][j];
+                position_data[3 * i + j] = static_cast<float>(x[i][j]);
             }
-            // If atom is local atom, mark it in the mask
-            if (i < inum) {
-                ghost_mask(i) = true;
-            }
-            // Read out the species values and correct for 0-based type definition
-            species(i) = type[i] - 1;
         }
+
+        // Set ghost mask for local atoms
+        std::fill(ghosts_data, ghosts_data + inum, true);
+        std::fill(ghosts_data + inum, ghosts_data + max_atoms, false);
+
+        // Adjust species values
+        std::transform(species_data, species_data + inum + gnum, species_data, [](int t) { return t - 1; });
+        std::fill(species_data + inum + gnum, species_data + max_atoms, 0);
+
 
         auto end = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> duration = end - start;
@@ -95,16 +113,11 @@ namespace jcn {
 
         start = std::chrono::high_resolution_clock::now();
 
-        // Create literals
-        std::unique_ptr<xla::Literal> positions_literal = std::make_unique<xla::Literal>(xla::LiteralUtil::CreateFromArray(positions));
-        std::unique_ptr<xla::Literal> species_literal = std::make_unique<xla::Literal>(xla::LiteralUtil::CreateFromArray(species));
-        std::unique_ptr<xla::Literal> ghost_mask_literal = std::make_unique<xla::Literal>(xla::LiteralUtil::CreateFromArray(ghost_mask));
-
         end = std::chrono::high_resolution_clock::now();
         duration = end - start;
         std::cout << "Time taken for atom literal creation: " << duration.count() << " seconds" << std::endl;
 
-        return Atoms{max_atoms, reallocate, std::move(positions_literal), std::move(species_literal), std::move(ghost_mask_literal)};
+        return Atoms{max_atoms, reallocate, position_literal.get(), species_literal.get(), ghosts_literal.get()};
 
     }
 
@@ -186,9 +199,9 @@ namespace jcn {
             // Now we have the executable, we have to move the data
             std::vector<xla::Literal*> literals;
             // literals.push_back(std::move(platform_index));
-            literals.push_back(atoms.positions.get());
-            literals.push_back(atoms.species.get());
-            literals.push_back(atoms.ghost_mask.get());
+            literals.push_back(atoms.positions);
+            literals.push_back(atoms.species);
+            literals.push_back(atoms.ghost_mask);
 
             for (int i = 0; i < neighbors.graph_values.size(); i++) {
                 literals.push_back(std::move(neighbors.graph_values[i]));
