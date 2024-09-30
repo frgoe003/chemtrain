@@ -33,29 +33,24 @@ To build the plugin for an NVIDIA gpu:
 
 Next, the connector can be built using the following command:
 
-
-
-
 ## Building Lammps Plugin
 
 ```bash
-docker run --name lammps_plugin -w /mnt/lammps_plugin/build -it -d --rm -v $PWD:/mnt jaxconnector bash
-docker exec lammps_plugin cmake -D LAMMPS_HEADER_DIR=../../lammps/src ../cmake
-docker exec lammps_plugin make
+lammps_plugin cmake -D LAMMPS_HEADER_DIR=../../lammps/src ..
+make
 ```
 
 Note: When changing the connector, you need to recompile the connector and the plugin using:
 
 ```bash
-docker exec lammps_plugin cmake --build . --clean-first
+cmake --build . --clean-first
 ```
 
 To build lammps with plugin support, run:
 
 ```bash
-docker run --name lammps -w /mnt/lammps/build -it -d --rm -v $PWD:/mnt jaxconnector bash
-docker exec lammps cmake -D PKG_PLUGIN=yes ../cmake
-docker exec lammps make
+cmake -D PKG_PLUGIN=yes ../cmake
+make
 ```
 
 ## Test the plugin

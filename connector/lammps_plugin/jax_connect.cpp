@@ -76,9 +76,12 @@ void JaxConnect::compute(int eflag, int vflag)
   auto start = std::chrono::high_resolution_clock::now();
   std::cout << "Neighborlist creation history: " << neighbor->ago << std::endl;
 
+  // Check if neighborlist was updated just in this timestep
+  bool list_changed = (neighbor->ago == 0);
+
   double potential = connector->compute_force(
       atom->nlocal, atom->nghost, atom->x, atom->f, atom->type, list->ilist, list->numneigh,
-      list->firstneigh
+      list->firstneigh, list_changed
   );
 
   // Pass the evaluated potential energy to LAMMPS

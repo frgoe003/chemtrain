@@ -34,7 +34,8 @@ namespace jcn {
             // @param numneigh: Number of neighbors for the sender atom
             // @param firstneigh: Start of the neighbor list for the first atom
             NeighborList build_neighbor_list(
-                int max_atoms, int inum, int *ilist, int *numneigh, int **firstneigh);
+                int max_atoms, int inum, int *ilist, int *numneigh, int **firstneigh,
+                bool list_changed);
 
         private:
             float edge_multiplier;

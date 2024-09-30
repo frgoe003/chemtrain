@@ -84,17 +84,17 @@ namespace jcn {
     }
 
     double Runner::compute_forces(
-        int inum, int gnum, double **x, double **f, int *type, int *ilist, int *numneigh, int **firstneigh) {
+        int inum, int gnum, double **x, double **f, int *type, int *ilist, int *numneigh, int **firstneigh, bool list_changed) {
 
             // First we build the domain and the neighbor list, then we can
             // determine the input shapes to the program
 
             Atoms atoms = atom_builder.build_domain(inum, gnum, x, type);
             NeighborList neighbors = neighbor_list.build_neighbor_list(
-                atoms.n_atoms, inum, ilist, numneigh, firstneigh);
+                atoms.n_atoms, inum, ilist, numneigh, firstneigh, list_changed);
 
             // Now we have all shapes setup to build the module if required
-            if (!executable || atoms.reallocate ||neighbors.reallocate ) {
+            if (!executable || atoms.reallocate || neighbors.reallocate ) {
                  xla::XlaComputation callable = compiler.compile(
                     atoms.n_atoms, neighbors.graph_shapes, neighbors.graph_types);
 
@@ -130,7 +130,6 @@ namespace jcn {
 
             // Now we have to create the buffers, i.e., copy the data onto
             // the device
-            std::vector<std::unique_ptr<xla::PjRtBuffer>> buffers;
             std::vector<xla::PjRtBuffer*> buffer_ptrs;
             for (int i = 0; i < literals.size(); i++) {
                 // TODO: Make the addressable device a parameter

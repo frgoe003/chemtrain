@@ -14,7 +14,8 @@ namespace jcn {
         : edge_multiplier(edge_multiplier) {}
 
     NeighborList SimpleSparseNeighborList::build_neighbor_list(
-        int max_atoms, int inum, int *ilist, int *numneigh, int **firstneigh) {
+        int max_atoms, int inum, int *ilist, int *numneigh, int **firstneigh,
+        bool list_changed) {
         // We pass the neighbor list of LAMMPS
 
         // No reallocation necessary if buffers sufficiently large
@@ -47,28 +48,31 @@ namespace jcn {
             receivers_literal = std::make_unique<xla::Literal>(xla::Literal::CreateFromShape(shape));
         }
 
-        int* senders_data = senders_literal->data<int>().data();
-        int* receivers_data = receivers_literal->data<int>().data();
+        // Only update the values if the shape or content of the neighbor list changed
+        if (list_changed || reallocate) {
+            int* senders_data = senders_literal->data<int>().data();
+            int* receivers_data = receivers_literal->data<int>().data();
 
-        // Fill in the sender and receiver values
-        int edge_counter = 0;
-        for (int i = 0; i < inum; i++) {
-            int num_neighbors = numneigh[i];
-            int* ilist_ptr = &ilist[i];
-            int* firstneigh_ptr = firstneigh[i];
+            // Fill in the sender and receiver values
+            int edge_counter = 0;
+            for (int i = 0; i < inum; i++) {
+                int num_neighbors = numneigh[i];
+                int* ilist_ptr = &ilist[i];
+                int* firstneigh_ptr = firstneigh[i];
 
-            // Copy ilist[i] to senders_data
-            std::fill(senders_data + edge_counter, senders_data + edge_counter + num_neighbors, ilist[i]);
+                // Copy ilist[i] to senders_data
+                std::fill(senders_data + edge_counter, senders_data + edge_counter + num_neighbors, ilist[i]);
 
-            // Copy firstneigh[i] to receivers_data
-            std::memcpy(receivers_data + edge_counter, firstneigh_ptr, num_neighbors * sizeof(int));
+                // Copy firstneigh[i] to receivers_data
+                std::memcpy(receivers_data + edge_counter, firstneigh_ptr, num_neighbors * sizeof(int));
 
-            edge_counter += num_neighbors;
+                edge_counter += num_neighbors;
+            }
+
+            // Fill in the invalid values
+            std::fill(senders_data + edge_counter, senders_data + n_edges, max_atoms);
+            std::fill(receivers_data + edge_counter, receivers_data + n_edges, max_atoms);
         }
-
-        // Fill in the invalid values
-        std::fill(senders_data + edge_counter, senders_data + n_edges, max_atoms);
-        std::fill(receivers_data + edge_counter, receivers_data + n_edges, max_atoms);
 
         auto end = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> duration = end - start;
@@ -82,7 +86,6 @@ namespace jcn {
         // the unique pointers
 //        std::unique_ptr<xla::Literal> senders_literal = std::make_unique<xla::Literal>(xla::LiteralUtil::CreateFromArray(senders));
 //        std::unique_ptr<xla::Literal> receivers_literal = std::make_unique<xla::Literal>(xla::LiteralUtil::CreateFromArray(receivers));
-
 
         std::vector<xla::Literal*> graph_values;
         graph_values.push_back(senders_literal.get());

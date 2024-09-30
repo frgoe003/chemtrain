@@ -8,12 +8,16 @@
 namespace jcn {
 
     struct ConnectorConfig{
+        // Potential module exported by jax
         std::string mlir_module;
 
-
+        // String indicating the type of neighbor list expected by the program
         std::string neighbor_list_type;
 
+        // String identifying the backend used for execution, e.g., cuda.
         std::string backend;
+
+        // Device to run on from all addressable devices
         int device;
     };
 
@@ -22,8 +26,9 @@ namespace jcn {
         Connector(ConnectorConfig config);
         ~Connector();
 
+
         double compute_force(int inum, int gnum, double **x, double** f, int *type, int *ilist,
-            int *numneigh, int **firstneigh);
+            int *numneigh, int **firstneigh, bool list_changed);
 
     private:
         class Impl; // Forward declaration of the implementation class

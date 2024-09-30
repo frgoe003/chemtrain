@@ -40,11 +40,13 @@ namespace jcn {
         // Computes the forces and writes them directly to the force array
         double compute_forces(
             int inum, int gnum, double **x, double** f, int *type, int *ilist,
-            int *numneigh, int **firstneigh);
+            int *numneigh, int **firstneigh, bool list_changed);
 
     private:
         std::unique_ptr<xla::PjRtClient> client;
         std::unique_ptr<xla::PjRtLoadedExecutable> executable;
+
+        std::vector<std::unique_ptr<xla::PjRtBuffer>> neighbor_buffers;
 
         SimpleSparseNeighborList neighbor_list;
         AtomBuilder atom_builder;

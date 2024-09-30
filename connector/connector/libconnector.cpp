@@ -39,10 +39,10 @@ namespace jcn {
     };
 
     double Connector::compute_force(int inum, int gnum, double **x, double** f, int *type, int *ilist,
-            int *numneigh, int **firstneigh) {
+            int *numneigh, int **firstneigh, bool list_changed) {
 
         return impl_->runner.compute_forces(
-          inum, gnum, x, f, type, ilist, numneigh, firstneigh);
+          inum, gnum, x, f, type, ilist, numneigh, firstneigh, list_changed);
     }
 
     Connector::Connector(ConnectorConfig config) : impl_(std::make_unique<Impl>(config)) {};
