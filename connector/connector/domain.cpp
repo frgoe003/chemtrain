@@ -55,9 +55,7 @@ namespace jcn {
         std::transform(species_data, species_data + inum + gnum, species_data, [](int t) { return t - 1; });
         std::fill(species_data + inum + gnum, species_data + max_atoms, 0);
 
-        for (int i = 0; i < 3; i++){
-            std::cout << "Position of atom 3: " << position_data[3] << position_data[4] << position_data[5] << std::endl;
-        }
+        std::cout << "Position of atom 3: " << position_data[3] << position_data[4] << position_data[5] << std::endl;
 
         auto end = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> duration = end - start;

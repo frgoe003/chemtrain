@@ -1,5 +1,5 @@
 
-plugin load ../../lammps_plugin/build/jaxconnector.so
+plugin load ../../connector/build/jaxconnector.so
 
 # 1) Basic settings
 units real
@@ -12,9 +12,9 @@ neighbor 	2.0 bin
 neigh_modify 	every 1 delay 0 check no
 
 # 2) Create random positions
-region simulation_box block -25 25 -25 25 -25 25
+region simulation_box block -100 100 -100 100 -100 100
 create_box 1 simulation_box
-create_atoms 1 random 4100 341341 simulation_box
+create_atoms 1 random 135000 341341 simulation_box
 
 # 3) Simulation settings
 mass 1 18

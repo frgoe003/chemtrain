@@ -130,6 +130,7 @@ namespace jcn {
 
             // Now we have to create the buffers, i.e., copy the data onto
             // the device
+            std::vector<std::unique_ptr<xla::PjRtBuffer>> buffers;
             std::vector<xla::PjRtBuffer*> buffer_ptrs;
             for (int i = 0; i < literals.size(); i++) {
                 // TODO: Make the addressable device a parameter
@@ -195,10 +196,15 @@ namespace jcn {
                 throw std::runtime_error("Failed to copy results: " + force_literal.status().ToString() + " " + energy_literal.status().ToString());
             }
 
-
             // Write back the results
             double potential = atom_builder.evaluate_domain(
                 inum, f, force_literal.value(), energy_literal.value());
+
+            // Destroy the buffers explicitly
+            for (auto& buffer : buffers) {
+                buffer->Delete();
+            }
+            results_buffer->Delete();
 
             return potential;
 
