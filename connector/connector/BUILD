@@ -55,6 +55,7 @@ cc_library(
         ":compiler",
         ":graph_builder",
         ":xla_call_module_loader",
+        ":domain",
         "@com_google_absl//absl/status:statusor",
         "@tsl//tsl/platform:logging",
         "@tsl//tsl/platform:platform_port",
@@ -79,6 +80,16 @@ cc_library(
     name = "graph_builder",
     srcs = ["graph_builder.cpp"],
     hdrs = ["graph_builder.h"],
+    deps = [
+        "@com_google_absl//absl/types:span",
+        "@xla//xla:literal_util",
+    ]
+)
+
+cc_library(
+    name = "domain",
+    srcs = ["domain.cpp"],
+    hdrs = ["domain.h"],
     deps = [
         "@com_google_absl//absl/types:span",
         "@xla//xla:literal_util",
