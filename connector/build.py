@@ -16,7 +16,6 @@
 #
 # Helper script for building JAX's libjax easily.
 
-
 import argparse
 import collections
 import hashlib
@@ -33,11 +32,6 @@ import textwrap
 import urllib.request
 
 logger = logging.getLogger(__name__)
-
-
-def is_windows():
-  return sys.platform.startswith("win32")
-
 
 def shell(cmd):
   try:
@@ -239,7 +233,7 @@ def get_clang_major_version(clang_path):
 def write_bazelrc(*, remote_build,
                   cuda_version, cudnn_version, rocm_toolkit_path,
                   cpu, cuda_compute_capabilities,
-                  rocm_amdgpu_targets, target_cpu_features,
+                  rocm_amdgpu_targets,
                   wheel_cpu, enable_mkl_dnn, use_clang, clang_path,
                   clang_major_version, enable_cuda, enable_nccl, enable_rocm,
                   python_version):
@@ -269,15 +263,11 @@ def write_bazelrc(*, remote_build,
     if cpu is not None:
       f.write(f"build --cpu={cpu}\n")
 
-    if target_cpu_features == "release":
-      if wheel_cpu == "x86_64":
-        f.write("build --config=avx_windows\n" if is_windows()
-                else "build --config=avx_posix\n")
-    elif target_cpu_features == "native":
-      if is_windows():
-        print("--target_cpu_features=native is not supported on Windows; ignoring.")
-      else:
-        f.write("build --config=native_arch_posix\n")
+    if wheel_cpu == "x86_64":
+      f.write("build --config=avx_posix\n")
+    else:
+      raise ValueError(f"Unsupported wheel_cpu: {wheel_cpu}")
+
 
     if enable_mkl_dnn:
       f.write("build --config=mkl_open_source_only\n")
@@ -306,21 +296,11 @@ def write_bazelrc(*, remote_build,
         "build --repo_env HERMETIC_PYTHON_VERSION=\"{python_version}\"".format(
             python_version=python_version))
 BANNER = r"""
-     _   _  __  __
-    | | / \ \ \/ /
- _  | |/ _ \ \  /
-| |_| / ___ \/  \
- \___/_/   \/_/\_\
-
+CHEMSIM
 """
 
 EPILOG = """
-
-From the 'build' directory in the JAX repository, run
-    python build.py
-or
-    python3 build.py
-to download and build JAX's XLA (jaxlib) dependency.
+THANKS FOR USING CHEMSIM
 """
 
 
@@ -348,19 +328,10 @@ def add_boolean_argument(parser, name, default=False, help_str=None):
   group.add_argument("--no" + name, dest=name, action="store_false")
 
 
-def _get_editable_output_paths(output_path):
-  """Returns the paths to the editable wheels."""
-  return (
-      os.path.join(output_path, "jaxlib"),
-      os.path.join(output_path, "jax_gpu_pjrt"),
-      os.path.join(output_path, "jax_gpu_plugin"),
-  )
-
-
 def main():
   cwd = os.getcwd()
   parser = argparse.ArgumentParser(
-      description="Builds jaxlib from source.", epilog=EPILOG)
+      description="Builds jax-connector from source.", epilog=EPILOG)
   add_boolean_argument(
       parser,
       "verbose",
@@ -371,22 +342,6 @@ def main():
       help="Path to the Bazel binary to use. The default is to find bazel via "
       "the PATH; if none is found, downloads a fresh copy of bazel from "
       "GitHub.")
-  parser.add_argument(
-      "--python_bin_path",
-      help="Path to Python binary whose version to match while building with "
-      "hermetic python. The default is the Python interpreter used to run the "
-      "build script. DEPRECATED: use --python_version instead.")
-  parser.add_argument(
-      "--target_cpu_features",
-      choices=["release", "native", "default"],
-      default="release",
-      help="What CPU features should we target? 'release' enables CPU "
-           "features that should be enabled for a release build, which on "
-           "x86-64 architectures enables AVX. 'native' enables "
-           "-march=native, which generates code targeted to use all "
-           "features of the current machine. 'default' means don't opt-in "
-           "to any architectural features and use whatever the C compiler "
-           "generates by default.")
   add_boolean_argument(
       parser,
       "use_clang",
@@ -413,7 +368,8 @@ def main():
   add_boolean_argument(
       parser,
       "enable_cuda",
-      help_str="Should we build with CUDA enabled? Requires CUDA and CuDNN.")
+      help_str="Should we build with CUDA enabled? Requires CUDA and CuDNN."
+  )
   add_boolean_argument(
       parser,
       "build_gpu_plugin",
@@ -423,22 +379,12 @@ def main():
           "plugin is still experimental and is not ready for use yet."
       ),
   )
-  parser.add_argument(
-      "--build_gpu_kernel_plugin",
-      choices=["cuda", "rocm"],
-      default="",
-      help=(
-          "Specify 'cuda' or 'rocm' to build the respective kernel plugin."
-          " When this flag is set, jaxlib will not be built."
-      ),
-  )
   add_boolean_argument(
       parser,
       "build_gpu_pjrt_plugin",
       default=False,
       help_str=(
-          "Are we building the cuda/rocm pjrt plugin? jaxlib will not be built "
-          "when this flag is True."
+          "Are we building the cuda/rocm pjrt plugin?"
       ),
   )
   parser.add_argument(
@@ -494,44 +440,28 @@ def main():
       help="Additional startup options to pass to bazel.")
   parser.add_argument(
       "--bazel_options",
-      action="append", default=[],
+      action="append", default=[
+          "--experimental_repo_remote_exec",
+          '--cxxopt=-std=c++17',
+          '--cxxopt=-Wno-error=deleted-function',
+          '--host_cxxopt=-std=c++17',
+      ],
       help="Additional options to pass to the main Bazel command to be "
            "executed, e.g. `run`.")
   parser.add_argument(
       "--output_path",
-      default=os.path.join(cwd, "dist"),
+      default=os.path.join(cwd, "lib"),
       help="Directory to which the jaxlib wheel should be written")
   parser.add_argument(
       "--target_cpu",
       default=None,
       help="CPU platform to target. Default is the same as the host machine. "
            "Currently supported values are 'darwin_arm64' and 'darwin_x86_64'.")
-  parser.add_argument(
-      "--editable",
-      action="store_true",
-      help="Create an 'editable' jaxlib build instead of a wheel.")
-  parser.add_argument(
-      "--python_version",
-      default=None,
-      help="hermetic python version, e.g., 3.10")
   add_boolean_argument(
       parser,
       "configure_only",
       default=False,
-      help_str="If true, writes a .bazelrc file but does not build jaxlib.")
-  add_boolean_argument(
-      parser,
-      "requirements_update",
-      default=False,
-      help_str="If true, writes a .bazelrc and updates requirements_lock.txt "
-               "for a corresponding version of Python but does not build "
-               "jaxlib.")
-  add_boolean_argument(
-      parser,
-      "requirements_nightly_update",
-      default=False,
-      help_str="Same as update_requirements, but will consider dev, nightly "
-               "and pre-release versions of packages.")
+      help_str="If true, writes a .bazelrc file but does not build.")
 
   args = parser.parse_args()
 
@@ -544,36 +474,24 @@ def main():
 
   print(BANNER)
 
+  host_cpu = platform.machine()
+
   output_path = os.path.abspath(args.output_path)
   os.chdir(os.path.dirname(__file__ or args.prog) or '.')
-
-  host_cpu = platform.machine()
-  wheel_cpus = {
-      "darwin_arm64": "arm64",
-      "darwin_x86_64": "x86_64",
-      "ppc": "ppc64le",
-      "aarch64": "aarch64",
-  }
-  # TODO(phawkins): support other bazel cpu overrides.
-  wheel_cpu = (wheel_cpus[args.target_cpu] if args.target_cpu is not None
-               else host_cpu)
 
   # Find a working Bazel.
   bazel_path, bazel_version = get_bazel_path(args.bazel_path)
   print(f"Bazel binary path: {bazel_path}")
   print(f"Bazel version: {bazel_version}")
 
-  if args.python_version:
-    python_version = args.python_version
-  else:
-    python_bin_path = get_python_bin_path(args.python_bin_path)
-    print(f"Python binary path: {python_bin_path}")
-    python_version = get_python_version(python_bin_path)
-    print("Python version: {}".format(".".join(map(str, python_version))))
-    check_python_version(python_version)
-    python_version = ".".join(map(str, python_version))
 
-  print("Use clang: {}".format("yes" if args.use_clang else "no"))
+  python_bin_path = get_python_bin_path(None)
+  print(f"Python binary path: {python_bin_path}")
+  python_version = get_python_version(python_bin_path)
+  print("Python version: {}".format(".".join(map(str, python_version))))
+  check_python_version(python_version)
+  python_version = ".".join(map(str, python_version))
+
   clang_path = args.clang_path
   clang_major_version = None
   if args.use_clang:
@@ -583,8 +501,7 @@ def main():
     clang_major_version = get_clang_major_version(clang_path)
 
   print("MKL-DNN enabled: {}".format("yes" if args.enable_mkl_dnn else "no"))
-  print(f"Target CPU: {wheel_cpu}")
-  print(f"Target CPU features: {args.target_cpu_features}")
+  print(f"Target CPU: {host_cpu}")
 
   rocm_toolkit_path = args.rocm_path
   print("CUDA enabled: {}".format("yes" if args.enable_cuda else "no"))
@@ -611,8 +528,7 @@ def main():
       cpu=args.target_cpu,
       cuda_compute_capabilities=args.cuda_compute_capabilities,
       rocm_amdgpu_targets=args.rocm_amdgpu_targets,
-      target_cpu_features=args.target_cpu_features,
-      wheel_cpu=wheel_cpu,
+      wheel_cpu=host_cpu,
       enable_mkl_dnn=args.enable_mkl_dnn,
       use_clang=args.use_clang,
       clang_path=clang_path,
@@ -622,17 +538,6 @@ def main():
       enable_rocm=args.enable_rocm,
       python_version=python_version,
   )
-
-  if args.requirements_update or args.requirements_nightly_update:
-    if args.requirements_update:
-      task = "//build:requirements.update"
-    else:  # args.requirements_nightly_update
-      task = "//build:requirements_nightly.update"
-    update_command = ([bazel_path] + args.bazel_startup_options +
-      ["run", "--verbose_failures=true", task, *args.bazel_options])
-    print(" ".join(update_command))
-    shell(update_command)
-    return
 
   if args.configure_only:
     return
@@ -647,59 +552,22 @@ def main():
     *args.bazel_options,
   )
 
-  if args.build_gpu_plugin and args.editable:
-    output_path_jaxlib, output_path_jax_pjrt, output_path_jax_kernel = (
-        _get_editable_output_paths(output_path)
-    )
-  else:
-    output_path_jaxlib = output_path
-    output_path_jax_pjrt = output_path
-    output_path_jax_kernel = output_path
-
-  if args.build_gpu_kernel_plugin == "" and not args.build_gpu_pjrt_plugin:
-    build_cpu_wheel_command = [
-      *command_base,
-      "//jaxlib/tools:build_wheel", "--",
-      f"--output_path={output_path_jaxlib}",
-      f"--jaxlib_git_hash={get_githash()}",
-      f"--cpu={wheel_cpu}"
-    ]
-    if args.build_gpu_plugin:
-      build_cpu_wheel_command.append("--skip_gpu_kernels")
-    if args.editable:
-      build_cpu_wheel_command.append("--editable")
-    print(" ".join(build_cpu_wheel_command))
-    shell(build_cpu_wheel_command)
-
-  if args.build_gpu_plugin or (args.build_gpu_kernel_plugin == "cuda") or \
-      (args.build_gpu_kernel_plugin == "rocm"):
-    build_gpu_kernels_command = [
-      *command_base,
-      "//jaxlib/tools:build_gpu_kernels_wheel", "--",
-      f"--output_path={output_path_jax_kernel}",
-      f"--jaxlib_git_hash={get_githash()}",
-      f"--cpu={wheel_cpu}",
-    ]
-    if args.enable_cuda:
-      build_gpu_kernels_command.append(f"--enable-cuda={args.enable_cuda}")
-      build_gpu_kernels_command.append(f"--platform_version={args.gpu_plugin_cuda_version}")
-    elif args.enable_rocm:
-      build_gpu_kernels_command.append(f"--enable-rocm={args.enable_rocm}")
-      build_gpu_kernels_command.append(f"--platform_version={args.gpu_plugin_rocm_version}")
-    else:
-      raise ValueError("Unsupported GPU plugin backend. Choose either 'cuda' or 'rocm'.")
-    if args.editable:
-      build_gpu_kernels_command.append("--editable")
-    print(" ".join(build_gpu_kernels_command))
-    shell(build_gpu_kernels_command)
+  if not args.build_gpu_pjrt_plugin:
+      build_cpu_wheel_command = [
+          *command_base,
+          "//connector:libconnector.so", "--",
+          f"--output_path={output_path}",
+          f"--cpu={wheel_cpu}"
+      ]
+      print(" ".join(build_cpu_wheel_command))
+      shell(build_cpu_wheel_command)
 
   if args.build_gpu_plugin or args.build_gpu_pjrt_plugin:
     build_pjrt_plugin_command = [
       *command_base,
-      "//jaxlib/tools:build_gpu_plugin_wheel", "--",
-      f"--output_path={output_path_jax_pjrt}",
-      f"--jaxlib_git_hash={get_githash()}",
-      f"--cpu={wheel_cpu}",
+      "@xla//xla/pjrt/c:pjrt_c_api_gpu_plugin.so", "--",
+      f"--output_path={output_path}",
+      f"--cpu={host_cpu}",
     ]
     if args.enable_cuda:
       build_pjrt_plugin_command.append(f"--enable-cuda={args.enable_cuda}")
@@ -709,8 +577,6 @@ def main():
       build_pjrt_plugin_command.append(f"--platform_version={args.gpu_plugin_rocm_version}")
     else:
       raise ValueError("Unsupported GPU plugin backend. Choose either 'cuda' or 'rocm'.")
-    if args.editable:
-      build_pjrt_plugin_command.append("--editable")
     print(" ".join(build_pjrt_plugin_command))
     shell(build_pjrt_plugin_command)
 
