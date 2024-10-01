@@ -56,6 +56,34 @@ cc_library(
         ":graph_builder",
         ":xla_call_module_loader",
         ":domain",
+        ":pjrt",
+        "@com_google_absl//absl/status:statusor",
+        "@tsl//tsl/platform:logging",
+        "@tsl//tsl/platform:platform_port",
+        "@xla//xla:literal",
+        "@xla//xla:literal_util",
+        "@xla//xla:shape_util",
+        "@xla//xla:status",
+        "@xla//xla:statusor",
+        "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_c_api_client",
+        "@xla//xla/pjrt:pjrt_executable",
+        "@xla//xla/pjrt:pjrt_stream_executor_client",
+        "@xla//xla/pjrt:tfrt_cpu_pjrt_client",
+        "@xla//xla/service:hlo_proto_cc",
+        "@xla//xla/service:hlo_parser",
+        "@xla//xla/service:dump",
+    ],
+)
+
+
+cc_library(
+    name = "pjrt",
+    srcs = [
+        "pjrt.cpp",
+        "pjrt.h",
+        ],
+    deps = [
         "@com_google_absl//absl/status:statusor",
         "@tsl//tsl/platform:logging",
         "@tsl//tsl/platform:platform_port",
@@ -81,8 +109,23 @@ cc_library(
     srcs = ["graph_builder.cpp"],
     hdrs = ["graph_builder.h"],
     deps = [
-        "@com_google_absl//absl/types:span",
+        ":pjrt",
+        "@com_google_absl//absl/status:statusor",
+        "@tsl//tsl/platform:logging",
+        "@tsl//tsl/platform:platform_port",
+        "@xla//xla:literal",
         "@xla//xla:literal_util",
+        "@xla//xla:shape_util",
+        "@xla//xla:status",
+        "@xla//xla:statusor",
+        "@xla//xla/pjrt:pjrt_client",
+        "@xla//xla/pjrt:pjrt_c_api_client",
+        "@xla//xla/pjrt:pjrt_executable",
+        "@xla//xla/pjrt:pjrt_stream_executor_client",
+        "@xla//xla/pjrt:tfrt_cpu_pjrt_client",
+        "@xla//xla/service:hlo_proto_cc",
+        "@xla//xla/service:hlo_parser",
+        "@xla//xla/service:dump",
     ]
 )
 
@@ -91,6 +134,7 @@ cc_library(
     srcs = ["domain.cpp"],
     hdrs = ["domain.h"],
     deps = [
+        ":pjrt",
         "@com_google_absl//absl/types:span",
         "@xla//xla:literal_util",
     ]

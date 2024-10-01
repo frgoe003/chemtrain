@@ -5,19 +5,20 @@
 #include <chrono>
 
 #include "domain.h"
+#include "pjrt.h"
 
+#include "xla/pjrt/pjrt_api.h"
+#include "xla/pjrt/pjrt_client.h"
+#include "xla/pjrt/pjrt_c_api_client.h"
 #include "xla/literal_util.h"
 
 
 namespace jcn {
 
-    Atoms AtomBuilder::build_domain(int inum, int gnum, double **x, int *type) {
+	AtomShapes AtomBuilder::get_shapes(int inum, int gnum) {
 
-        // If number of atoms in domain (including ghost) exceeds the allocated
-        // buffers
         bool reallocate = false;
 
-        auto start = std::chrono::high_resolution_clock::now();
         if ((inum + gnum) > max_atoms) {
             max_atoms = static_cast<int>(std::ceil(atom_multiplier * (inum + gnum)));
             reallocate = true;
@@ -32,9 +33,31 @@ namespace jcn {
             xla::Shape ghost_shape = xla::ShapeUtil::MakeShape(
                xla::PRED, absl::Span<const int64_t>{max_atoms,});
 
+            // Destroy old literals and allocate new ones with large capacity
+//            if (position_literal) {
+//              	position_literal->Destroy();
+//              	species_literal->Destroy();
+//                ghosts_literal->Destroy();
+//            }
+
             position_literal = std::make_unique<xla::Literal>(xla::Literal::CreateFromShape(position_shape));
             species_literal = std::make_unique<xla::Literal>(xla::Literal::CreateFromShape(species_shape));
             ghosts_literal = std::make_unique<xla::Literal>(xla::Literal::CreateFromShape(ghost_shape));
+        }
+
+        return AtomShapes{max_atoms, reallocate};
+
+	}
+
+    std::vector<xla::PjRtBuffer*> AtomBuilder::build_domain(xla::PjRtClient* client, int device_id, int inum, int gnum, double **x, int *type) {
+
+        // If number of atoms in domain (including ghost) exceeds the allocated
+        // buffers
+
+        auto start = std::chrono::high_resolution_clock::now();
+
+        if (!position_literal || (inum + gnum) > max_atoms) {
+            throw std::runtime_error("Domain not initialized or too many atoms");
         }
 
         float *position_data = position_literal->data<float>().data();
@@ -67,15 +90,34 @@ namespace jcn {
         duration = end - start;
         std::cout << "Time taken for atom literal creation: " << duration.count() << " seconds" << std::endl;
 
-        return Atoms{max_atoms, reallocate, position_literal.get(), species_literal.get(), ghosts_literal.get()};
+        // Create the buffers
+     	// TODO: Maybe explicit deallocation is required
+
+        buffers.push_back(create_buffer(client, device_id, position_literal.get()));
+        buffers.push_back(create_buffer(client, device_id, species_literal.get()));
+        buffers.push_back(create_buffer(client, device_id, ghosts_literal.get()));
+
+        std::vector<xla::PjRtBuffer*> buffer_ptrs;
+        for (int i = 0; i < buffers.size(); i++) {
+            buffer_ptrs.push_back(buffers[i].get());
+        }
+
+        return buffer_ptrs;
 
     }
 
-    double AtomBuilder::evaluate_domain(int inum, double **f, std::shared_ptr<xla::Literal> forces, std::shared_ptr<xla::Literal> potential) {
+    double AtomBuilder::evaluate_domain(int inum, double **f, std::vector<std::unique_ptr<xla::PjRtBuffer>> results) {
         auto start = std::chrono::high_resolution_clock::now();
 
-        float *force_data = forces->data<float>().data();
-        absl::Span<float> potential_data = potential->data<float>();
+        absl::StatusOr<std::shared_ptr<xla::Literal>> force_literal = results[0]->ToLiteralSync();
+        absl::StatusOr<std::shared_ptr<xla::Literal>> energy_literal = results[1]->ToLiteralSync();
+
+        if (!force_literal.ok() || !energy_literal.ok()) {
+            throw std::runtime_error("Failed to convert buffer to literal");
+        }
+
+        float *force_data = force_literal.value()->data<float>().data();
+        float *potential_data = energy_literal.value()->data<float>().data();
 
         // We skip all ghost atoms and padded atoms and only write back forces
         // on the real atoms
@@ -84,11 +126,19 @@ namespace jcn {
                 f[i], [](float t) { return static_cast<double>(t); });
         }
 
+        // Remove the buffers after computation
+        buffers.clear();
+
         auto end = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> duration = end - start;
         std::cout << "Time taken for force backtransfer: " << duration.count() << " seconds" << std::endl;
 
-        return (double) potential_data[0];
+        double potential = static_cast<double>(*potential_data);
+
+        // Destroy the result buffers
+        results.clear();
+
+        return potential;
 
     }
 

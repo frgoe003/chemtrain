@@ -13,6 +13,7 @@
 #include "compiler.h"
 #include "libconnector.h"
 #include "domain.h"
+#include "pjrt.h"
 
 #include "xla/literal.h"
 #include "xla/literal_util.h"
@@ -89,9 +90,9 @@ namespace jcn {
             // First we build the domain and the neighbor list, then we can
             // determine the input shapes to the program
 
-            Atoms atoms = atom_builder.build_domain(inum, gnum, x, type);
-            NeighborList neighbors = neighbor_list.build_neighbor_list(
-                atoms.n_atoms, inum, ilist, numneigh, firstneigh, list_changed);
+            AtomShapes atoms = atom_builder.get_shapes(inum, gnum);
+            NeighborListShapes neighbors = neighbor_list.get_neighbor_list_shapes(
+                atoms.n_atoms, inum, numneigh);
 
             // Now we have all shapes setup to build the module if required
             if (!executable || atoms.reallocate || neighbors.reallocate ) {
@@ -110,56 +111,24 @@ namespace jcn {
                 executable = std::move(executable_or_status).value();
             }
 
-            // TODO: Seems to be necessary somehow. Find out what it does
-            std::unique_ptr<xla::Literal> platform_index = std::make_unique<xla::Literal>(
-                xla::LiteralUtil::CreateR0<int32_t>(0)
-            );
-
-            // Now we have the executable, we have to move the data
-            std::vector<xla::Literal*> literals;
-            // literals.push_back(std::move(platform_index));
-            literals.push_back(atoms.positions);
-            literals.push_back(atoms.species);
-            literals.push_back(atoms.ghost_mask);
-
-            for (int i = 0; i < neighbors.graph_values.size(); i++) {
-                literals.push_back(std::move(neighbors.graph_values[i]));
-            }
-
             auto start = std::chrono::high_resolution_clock::now();
+
+            // Only transfer new data to the GPU if necessary
+            bool update = (neighbors.reallocate || list_changed);
 
             // Now we have to create the buffers, i.e., copy the data onto
             // the device
-            std::vector<std::unique_ptr<xla::PjRtBuffer>> buffers;
-            std::vector<xla::PjRtBuffer*> buffer_ptrs;
-            for (int i = 0; i < literals.size(); i++) {
-                // TODO: Make the addressable device a parameter
-                absl::StatusOr<std::unique_ptr<xla::PjRtBuffer>> input_buffer = client->BufferFromHostBuffer(
-                    literals[i]->untyped_data(),
-                    literals[i]->shape().element_type(),
-                    literals[i]->shape().dimensions(),
-                    std::optional<absl::Span<int64_t const>>{},
-                    xla::PjRtClient::HostBufferSemantics::kImmutableZeroCopy,
-                    []() { /* frees literal */ },
-                    client->addressable_devices()[0]
-                );
+            std::vector<xla::PjRtBuffer*> buffer_ptrs = atom_builder.build_domain(client.get(), 0, inum, gnum, x, type);
 
-                if (!input_buffer.ok()) {
-                    throw std::runtime_error("Failed to create buffer: " + input_buffer.status().ToString());
-                }
+            std::vector<xla::PjRtBuffer*> graph_buffers = neighbor_list.build_graph(
+                client.get(), 0, inum, ilist, numneigh, firstneigh, update);
+            buffer_ptrs.insert(buffer_ptrs.end(), graph_buffers.begin(), graph_buffers.end());
 
-                // There must be a better way than storing twice a reference
-                // to the buffers
-                buffer_ptrs.push_back(input_buffer.value().get());
-                buffers.push_back(std::move(input_buffer).value());
-            }
+            std::vector<std::vector<xla::PjRtBuffer*>> arg_handles = {buffer_ptrs};
 
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double> duration = end - start;
             std::cout << "Time taken for buffer creation: " << duration.count() << " seconds" << std::endl;
-
-
-            std::vector<std::vector<xla::PjRtBuffer*>> arg_handles = {buffer_ptrs};
 
             // Check if arg_handles is correctly populated
             if (arg_handles.empty() || arg_handles[0].empty()) {
@@ -170,7 +139,6 @@ namespace jcn {
             xla::ExecuteOptions execute_options;
 
             start = std::chrono::high_resolution_clock::now();
-
 
             absl::StatusOr<std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>> results;
             results = executable->Execute(
@@ -186,25 +154,13 @@ namespace jcn {
                 throw std::runtime_error("Failed to execute: " + results.status().ToString());
             }
 
-
             // Now we have to copy the results back to the host
             std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>> results_buffers = std::move(results).value();
-            absl::StatusOr<std::shared_ptr<xla::Literal>> force_literal = results_buffers[0][0]->ToLiteralSync();
-            absl::StatusOr<std::shared_ptr<xla::Literal>> energy_literal = results_buffers[0][1]->ToLiteralSync();
-
-            if (!force_literal.ok() || !energy_literal.ok()) {
-                throw std::runtime_error("Failed to copy results: " + force_literal.status().ToString() + " " + energy_literal.status().ToString());
-            }
 
             // Write back the results
             double potential = atom_builder.evaluate_domain(
-                inum, f, force_literal.value(), energy_literal.value());
+                inum, f, std::move(results_buffers[0]));
 
-            // Destroy the buffers explicitly
-            for (auto& buffer : buffers) {
-                buffer->Delete();
-            }
-            results_buffer->Delete();
 
             return potential;
 

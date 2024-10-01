@@ -2,6 +2,9 @@
 // Created by Paul Fuchs on 30.09.24.
 //
 
+#include "xla/pjrt/pjrt_api.h"
+#include "xla/pjrt/pjrt_client.h"
+#include "xla/pjrt/pjrt_c_api_client.h"
 #include "xla/literal_util.h"
 
 #ifndef DOMAIN_H
@@ -12,7 +15,7 @@ namespace jcn {
 	/**
      * Contains all per-atom data of a domnain
      */
-    struct Atoms {
+    struct AtomShapes {
         /**
   		 * Maximum possible number of atoms in the domain, including local, ghost,
          * and padded atoms.
@@ -24,15 +27,6 @@ namespace jcn {
          * must re-compile the mlir module with new shapes.
          */
         bool reallocate;
-
-        /** Positions literal */
-        xla::Literal* positions;
-
-        /** Species literal */
-        xla::Literal* species;
-
-        /** Ghost mask literal */
-        xla::Literal* ghost_mask;
 
     };
 
@@ -49,6 +43,8 @@ namespace jcn {
         AtomBuilder(float atom_multiplier) : max_atoms(0), atom_multiplier(atom_multiplier) {};
         ~AtomBuilder() = default;
 
+        AtomShapes get_shapes(int inum, int gnum);
+
         /**
          * Padds the atom data to reduce number of recompilations
          *
@@ -57,7 +53,7 @@ namespace jcn {
          * @param x Atom positions
          * @param type Atom types (one-based species)
          */
-        Atoms build_domain(int inum, int gnum, double **x, int *type);
+        std::vector<xla::PjRtBuffer*> build_domain(xla::PjRtClient* client, int device_id, int inum, int gnum, double **x, int *type);
 
         /**
          * Writes back the force to the original array and returns the potential
@@ -67,7 +63,7 @@ namespace jcn {
          * @param forces Forces from the XLA computation
          * @param potential Potential from the XLA computation
          */
-        double evaluate_domain(int inum, double **f, std::shared_ptr<xla::Literal> forces, std::shared_ptr<xla::Literal> potential);
+        double evaluate_domain(int inum, double **f, std::vector<std::unique_ptr<xla::PjRtBuffer>> results);
 
     private:
         int max_atoms;
@@ -75,6 +71,8 @@ namespace jcn {
         std::unique_ptr<xla::Literal> position_literal;
         std::unique_ptr<xla::Literal> species_literal;
         std::unique_ptr<xla::Literal> ghosts_literal;
+
+        std::vector<std::unique_ptr<xla::PjRtBuffer>> buffers;
 
         float atom_multiplier;
 

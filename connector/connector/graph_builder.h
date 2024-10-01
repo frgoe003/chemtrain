@@ -2,14 +2,17 @@
 // Created by Paul Fuchs on 24.09.24.
 //
 
-#include "xla/literal.h"
+#include "xla/pjrt/pjrt_api.h"
+#include "xla/pjrt/pjrt_client.h"
+#include "xla/pjrt/pjrt_c_api_client.h"
+#include "xla/literal_util.h"
 
 #ifndef GRAPH_BUILDER_H
 #define GRAPH_BUILDER_H
 
 namespace jcn {
 
-    struct NeighborList {
+    struct NeighborListShapes {
         // Return the shapes in the neighbor list builder
         std::vector<std::vector<int64_t>> graph_shapes;
         std::vector<xla::PrimitiveType> graph_types;
@@ -17,9 +20,6 @@ namespace jcn {
         // Let the neighbor list keep track whether reallocation is needed
         // in case of an increased number of atoms or neighbors
         bool reallocate;
-
-        // The actual values of the
-        std::vector<xla::Literal*> graph_values;
     };
 
     class SimpleSparseNeighborList {
@@ -33,9 +33,11 @@ namespace jcn {
             // @param ilist: Index of the sender atom
             // @param numneigh: Number of neighbors for the sender atom
             // @param firstneigh: Start of the neighbor list for the first atom
-            NeighborList build_neighbor_list(
-                int max_atoms, int inum, int *ilist, int *numneigh, int **firstneigh,
-                bool list_changed);
+            NeighborListShapes get_neighbor_list_shapes(
+                int max_atoms, int inum, int* numneigh);
+
+            std::vector<xla::PjRtBuffer*> build_graph(
+                xla::PjRtClient* client, int device_id, int inum, int *ilist, int *numneigh, int **firstneigh, bool update);
 
         private:
             float edge_multiplier;
@@ -43,7 +45,11 @@ namespace jcn {
             std::unique_ptr<xla::Literal> senders_literal;
             std::unique_ptr<xla::Literal> receivers_literal;
 
+            std::unique_ptr<xla::PjRtBuffer> senders_buffer;
+            std::unique_ptr<xla::PjRtBuffer> receivers_buffer;
+
             int n_edges = 0;
+            int fill_value = 0;
 
     };
 
