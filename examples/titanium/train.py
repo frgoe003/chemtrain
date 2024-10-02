@@ -62,18 +62,18 @@ def get_default_config():
     print(f"Run on device {args.device}")
     return OrderedDict(
         model=OrderedDict(
-            type="Allegro",
+            type="MACE",
             r_cutoff=args.cutoff,
             edge_multiplier=1.15,
             model_kwargs=OrderedDict(
-                max_ell=3,
-                n_irreps=128,
-                irreps="0o + 1o + 1e + 2e + 2o + 3o + 3e",
-                mlp_n_hidden=128,
-                mlp_n_layers=3,
-                n_radial_basis=8,
-                num_layer=3,
-                p=48,
+                # max_ell=3,
+                # n_irreps=128,
+                # irreps="0o + 1o + 1e + 2e + 2o + 3o + 3e",
+                # mlp_n_hidden=128,
+                # mlp_n_layers=3,
+                # n_radial_basis=8,
+                # num_layer=3,
+                # p=48,
             ),
             no_shift=True
         ),
@@ -83,12 +83,12 @@ def get_default_config():
             epochs=args.epochs,
             batch=args.batch,
             cache=8,
-            weight_decay=1e-3
+            weight_decay=5e-4
         ),
         gammas=OrderedDict(
-            virial=4e-5,
-            U=1e-5,
-            F=1e-0,
+            virial=4e-6,
+            U=1e-6,
+            F=1e-2,
         )
     )
 
@@ -110,7 +110,7 @@ def main():
     # We estimate the maximum number of edges and triplets and also initialize
     # a sufficiently big neighbor list.
     max_neighbor, max_edges, max_triplets, nbrs_init = data_utils.estimate_edge_and_triplet_count(
-        dataset, displacement_fn, r_cutoff=config["model"]["r_cutoff"], capacity_multiplier=1.25
+        dataset, displacement_fn, r_cutoff=config["model"]["r_cutoff"], capacity_multiplier=2.5
     )
 
     print(f"Estimated: "

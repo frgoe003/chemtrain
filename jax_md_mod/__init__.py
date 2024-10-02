@@ -61,7 +61,7 @@ def is_box_valid(box: Array) -> bool:
   if jnp.isscalar(box) or box.ndim == 0 or box.ndim == 1:
     return True
   if box.ndim == 2:
-    return jnp.bool_(jnp.all(jnp.triu(box) == box))
+    return jnp.bool_(jnp.logical_not(jnp.all(jnp.triu(box) == box)))
   return False
 
 @dataclasses.dataclass

@@ -15,6 +15,7 @@ from jax import tree_util, lax, random, nn
 import jax.numpy as jnp
 
 import matplotlib.pyplot as plt
+from jax.example_libraries.optimizers import nesterov
 
 from jax_md import simulate, partition, space, util, energy, quantity as snapshot_quantity
 
@@ -27,6 +28,7 @@ import haiku as hk
 import e3nn_jax
 
 from allegro_jax import AllegroHaiku
+from mace_jax.modules import MACE
 
 from chemtrain.trainers import ForceMatching
 
@@ -174,6 +176,84 @@ def define_model(config, dataset, nbrs_init, max_edges, max_triplets):
 
             return energy_fn
 
+    elif model == "MACE":
+
+        def bessel_basis(length, max_length, number: int):
+            return e3nn_jax.bessel(length, number, max_length)
+
+        def soft_envelope(
+            length, max_length, arg_multiplicator: float = 2.0,
+            value_at_origin: float = 1.2):
+            return e3nn_jax.soft_envelope(
+                length,
+                max_length,
+                arg_multiplicator=arg_multiplicator,
+                value_at_origin=value_at_origin,
+            )
+
+        n_species = 10
+
+        @hk.without_apply_rng
+        @hk.transform
+        def haiku_model(pos, neighbor, box=None, **dynamic_kwargs):
+            mace_model = MACE(
+                # Irreps of the output, default 1x0e
+                r_max = config["model"]["r_cutoff"],
+                num_interactions = 2,
+                # Number of interactions (layers), default 2
+                hidden_irreps = e3nn_jax.Irreps("128x0e + 128x1o"),  # 256x0e or 128x0e + 128x1o
+                readout_mlp_irreps = e3nn_jax.Irreps("16x0e"),
+                # Hidden irreps of the MLP in last readout, default 16x0e
+                avg_num_neighbors = max_edges / r_init.shape[0],
+                num_species = n_species,
+                output_irreps = e3nn_jax.Irreps("0e"),
+                radial_basis = functools.partial(bessel_basis, number=8),
+                radial_envelope = soft_envelope,
+            )
+            # Create a neighbor list with maximum capacity first
+            dense_idx = neighbor.idx
+            senders = jnp.arange(dense_idx.shape[0]).repeat(
+                dense_idx.shape[1])
+            receivers = dense_idx.ravel()
+
+            # Sort the indices of the receivers (invalids will be last)
+            # and only keep a pre-defined amount
+            _, sorted_idx = lax.top_k(-receivers, max_edges)
+            senders = senders[sorted_idx]
+            receivers = receivers[sorted_idx]
+
+            # Mask out all invalid neighbors
+            mask = receivers < pos.shape[0]
+
+            # Assemble the Allegro Haiku Model
+            species = jnp.ones(pos.shape[0], dtype=int)
+
+            displacements = jax.vmap(
+                functools.partial(displacement_fn, box=box)
+            )(pos[senders, :], pos[receivers, :])
+            displacements = jnp.where(
+                mask[:, None], displacements, 2* config["model"]["r_cutoff"])
+
+            vectors = e3nn_jax.IrrepsArray("1o", displacements)
+
+            maybe_energy = mace_model(vectors, species, senders, receivers).array
+            # maybe_energy = (maybe_energy.T * mask).T
+
+            return util.high_precision_sum(maybe_energy)
+
+        init_params = haiku_model.init(key, r_init, nbrs_init, box=box_init)
+
+        def energy_fn_template(energy_params):
+
+            def energy_fn(pos, neighbor, **dynamic_kwargs):
+
+                gnn_energy = haiku_model.apply(
+                    energy_params, pos, neighbor, **dynamic_kwargs)
+
+                return gnn_energy
+
+            return energy_fn
+
     else:
         raise NotImplementedError(f"Model {model} not implemented.")
 
@@ -189,15 +269,15 @@ def init_optimizer(config, dataset):
     lr_schedule_fm = optax.exponential_decay(
         config["optimizer"]["init_lr"], transition_steps, decay_rate=0.33, end_value=config["optimizer"]["lr_decay"])
     optimizer_fm = optax.chain(
-        optax.scale_by_adam(
-            b1=0.5,
-            b2=0.99,
-            eps=1e-8,
-            eps_root=1e-16,
-            nesterov=True,
-        ),
-        optax.scale_by_belief(0.5, 0.995),
-        # optax.transforms.add_decayed_weights(config["optimizer"].get("weight_decay", 1e-2)),
+        # optax.scale_by_adam(
+        #     b1=0.5,
+        #     b2=0.9,
+        #     eps=1e-8,
+        #     eps_root=1e-16,
+        #     nesterov=True,
+        # ),
+        optax.scale_by_belief(0.5, 0.9),
+        optax.transforms.add_decayed_weights(config["optimizer"].get("weight_decay", 1e-2)),
         optax.scale_by_learning_rate(lr_schedule_fm, flip_sign=True),
         # optax.add_noise(1e-4, 0.55, 11)
     )

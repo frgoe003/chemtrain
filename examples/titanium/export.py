@@ -32,7 +32,7 @@ def main():
     print(f"Start exporting")
     mlir_str = exporter.export()
 
-    with open(out_dir + "allegro.mlir", "w") as f:
+    with open(out_dir + "/allegro.mlir", "w") as f:
         f.write(mlir_str)
 
 

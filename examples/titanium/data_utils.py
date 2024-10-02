@@ -236,7 +236,7 @@ def estimate_edge_and_triplet_count(dataset, displacement_fn, r_cutoff=0.5, capa
     overflow = False
 
     neighbor_fn = partition.neighbor_list(
-        displacement_fn, 0.0, r_cutoff, capacity_multiplier=capacity_multiplier,
+        displacement_fn, 1.0, r_cutoff, capacity_multiplier=capacity_multiplier,
         disable_cell_list=False, dr_threshold=0.0, fractional_coordinates=True
     )
 
