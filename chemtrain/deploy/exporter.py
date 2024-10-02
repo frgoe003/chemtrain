@@ -9,76 +9,19 @@ import jraph
 
 from typing import Dict, NamedTuple
 
+import jax_md_mod
+from jax_md import util as md_util
+
 from scipy.stats import reciprocal
 
+from . import graphs
 
-@chex.dataclass
-class DenseNeighborGraph:
-
-    idx = None
-    species = None
-
-    @staticmethod
-    def create_symbolic_format(max_atoms, scope):
-        max_neighbors = export.symbolic_shape("max_neighbors", scope=scope)
-
-        idx = jax.ShapeDtypeStruct((max_atoms, max_neighbors), jnp.int32)
-        species = jax.ShapeDtypeStruct((max_atoms,), jnp.int32)
-
-        return DenseNeighborGraph(idx, species)
-
-
-class NeighborList(NamedTuple):
-
-    @staticmethod
-    @abc.abstractmethod
-    def create_symbolic_input_format(max_atoms, scope):
-        """Creates a symbolic representation of the graph.
-
-        Args:
-            max_atoms: The maximum number of atoms, including ghost atoms and
-                padding atoms.
-            scope: The scope to add more symbolic variables.
-
-        The variables should begin with "graph_".
-
-        Returns:
-            Returns a symbolic representation of the graph.
-
-        """
-
-    @staticmethod
-    def create_from_args(position, species, *args):
-        """Creates the neighbor list from inputs to the exported function."""
-
-
-class SimpleSparseNeighborList(NamedTuple):
-
-    senders: Array
-    receivers: Array
-
-    @staticmethod
-    def create_symbolic_input_format(max_atoms, scope):
-        # We do not need
-        max_neighbors, = export.symbolic_shape("graph_max_neighbors", scope=scope)
-
-        senders = jax.ShapeDtypeStruct((max_neighbors,), jnp.int32)
-        receivers = jax.ShapeDtypeStruct((max_neighbors,), jnp.int32)
-
-        return senders, receivers
-
-    @staticmethod
-    def create_from_args(position, species, senders, receivers):
-        graph = SimpleSparseNeighborList(
-            senders=senders, receivers=receivers
-        )
-        return graph
 
 
 class Exporter(metaclass=abc.ABCMeta):
 
     # Use the default graph containing the full neighbor indices
-    graph_type: NeighborList = SimpleSparseNeighborList
+    graph_type: graphs.NeighborList = graphs.SimpleSparseNeighborList
 
     @abc.abstractmethod
     def energy_fn(self, position, species, graph):
@@ -97,12 +40,20 @@ class Exporter(metaclass=abc.ABCMeta):
         pass
 
     def _energy_fn(self, position, species, ghost_mask, *graph_args):
-        # TODO: Maybe do some preprocessing
-        print(f"Params are {self.energy_params}")
-
-        graph = self.graph_type.create_from_args(position, species, *graph_args)
+        graph, build_statistics = self.graph_type.create_from_args(position, species, ghost_mask,*graph_args)
         per_atom_energies = self.energy_fn(position, species, graph)
-        return jnp.sum(per_atom_energies), jnp.sum(per_atom_energies * ghost_mask)
+
+        # Attention: Force is negative gradient of potential
+        total_neg_energy = jnp.float32(-1.0) * md_util.high_precision_sum(
+            per_atom_energies)
+        local_energy = md_util.high_precision_sum(
+            ghost_mask * per_atom_energies)
+
+        # Differentiate w.r.t. the total potential in the box, but exclude
+        # ghost atom contributions to the total potential
+        aux = local_energy, *build_statistics
+
+        return total_neg_energy, aux
 
     def export(self):
         # Using the ghost mask in the last layer we can compute correct forces
@@ -128,15 +79,10 @@ class Exporter(metaclass=abc.ABCMeta):
               f"\tgraph_def: {graph_def}")
 
         exp: export.Exported = export.export(
-            jax.jit(force_and_energy_fn), platforms="CUDA"
+            jax.jit(force_and_energy_fn), platforms=["cuda"]
         )(position_def, species_def, ghost_mask_def, *graph_def)
 
-        mlir_str = "\n".join([
-            line for line in exp.mlir_module().splitlines()
-            if not line.lstrip().startswith("#")
-        ])
-
-        return mlir_str
+        return exp.mlir_module()
 
 
 if __name__ == "__main__":
