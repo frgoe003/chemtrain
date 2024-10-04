@@ -16,7 +16,7 @@ from jax import numpy as jnp, nn, tree_util
 
 import haiku as hk
 
-from chemtrain.deploy import exporter, utils
+from chemtrain.deploy import exporter, utils, graphs
 
 from jax_md_mod import custom_energy
 from jax_md import partition, space
@@ -35,8 +35,7 @@ def build_export_model():
 
     class LennardJonesExport(exporter.Exporter):
 
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
+        graph_type = graphs.DeviceSparseNeighborList
 
         def energy_fn(self, pos, species, graph):
 
@@ -46,15 +45,7 @@ def build_export_model():
                 None, None, None
             )
 
-            # debug.print("Positions {}", pos)
-
             assert neighbors.idx.shape[0] == 2, "Wrong shape"
-
-            sigma = jnp.asarray([3.165, 1.0])
-            epsilon = jnp.asarray([1.0, 0.0])
-
-            # Will apply epsilon = 0 to the energy
-            # species = jnp.where(mask, species, 1)
 
             apply_fn = custom_energy.customn_lennard_jones_neighbor_list(
                 lambda ra, rb, **kwargs: rb - ra, None, None,

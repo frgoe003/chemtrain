@@ -1,10 +1,29 @@
+# Copyright 2023 Multiscale Modeling of Fluid Materials, TU Munich
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Neighbor lists for exporting potential and force models."""
+
 import abc
 import functools
+import typing
+from itertools import product
 
 import numpy as onp
 
 import jax
 from jax import export, numpy as jnp, lax
+from networkx import capacity_scaling
 from numpy.ma.core import product
 from sympy.codegen.cnodes import static
 
@@ -13,11 +32,16 @@ from jax_md import partition, dataclasses
 
 from typing import NamedTuple
 
-class NeighborList(NamedTuple):
+from . import shape_util
+
+@dataclasses.dataclass
+class NeighborList(metaclass=abc.ABCMeta):
+    """Abstract class for neighbor list graphs."""
 
     @staticmethod
+    @shape_util.define_symbols("")
     @abc.abstractmethod
-    def create_symbolic_input_format(max_atoms, scope):
+    def create_symbolic_input_format(*args, **kwargs):
         """Creates a symbolic representation of the graph.
 
         Args:
@@ -37,15 +61,16 @@ class NeighborList(NamedTuple):
         """Creates the neighbor list from inputs to the exported function."""
 
 
+@dataclasses.dataclass
 class SimpleSparseNeighborList(NeighborList):
+    """Simple neighbor list representation using precomputed neighbor list."""
 
     senders: jax.Array
     receivers: jax.Array
 
     @staticmethod
-    def create_symbolic_input_format(max_atoms, scope):
-        # We do not need
-        max_neighbors, = export.symbolic_shape("graph_max_neighbors", scope=scope)
+    @shape_util.define_symbols("max_neighbors")
+    def create_symbolic_input_format(max_neighbors, **kwargs):
 
         senders = jax.ShapeDtypeStruct((max_neighbors,), jnp.int32)
         receivers = jax.ShapeDtypeStruct((max_neighbors,), jnp.int32)
@@ -58,25 +83,92 @@ class SimpleSparseNeighborList(NeighborList):
         return graph, True
 
 
-class DeviceSparseNeighborList(NamedTuple):
+class DeviceSparseNeighborListArgs(NamedTuple):
+    xcells: jax.Array | jax.ShapeDtypeStruct
+    ycells: jax.Array | jax.ShapeDtypeStruct
+    zcells: jax.Array | jax.ShapeDtypeStruct
+    capacity: jax.Array | jax.ShapeDtypeStruct
+
+    ref_pos: jax.Array | jax.ShapeDtypeStruct
+
+    cutoff: jax.Array | jax.ShapeDtypeStruct
+    skin: jax.Array | jax.ShapeDtypeStruct
+
+    senders: jax.Array | jax.ShapeDtypeStruct
+    receivers: jax.Array | jax.ShapeDtypeStruct
+
+
+@dataclasses.dataclass
+class DeviceSparseNeighborList(NeighborList):
+    """Creates the neighbor list graph on the device using a cell list."""
 
     @staticmethod
-    def create_symbolic_input_format(max_atoms, scope):
-        max_neighbors, = export.symbolic_shape("graph_max_neighbors", scope=scope)
+    @shape_util.define_symbols(
+        "max_neighbors, nx, ny, nz, c",
+        ["c <= n_atoms", "27*c^2*nx*ny*nz >= max_neighbors"]
+    )
+    def create_symbolic_input_format(max_neighbors, nx, ny, nz, c, *, n_atoms, **kwargs):
 
-        return
+        # Currently, JAX can only infer dimensions from array shapes but not the
+        # input
+        xcells = jax.ShapeDtypeStruct((nx,), jnp.bool)
+        ycells = jax.ShapeDtypeStruct((ny,), jnp.bool)
+        zcells = jax.ShapeDtypeStruct((nz,), jnp.bool)
+
+        capacity = jax.ShapeDtypeStruct((c,), jnp.bool)
+
+        # We pass reference positions from the previous build to skip the
+        # neighbor list construction if smaller than the input
+        ref_pos = jax.ShapeDtypeStruct((n_atoms, 3), jnp.float32)
+
+        # Increase cutoff by this value to reuse neighbor list when particle
+        # move less than half this distance
+        skin = jax.ShapeDtypeStruct(tuple(), jnp.float32)
+        cutoff = skin
+
+        senders = jax.ShapeDtypeStruct((max_neighbors,), jnp.int32)
+        receivers = jax.ShapeDtypeStruct((max_neighbors,), jnp.int32)
+
+        return (
+            xcells, ycells, zcells, capacity, ref_pos, cutoff, skin, senders, receivers
+        )
 
     @staticmethod
     def create_from_args(positions, species, ghost_mask, *args):
-        partition.neighbor_list()
+        nargs = DeviceSparseNeighborListArgs(*args)
+
+        buffer = jnp.zeros(
+            (
+                nargs.xcells.size,
+                nargs.ycells.size,
+                nargs.zcells.size,
+                nargs.capacity.size
+            ),
+            dtype=jnp.int32
+        )
+
+        # TODO: Skip the recomputation for now
+        # recompute = jnp.max(
+        #     jnp.sum((positions - nargs.ref_pos) ** 2.0, axis=-1)
+        # ) < (nargs.skin / 2) ** 2
+
+        neighbors, statistics = compute_neighbor_list(
+            positions, buffer, nargs.senders, nargs.cutoff, eps=1e-3
+        )
+
+        return SimpleSparseNeighborList(*neighbors), statistics.tuple
 
 
 @dataclasses.dataclass
 class NeighborListStatistics:
 
     min_cell_capacity: int
-    cell_too_small: bool
+    cell_too_small: int
     max_neighbors: int
+
+    @property
+    def tuple(self):
+        return dataclasses.astuple(self)
 
 
 @jax.jit
@@ -123,17 +215,22 @@ def compute_cell_list(position, id_buffer, cutoff, mask=None, eps=1e-3):
     # Potential workaround: Increase box dimension such that smallest cell size
     # is as large as the cutoff. Will work if cell capacity is big enough
     cell_sizes = jnp.diag(box) / jnp.asarray(cell_counts)
-    min_cell_size = jnp.min(cell_sizes)
-    cell_too_small = (min_cell_size < cutoff)
+    cell_too_small = jnp.sum((cell_sizes < cutoff) * 2 ** jnp.arange(3))
 
     # Scale the box dimensions such that all cell sizes are larger than the cutoff
     cell_sizes *= 1 + (cell_sizes < cutoff) * ((cutoff - cell_sizes) / cell_sizes)
 
     # Get the cell ids for each particle in every dimension (n, x_id, y_id, z_id)
-    # and transfrom into flat ids
+    # and transfrom into flat ids. Assign invalid particles an invalid
+    # cell id such that they are not member to any of the cells
     nx, ny, nz = cell_counts
+    max_cell_ids = 1
+    for n_in_dim in cell_counts:
+        max_cell_ids *= n_in_dim
+
     cell_ids = jnp.int32(jnp.floor(position / cell_sizes[jnp.newaxis, :]))
     cell_ids = jnp.sum(cell_ids * jnp.asarray([[nz * ny, nz, 1]]), axis=-1)
+    cell_ids = jnp.where(mask, cell_ids, max_cell_ids)
 
     # We can now count how often a particle appears in each cell
     cell_occupancy = jax.ops.segment_sum(jnp.ones_like(cell_ids), cell_ids, cell_ids.size)
@@ -148,13 +245,106 @@ def compute_cell_list(position, id_buffer, cutoff, mask=None, eps=1e-3):
     particle_ids = jnp.arange(position.shape[0])
     unique_id_per_segment = jnp.mod(jnp.arange(position.shape[0]), capacity)
 
-    max_cell_ids = 1
-    for n_in_dim in cell_counts:
-        max_cell_ids *= n_in_dim
-
     new_id_buffer = jnp.full((max_cell_ids + 1, capacity), position.shape[0])
     new_id_buffer = new_id_buffer.at[cell_ids[sort_idx], unique_id_per_segment].set(particle_ids[sort_idx])
     new_id_buffer = new_id_buffer[:-1, :].reshape(id_buffer.shape)
 
     statistics = NeighborListStatistics(min_cell_capacity, cell_too_small, 0)
     return new_id_buffer, statistics
+
+
+@jax.jit
+def compute_neighbor_list(position, id_buffer, senders, cutoff, mask=None, eps=1e-3):
+    """Computes a sparse neighbor list using a cell list.
+
+    Args:
+        position: The positions of the atoms.
+        id_buffer: Determines the dimensions of the grid and the cell capacity.
+        senders: Determines the maximum number of edges.
+        cutoff: Includes neighbor up to this distance.
+        mask: Specifies whether particles should be ignored (mask = 0)
+        eps: Tolerance increasing the box and cells to avoid wrong classification.
+
+    Returns:
+        Returns a tuple with sender-receiver pairs and statistics of the
+        neighbor list construction.
+
+    """
+    if mask is None:
+        mask = jnp.ones(position.shape[0], dtype=bool)
+
+    invalid_idx = position.shape[0]
+
+    # Compute the offsets of all neighboring cells
+    offset_in_dim = jnp.arange(3) - 1
+    xn, yn, zn = jnp.meshgrid(offset_in_dim, offset_in_dim, offset_in_dim, indexing='ij')
+    nx, ny, nz, capacity = id_buffer.shape
+
+    id_buffer, statistics = compute_cell_list(
+        position, id_buffer, cutoff, mask=mask, eps=eps)
+
+    # Build the neighbor list for all cells
+    @functools.partial(jax.vmap, in_axes=(0, None, None))
+    @functools.partial(jax.vmap, in_axes=(None, 0, None))
+    @functools.partial(jax.vmap, in_axes=(None, None, 0))
+    def cell_candidate_fn(cx, cy, cz):
+        # Get the ids of all neighboring cells. For at least
+        # three cells, this should not count edges double
+        all_cx = jnp.mod(cx + xn, nx).ravel()
+        all_cy = jnp.mod(cy + yn, ny).ravel()
+        all_cz = jnp.mod(cz + zn, nz).ravel()
+
+        # These are the indices of all particles that could be neighbors.
+        # Senders are only local atoms such that no directed edges will be
+        # coundted double
+        receiver_idxs = id_buffer[all_cx, all_cy, all_cz, :]
+        sender_idxs = id_buffer[cx, cy, cz, :]
+
+        # Transform to sparse list
+        cell_senders, cell_receivers = jnp.meshgrid(
+            sender_idxs, receiver_idxs.ravel(), indexing='ij')
+        cell_senders = cell_senders.ravel()
+        cell_receivers = cell_receivers.ravel()
+
+        sender_pos = position[cell_senders, :]
+        receiver_pos = position[cell_receivers, :]
+
+        # Compute all the distances (senders, receivers)
+        dist_sq = jnp.sum((receiver_pos - sender_pos) ** 2, axis=-1)
+        cut_sq = jnp.square(cutoff)
+
+        # Select valid neighbors within cutoff that are not self
+        cell_mask = dist_sq < cut_sq
+
+        # Remove edges from or to invalid receivers
+        cell_mask = jnp.logical_and(cell_mask, mask[cell_senders])
+        cell_mask = jnp.logical_and(cell_mask, mask[cell_receivers])
+
+        # Remove edges to self
+        cell_mask = jnp.logical_and(cell_mask, cell_senders != cell_receivers)
+
+        # Apply invalid indices form senders to receivers and vice versa
+        cell_mask = jnp.logical_and(cell_mask, cell_senders < invalid_idx)
+        cell_mask = jnp.logical_and(cell_mask, cell_receivers < invalid_idx)
+
+        # Apply mask to neighbor list
+        cell_senders = jnp.where(cell_mask, cell_senders, invalid_idx)
+        cell_receivers = jnp.where(cell_mask, cell_receivers, invalid_idx)
+
+        print(
+            f"Senders: {cell_senders.shape}, Receivers: {cell_receivers.shape}")
+
+        return cell_senders, cell_receivers
+
+    new_senders, new_receivers = cell_candidate_fn(
+        jnp.arange(nx), jnp.arange(ny), jnp.arange(nz)
+    )
+    new_senders, new_receivers = new_senders.ravel(), new_receivers.ravel()
+
+    max_neighbors = senders.size
+    valid_neighbors = jnp.sum(new_receivers < invalid_idx)
+
+    statistics = statistics.set(max_neighbors=valid_neighbors)
+
+    _, prune_idx = lax.top_k(-new_receivers, max_neighbors)
+    return (new_senders[prune_idx], new_receivers[prune_idx]), statistics
