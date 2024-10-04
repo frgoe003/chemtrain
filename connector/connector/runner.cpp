@@ -72,6 +72,9 @@ namespace jcn {
         if (config.neighbor_list_type == "SimpleSparseNeighborList") {
             neighbor_list = std::make_unique<SimpleSparseNeighborList>();
             neighbor_list->initialize(config.neighbor_list_multipliers);
+        } else if (config.neighbor_list_type == "DeviceSparseNeighborList") {
+            neighbor_list = std::make_unique<DeviceSparseNeighborList>();
+            neighbor_list->initialize(config.neighbor_list_multipliers);
         } else {
             throw std::runtime_error("Unknown neighbor list type: " + config.neighbor_list_type);
         }
@@ -94,82 +97,92 @@ namespace jcn {
     double Runner::compute_forces(
         int inum, int gnum, double **x, double **f, int *type, int *ilist, int *numneigh, int **firstneigh, bool list_changed) {
 
-            // First we build the domain and the neighbor list, then we can
-            // determine the input shapes to the program
+            int max_trials = 10;
 
-            AtomShapes atoms = atom_builder.get_shapes(inum, gnum);
-            NeighborListShapes neighbors = neighbor_list->get_neighbor_list_shapes(
-                atoms.n_atoms, inum, numneigh);
+            for (int i = 0; i < max_trials; i++) {
 
-            // Now we have all shapes setup to build the module if required
-            if (!executable || atoms.reallocate || neighbors.reallocate ) {
-                 xla::XlaComputation callable = compiler.compile(
-                    atoms.n_atoms, neighbors.graph_shapes, neighbors.graph_types);
+                // First we build the domain and the neighbor list, then we can
+                // determine the input shapes to the program
 
-                // No idea what to specify here...
-                xla::CompileOptions compile_options;
+                AtomShapes atoms = atom_builder.get_shapes(inum, gnum);
+                NeighborListShapes neighbors = neighbor_list->get_neighbor_list_shapes(
+                    atoms.n_atoms, inum, numneigh);
 
-                absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> executable_or_status = client->Compile(callable, compile_options);
+                // Now we have all shapes setup to build the module if required
+                if (!executable || atoms.reallocate || neighbors.reallocate ) {
+                     xla::XlaComputation callable = compiler.compile(
+                        atoms.n_atoms, neighbors.graph_shapes, neighbors.graph_types);
 
-                if (!executable_or_status.ok()) {
-                    throw std::runtime_error("Failed to compile: " + executable_or_status.status().ToString());
+                    // No idea what to specify here...
+                    xla::CompileOptions compile_options;
+
+                    absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> executable_or_status = client->Compile(callable, compile_options);
+
+                    if (!executable_or_status.ok()) {
+                        throw std::runtime_error("Failed to compile: " + executable_or_status.status().ToString());
+                    }
+
+                    executable = std::move(executable_or_status).value();
                 }
 
-                executable = std::move(executable_or_status).value();
+                auto start = std::chrono::high_resolution_clock::now();
+
+                // Only transfer new data to the GPU if necessary
+                bool update = (neighbors.reallocate || list_changed);
+
+                // Now we have to create the buffers, i.e., copy the data onto
+                // the device
+                std::vector<xla::PjRtBuffer*> buffer_ptrs = atom_builder.build_domain(client.get(), 0, inum, gnum, x, type);
+
+                std::vector<xla::PjRtBuffer*> graph_buffers = neighbor_list->build_graph(
+                    client.get(), 0, inum, ilist, numneigh, firstneigh, update);
+                buffer_ptrs.insert(buffer_ptrs.end(), graph_buffers.begin(), graph_buffers.end());
+
+                std::vector<std::vector<xla::PjRtBuffer*>> arg_handles = {buffer_ptrs};
+
+                auto end = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> duration = end - start;
+                std::cout << "Time taken for buffer creation: " << duration.count() << " seconds" << std::endl;
+
+                // Check if arg_handles is correctly populated
+                if (arg_handles.empty() || arg_handles[0].empty()) {
+                    throw std::runtime_error("arg_handles is empty or not properly populated");
+                }
+
+                // No idea what to specify here...
+                xla::ExecuteOptions execute_options;
+
+                start = std::chrono::high_resolution_clock::now();
+
+                absl::StatusOr<std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>> results;
+                results = executable->Execute(
+                    absl::Span<const std::vector<xla::PjRtBuffer*>>(arg_handles),
+                    execute_options
+                );
+
+                end = std::chrono::high_resolution_clock::now();
+                duration = end - start;
+                std::cout << "Time taken for computation: " << duration.count() << " seconds" << std::endl;
+
+                if (!results.ok()) {
+                    throw std::runtime_error("Failed to execute: " + results.status().ToString());
+                }
+
+                // Now we have to copy the results back to the host
+                std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>> results_buffers = std::move(results).value();
+
+                bool success = neighbor_list->evaluate_statistics(results_buffers);
+
+                // Write back the results
+                double potential = atom_builder.evaluate_domain(
+                    success, inum, f, std::move(results_buffers[0]));
+
+                // Finished
+                if (success) return potential;
+
             }
 
-            auto start = std::chrono::high_resolution_clock::now();
-
-            // Only transfer new data to the GPU if necessary
-            bool update = (neighbors.reallocate || list_changed);
-
-            // Now we have to create the buffers, i.e., copy the data onto
-            // the device
-            std::vector<xla::PjRtBuffer*> buffer_ptrs = atom_builder.build_domain(client.get(), 0, inum, gnum, x, type);
-
-            std::vector<xla::PjRtBuffer*> graph_buffers = neighbor_list->build_graph(
-                client.get(), 0, inum, ilist, numneigh, firstneigh, update);
-            buffer_ptrs.insert(buffer_ptrs.end(), graph_buffers.begin(), graph_buffers.end());
-
-            std::vector<std::vector<xla::PjRtBuffer*>> arg_handles = {buffer_ptrs};
-
-            auto end = std::chrono::high_resolution_clock::now();
-            std::chrono::duration<double> duration = end - start;
-            std::cout << "Time taken for buffer creation: " << duration.count() << " seconds" << std::endl;
-
-            // Check if arg_handles is correctly populated
-            if (arg_handles.empty() || arg_handles[0].empty()) {
-                throw std::runtime_error("arg_handles is empty or not properly populated");
-            }
-
-            // No idea what to specify here...
-            xla::ExecuteOptions execute_options;
-
-            start = std::chrono::high_resolution_clock::now();
-
-            absl::StatusOr<std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>> results;
-            results = executable->Execute(
-                absl::Span<const std::vector<xla::PjRtBuffer*>>(arg_handles),
-                execute_options
-            );
-
-            end = std::chrono::high_resolution_clock::now();
-            duration = end - start;
-            std::cout << "Time taken for computation: " << duration.count() << " seconds" << std::endl;
-
-            if (!results.ok()) {
-                throw std::runtime_error("Failed to execute: " + results.status().ToString());
-            }
-
-            // Now we have to copy the results back to the host
-            std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>> results_buffers = std::move(results).value();
-
-            // Write back the results
-            double potential = atom_builder.evaluate_domain(
-                inum, f, std::move(results_buffers[0]));
-
-
-            return potential;
+        throw std::runtime_error("Failed to compute forces after " + std::to_string(max_trials) + " trials");
 
       }
 

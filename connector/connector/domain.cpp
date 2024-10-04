@@ -106,34 +106,40 @@ namespace jcn {
 
     }
 
-    double AtomBuilder::evaluate_domain(int inum, double **f, std::vector<std::unique_ptr<xla::PjRtBuffer>> results) {
-        auto start = std::chrono::high_resolution_clock::now();
+    double AtomBuilder::evaluate_domain(bool success, int inum, double **f, std::vector<std::unique_ptr<xla::PjRtBuffer>> results) {
 
-        absl::StatusOr<std::shared_ptr<xla::Literal>> force_literal = results[0]->ToLiteralSync();
-        absl::StatusOr<std::shared_ptr<xla::Literal>> energy_literal = results[1]->ToLiteralSync();
+        double potential;
 
-        if (!force_literal.ok() || !energy_literal.ok()) {
-            throw std::runtime_error("Failed to convert buffer to literal");
+        if (success) {
+            auto start = std::chrono::high_resolution_clock::now();
+
+            absl::StatusOr<std::shared_ptr<xla::Literal>> force_literal = results[0]->ToLiteralSync();
+            absl::StatusOr<std::shared_ptr<xla::Literal>> energy_literal = results[1]->ToLiteralSync();
+
+            if (!force_literal.ok() || !energy_literal.ok()) {
+                throw std::runtime_error("Failed to convert buffer to literal");
+            }
+
+            float *force_data = force_literal.value()->data<float>().data();
+            float *potential_data = energy_literal.value()->data<float>().data();
+
+            // We skip all ghost atoms and padded atoms and only write back forces
+            // on the real atoms
+            for (int i = 0; i < inum; i++) {
+                std::transform(force_data + 3 * i, force_data + 3 * (i + 1),
+                    f[i], [](float t) { return static_cast<double>(t); });
+            }
+
+            // Remove the buffers after computation
+            buffers.clear();
+
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> duration = end - start;
+            std::cout << "Time taken for force backtransfer: " << duration.count() << " seconds" << std::endl;
+
+            double potential = static_cast<double>(*potential_data);
+
         }
-
-        float *force_data = force_literal.value()->data<float>().data();
-        float *potential_data = energy_literal.value()->data<float>().data();
-
-        // We skip all ghost atoms and padded atoms and only write back forces
-        // on the real atoms
-        for (int i = 0; i < inum; i++) {
-            std::transform(force_data + 3 * i, force_data + 3 * (i + 1),
-                f[i], [](float t) { return static_cast<double>(t); });
-        }
-
-        // Remove the buffers after computation
-        buffers.clear();
-
-        auto end = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double> duration = end - start;
-        std::cout << "Time taken for force backtransfer: " << duration.count() << " seconds" << std::endl;
-
-        double potential = static_cast<double>(*potential_data);
 
         // Destroy the result buffers
         results.clear();

@@ -63,7 +63,7 @@ namespace jcn {
          * @param forces Forces from the XLA computation
          * @param potential Potential from the XLA computation
          */
-        double evaluate_domain(int inum, double **f, std::vector<std::unique_ptr<xla::PjRtBuffer>> results);
+        double evaluate_domain(bool success, int inum, double **f, std::vector<std::unique_ptr<xla::PjRtBuffer>> results);
 
     private:
         int max_atoms;

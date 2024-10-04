@@ -35,6 +35,11 @@ namespace jcn {
         virtual std::vector<xla::PjRtBuffer*> build_graph(
             xla::PjRtClient* client, int device_id, int inum, int *ilist,
                 int *numneigh, int **firstneigh, bool update) = 0;
+
+        virtual bool evaluate_statistics(
+            std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results
+        ) { return true; }; // Returns success if not required
+
     };
 
     class SimpleSparseNeighborList : public GraphBuilder {
@@ -66,6 +71,53 @@ namespace jcn {
 
             int n_edges = 0;
             int fill_value = 0;
+
+    };
+
+    class DeviceSparseNeighborList : public GraphBuilder {
+
+        public:
+
+            void initialize(std::vector<float> multipliers) override;
+
+            NeighborListShapes get_neighbor_list_shapes(
+                int max_atoms, int inum, int* numneigh) override;
+
+            std::vector<xla::PjRtBuffer*> build_graph(
+                xla::PjRtClient* client, int device_id, int inum, int *ilist,
+                int *numneigh, int **firstneigh, bool update) override;
+
+            // Adjusts capacities if necessary
+            bool evaluate_statistics(
+                std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results
+            ) override;
+
+        private:
+
+            float edge_multiplier;
+            float capacity_multiplier;
+
+            // This will trigger an overflow during the first execution
+            // and return better estimates
+            int n_edges = 1;
+            int n_cells_x = 3;
+            int n_cells_y = 3;
+            int n_cells_z = 3;
+            int capacity = 1;
+
+            std::unique_ptr<xla::Literal> xcells_lit;
+            std::unique_ptr<xla::Literal> ycells_lit;
+            std::unique_ptr<xla::Literal> zcells_lit;
+            std::unique_ptr<xla::Literal> capacity_lit;
+            std::unique_ptr<xla::Literal> senders_lit;
+
+            std::unique_ptr<xla::PjRtBuffer> xcells_buffer;
+            std::unique_ptr<xla::PjRtBuffer> ycells_buffer;
+            std::unique_ptr<xla::PjRtBuffer> zcells_buffer;
+            std::unique_ptr<xla::PjRtBuffer> capacity_buffer;
+            std::unique_ptr<xla::PjRtBuffer> senders_buffer;
+
+            bool adjust_dimension(std::unique_ptr<xla::Literal>& cells, int size, xla::PrimitiveType type);
 
     };
 
