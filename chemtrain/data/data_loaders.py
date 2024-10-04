@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import jax.numpy as jnp
+import jax.random
 from jax_sgmc.data import numpy_loader, core
 
 from chemtrain.data.preprocessing import train_val_test_split
@@ -63,6 +64,7 @@ def init_dataloaders(dataset, train_ratio=0.7, val_ratio=0.1, shuffle=False):
 def init_batch_functions(data_loader: core.HostDataLoader,
                          mb_size: int,
                          cache_size: int = 1,
+                         rng_seed: int = None,
                          ) -> core.RandomBatch:
     """Initializes reference data access outside jit-compiled functions.
 
@@ -73,6 +75,7 @@ def init_batch_functions(data_loader: core.HostDataLoader,
         cache_size: Number of batches in the cache. A larger number is
             faster, but requires more memory.
         mb_size: Size of the data batch.
+        rng_seed: Seed to add PRNGKeys to the batches to simplify randomness.
 
     Returns:
       Returns a tuple of functions to initialize a new reference data state, get
@@ -105,18 +108,28 @@ def init_batch_functions(data_loader: core.HostDataLoader,
             cached_batches_count=jnp.array(cache_size),
             current_line=jnp.array(0),
             chain_id=jnp.array(chain_id),
-            valid=initial_mask
+            valid=initial_mask,
+            state=jax.random.PRNGKey(rng_seed) if rng_seed is not None else None,
         )
+
+        print(f"Initialized cache state to {inital_cache_state.state}")
 
         return inital_cache_state
 
     def _new_cache_fn(state: core.CacheState,
-                      ) -> core.Batch:
+                      ) -> core.CacheState:
         new_data, masks = data_loader.get_batches(state.chain_id)
 
         if masks is None:
             # Assume all samples to be valid.
             masks = jnp.ones(mask_shape, dtype=jnp.bool_)
+
+        internal_state = state.state
+        if internal_state is not None:
+            internal_state, *splits = jax.random.split(
+                internal_state, cache_size * mb_size + 1)
+            splits = jnp.asarray(splits).reshape((cache_size, mb_size, -1))
+            new_data['rng'] = splits
 
         new_state = core.CacheState(
             cached_batches_count=state.cached_batches_count,
@@ -124,7 +137,8 @@ def init_batch_functions(data_loader: core.HostDataLoader,
             current_line=jnp.array(0),
             chain_id=state.chain_id,
             valid=masks,
-            callback_uuid=state.callback_uuid
+            callback_uuid=state.callback_uuid,
+            state=internal_state
         )
 
         return new_state
@@ -163,7 +177,8 @@ def init_batch_functions(data_loader: core.HostDataLoader,
             cached_batches_count=data_state.cached_batches_count,
             current_line=current_line,
             chain_id=data_state.chain_id,
-            valid=data_state.valid
+            valid=data_state.valid,
+            state=data_state.state
         )
 
         info = core.MiniBatchInformation(

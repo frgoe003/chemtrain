@@ -791,7 +791,7 @@ class DataParallelTrainer(MLETrainerTemplate):
 
         self.set_loader(loaders.train_loader, stage=stage, include_all=include_all, **kwargs)
 
-    def set_loader(self, data_loader, stage="training", include_all=False, **kwargs):
+    def set_loader(self, data_loader, stage="training", include_all=False, rng_seed=None, **kwargs):
         """Sets a data loader for a specific stage, e.g., training.
 
         If the dataset consists of numpy arrays, it is simpler to use
@@ -804,6 +804,8 @@ class DataParallelTrainer(MLETrainerTemplate):
             include_all: Compute the loss for all samples of the split by
                 padding the last batch and masking out double samples.
                 Not applied to the training split.
+            rng_seed: Seed to include random keys in the reference data.
+                The keys are refreshed whenever a new batch is drawn.
 
         """
         if stage in self.release_fns.keys():
@@ -847,6 +849,7 @@ class DataParallelTrainer(MLETrainerTemplate):
         # Initialize the access functions
         batch_fns = data_loaders.init_batch_functions(
             data_loader, mb_size=batch_size, cache_size=self.batch_cache,
+            rng_seed=rng_seed,
         )
         init_train_state, get_train_batch, release = batch_fns
 
