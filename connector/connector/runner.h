@@ -46,7 +46,8 @@ namespace jcn {
         std::unique_ptr<xla::PjRtClient> client;
         std::unique_ptr<xla::PjRtLoadedExecutable> executable;
 
-        SimpleSparseNeighborList neighbor_list;
+        std::unique_ptr<GraphBuilder> neighbor_list;
+
         AtomBuilder atom_builder;
         Compiler compiler;
 

@@ -12,7 +12,8 @@ namespace jcn {
         std::string mlir_module;
 
         // String indicating the type of neighbor list expected by the program
-        std::string neighbor_list_type;
+        std::string neighbor_list_type = "SimpleSparseNeighborList";
+        std::vector<float> neighbor_list_multipliers = {1.5};
 
         // String identifying the backend used for execution, e.g., cuda.
         std::string backend;

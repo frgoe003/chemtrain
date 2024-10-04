@@ -64,10 +64,17 @@ namespace jcn {
 
 
     Runner::Runner(ConnectorConfig config) :
-        neighbor_list(1.5), // Hard-coded the multipliers for now
         atom_builder(1.5),
         compiler(config.mlir_module)
     {
+
+        // Select from the available neighbor list types
+        if (config.neighbor_list_type == "SimpleSparseNeighborList") {
+            neighbor_list = std::make_unique<SimpleSparseNeighborList>();
+            neighbor_list->initialize(config.neighbor_list_multipliers);
+        } else {
+            throw std::runtime_error("Unknown neighbor list type: " + config.neighbor_list_type);
+        }
 
         // TODO: Maybe move this stuff to some better place
         initialize();
@@ -91,7 +98,7 @@ namespace jcn {
             // determine the input shapes to the program
 
             AtomShapes atoms = atom_builder.get_shapes(inum, gnum);
-            NeighborListShapes neighbors = neighbor_list.get_neighbor_list_shapes(
+            NeighborListShapes neighbors = neighbor_list->get_neighbor_list_shapes(
                 atoms.n_atoms, inum, numneigh);
 
             // Now we have all shapes setup to build the module if required
@@ -120,7 +127,7 @@ namespace jcn {
             // the device
             std::vector<xla::PjRtBuffer*> buffer_ptrs = atom_builder.build_domain(client.get(), 0, inum, gnum, x, type);
 
-            std::vector<xla::PjRtBuffer*> graph_buffers = neighbor_list.build_graph(
+            std::vector<xla::PjRtBuffer*> graph_buffers = neighbor_list->build_graph(
                 client.get(), 0, inum, ilist, numneigh, firstneigh, update);
             buffer_ptrs.insert(buffer_ptrs.end(), graph_buffers.begin(), graph_buffers.end());
 

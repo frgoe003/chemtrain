@@ -22,22 +22,38 @@ namespace jcn {
         bool reallocate;
     };
 
-    class SimpleSparseNeighborList {
+    class GraphBuilder {
+    public:
+        GraphBuilder() = default;
+        ~GraphBuilder() = default;
+
+        virtual void initialize(std::vector<float> multiplier) = 0;
+
+        virtual NeighborListShapes get_neighbor_list_shapes(
+            int max_atoms, int inum, int* numneigh) = 0;
+
+        virtual std::vector<xla::PjRtBuffer*> build_graph(
+            xla::PjRtClient* client, int device_id, int inum, int *ilist,
+                int *numneigh, int **firstneigh, bool update) = 0;
+    };
+
+    class SimpleSparseNeighborList : public GraphBuilder {
 
         public:
-            SimpleSparseNeighborList(float edge_multiplier);
-            ~SimpleSparseNeighborList() = default;
-
             // TODO: Documentation
             //
             // @param ilist: Index of the sender atom
             // @param numneigh: Number of neighbors for the sender atom
             // @param firstneigh: Start of the neighbor list for the first atom
+
+            void initialize(std::vector<float> multipliers) override;
+
             NeighborListShapes get_neighbor_list_shapes(
-                int max_atoms, int inum, int* numneigh);
+                int max_atoms, int inum, int* numneigh) override;
 
             std::vector<xla::PjRtBuffer*> build_graph(
-                xla::PjRtClient* client, int device_id, int inum, int *ilist, int *numneigh, int **firstneigh, bool update);
+                xla::PjRtClient* client, int device_id, int inum, int *ilist,
+                int *numneigh, int **firstneigh, bool update) override;
 
         private:
             float edge_multiplier;

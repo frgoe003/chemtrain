@@ -16,8 +16,9 @@
 
 namespace jcn {
 
-    SimpleSparseNeighborList::SimpleSparseNeighborList(float edge_multiplier)
-        : edge_multiplier(edge_multiplier) {}
+    void SimpleSparseNeighborList::initialize(std::vector<float> multipliers) {
+        edge_multiplier = multipliers[0];
+    }
 
     NeighborListShapes SimpleSparseNeighborList::get_neighbor_list_shapes(
         int max_atoms, int inum, int* numneigh) {
