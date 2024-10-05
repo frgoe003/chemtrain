@@ -30,8 +30,9 @@ namespace jcn {
                xla::F32, absl::Span<const int64_t>{max_atoms, 3});
             xla::Shape species_shape = xla::ShapeUtil::MakeShape(
                xla::S32, absl::Span<const int64_t>{max_atoms,});
-            xla::Shape ghost_shape = xla::ShapeUtil::MakeShape(
-               xla::PRED, absl::Span<const int64_t>{max_atoms,});
+
+            xla::Shape count_shape = xla::ShapeUtil::MakeShape(
+               xla::S32, absl::Span<const int64_t>{1,});
 
             // Destroy old literals and allocate new ones with large capacity
 //            if (position_literal) {
@@ -42,7 +43,8 @@ namespace jcn {
 
             position_literal = std::make_unique<xla::Literal>(xla::Literal::CreateFromShape(position_shape));
             species_literal = std::make_unique<xla::Literal>(xla::Literal::CreateFromShape(species_shape));
-            ghosts_literal = std::make_unique<xla::Literal>(xla::Literal::CreateFromShape(ghost_shape));
+            locals_literal = std::make_unique<xla::Literal>(xla::Literal::CreateFromShape(count_shape));
+            ghosts_literal = std::make_unique<xla::Literal>(xla::Literal::CreateFromShape(count_shape));
         }
 
         return AtomShapes{max_atoms, reallocate};
@@ -62,7 +64,6 @@ namespace jcn {
 
         float *position_data = position_literal->data<float>().data();
         int *species_data = species_literal->data<int>().data();
-        bool *ghosts_data = ghosts_literal->data<bool>().data();
 
         // Collect data for all local atoms and ghost atoms
         for (int i = 0; i < inum + gnum; i++) {
@@ -70,13 +71,13 @@ namespace jcn {
         }
         std::fill(position_data + (inum + gnum) * 3, position_data + max_atoms * 3, 0.0f);
 
-        // Set ghost mask for local atoms
-        std::fill(ghosts_data, ghosts_data + inum, true);
-        std::fill(ghosts_data + inum, ghosts_data + max_atoms, false);
-
         // Adjust species values
         std::transform(species_data, species_data + inum + gnum, species_data, [](int t) { return t - 1; });
         std::fill(species_data + inum + gnum, species_data + max_atoms, 0);
+
+        // Provide information about number of ghost and number of local atoms
+        locals_literal->data<int>().data()[0] = inum;
+        ghosts_literal->data<int>().data()[0] = gnum;
 
         std::cout << "Position of atom 3: " << position_data[3] << position_data[4] << position_data[5] << std::endl;
 
@@ -93,8 +94,10 @@ namespace jcn {
         // Create the buffers
      	// TODO: Maybe explicit deallocation is required
 
+        buffers.clear();
         buffers.push_back(create_buffer(client, device_id, position_literal.get()));
         buffers.push_back(create_buffer(client, device_id, species_literal.get()));
+        buffers.push_back(create_buffer(client, device_id, locals_literal.get()));
         buffers.push_back(create_buffer(client, device_id, ghosts_literal.get()));
 
         std::vector<xla::PjRtBuffer*> buffer_ptrs;
@@ -106,15 +109,15 @@ namespace jcn {
 
     }
 
-    double AtomBuilder::evaluate_domain(bool success, int inum, double **f, std::vector<std::unique_ptr<xla::PjRtBuffer>> results) {
+    double AtomBuilder::evaluate_domain(bool success, int inum, double **f, std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results) {
 
         double potential;
 
         if (success) {
             auto start = std::chrono::high_resolution_clock::now();
 
-            absl::StatusOr<std::shared_ptr<xla::Literal>> force_literal = results[0]->ToLiteralSync();
-            absl::StatusOr<std::shared_ptr<xla::Literal>> energy_literal = results[1]->ToLiteralSync();
+            absl::StatusOr<std::shared_ptr<xla::Literal>> force_literal = results[0][0]->ToLiteralSync();
+            absl::StatusOr<std::shared_ptr<xla::Literal>> energy_literal = results[0][1]->ToLiteralSync();
 
             if (!force_literal.ok() || !energy_literal.ok()) {
                 throw std::runtime_error("Failed to convert buffer to literal");
@@ -130,19 +133,18 @@ namespace jcn {
                     f[i], [](float t) { return static_cast<double>(t); });
             }
 
-            // Remove the buffers after computation
-            buffers.clear();
+            std::cout << "Force of atom 3: " << force_data[3] << force_data[4] << force_data[5] << std::endl;
 
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double> duration = end - start;
             std::cout << "Time taken for force backtransfer: " << duration.count() << " seconds" << std::endl;
 
-            double potential = static_cast<double>(*potential_data);
+            potential = static_cast<double>(potential_data[0]);
+
+            // Remove the buffers after computation
+            buffers.clear();
 
         }
-
-        // Destroy the result buffers
-        results.clear();
 
         return potential;
 

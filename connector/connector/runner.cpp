@@ -64,7 +64,7 @@ namespace jcn {
 
 
     Runner::Runner(ConnectorConfig config) :
-        atom_builder(1.5),
+        atom_builder(1.25),
         compiler(config.mlir_module)
     {
 
@@ -100,6 +100,8 @@ namespace jcn {
             int max_trials = 10;
 
             for (int i = 0; i < max_trials; i++) {
+
+                auto trial_start = std::chrono::high_resolution_clock::now();
 
                 // First we build the domain and the neighbor list, then we can
                 // determine the input shapes to the program
@@ -160,10 +162,6 @@ namespace jcn {
                     execute_options
                 );
 
-                end = std::chrono::high_resolution_clock::now();
-                duration = end - start;
-                std::cout << "Time taken for computation: " << duration.count() << " seconds" << std::endl;
-
                 if (!results.ok()) {
                     throw std::runtime_error("Failed to execute: " + results.status().ToString());
                 }
@@ -171,11 +169,41 @@ namespace jcn {
                 // Now we have to copy the results back to the host
                 std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>> results_buffers = std::move(results).value();
 
+                // Iterate through the results_buffers and print the shapes
+for (const auto& buffer_vector : results_buffers) {
+    std::cout << "Print contents" << std::endl;
+    for (const auto& buffer : buffer_vector) {
+        if (buffer) {
+            // Use ToLiteralSync to get the shape information
+            absl::StatusOr<std::shared_ptr<xla::Literal>> literal_or_status = buffer->ToLiteralSync();
+            if (literal_or_status.ok()) {
+                auto literal = literal_or_status.value();
+                std::cout << "Buffer shape: " << literal->shape().ToString() << std::endl;
+            } else {
+                std::cout << "Failed to get literal: " << literal_or_status.status().ToString() << std::endl;
+            }
+        } else {
+            std::cout << "Buffer is null" << std::endl;
+        }
+    }
+}
+
                 bool success = neighbor_list->evaluate_statistics(results_buffers);
+
+                end = std::chrono::high_resolution_clock::now();
+                duration = end - start;
+                std::cout << "Time taken for computation: " << duration.count() << " seconds" << std::endl;
+
 
                 // Write back the results
                 double potential = atom_builder.evaluate_domain(
-                    success, inum, f, std::move(results_buffers[0]));
+                    success, inum, f, results_buffers);
+
+                auto trial_end = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> trial_duration = trial_end - trial_start;
+                std::cout << "Time taken for trial: " << trial_duration.count() << " seconds" << std::endl;
+
+                results_buffers.clear();
 
                 // Finished
                 if (success) return potential;

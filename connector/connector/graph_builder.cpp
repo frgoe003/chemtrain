@@ -132,12 +132,14 @@ namespace jcn {
         // Check if evaluation of the statistics increased the number of cells
         if (cells && cells->shape().dimensions(0) >= size) return false;
 
+        std::cout << "Reallocate literal" << std::endl;
+
         // Reallocate the cells
         xla::Shape shape = xla::ShapeUtil::MakeShape(
             type, absl::Span<const int64_t>{size});
 
         cells = std::make_unique<xla::Literal>(xla::Literal::CreateFromShape(shape));
-        cells->PopulateWithValue(0); // Value is not important
+        // cells->PopulateWithValue(0); // Value is not important
 
         return true;
     }
@@ -151,17 +153,18 @@ namespace jcn {
          bool reallocate = false;
 
          // Check the cell dimensions (works also for the capacity and senders)
-         reallocate |= adjust_dimension(senders_lit, n_edges, xla::S32);
          reallocate |= adjust_dimension(xcells_lit, n_cells_x, xla::PRED);
          reallocate |= adjust_dimension(ycells_lit, n_cells_y, xla::PRED);
          reallocate |= adjust_dimension(zcells_lit, n_cells_z, xla::PRED);
          reallocate |= adjust_dimension(capacity_lit, capacity, xla::PRED);
+         reallocate |= adjust_dimension(senders_lit, n_edges, xla::S32);
+
 
          std::vector<std::vector<int64_t>> graph_shapes = {
-             {n_edges}, {n_cells_x}, {n_cells_y}, {n_cells_z}, {capacity}
+             {n_cells_x}, {n_cells_y}, {n_cells_z}, {capacity}, {n_edges}
          };
          std::vector<xla::PrimitiveType> graph_types = {
-             xla::S32, xla::PRED, xla::PRED, xla::PRED, xla::PRED
+             xla::PRED, xla::PRED, xla::PRED, xla::PRED, xla::S32
          };
 
          return NeighborListShapes{graph_shapes, graph_types, reallocate};
@@ -200,6 +203,7 @@ namespace jcn {
         buffer_ptrs.push_back(capacity_buffer.get());
         buffer_ptrs.push_back(senders_buffer.get());
 
+        return buffer_ptrs;
     }
 
 
@@ -215,6 +219,11 @@ namespace jcn {
         if (!min_cell_capacity.ok() || !cell_too_small.ok() || !min_neighbors.ok()) {
             throw std::runtime_error("Failed to convert buffer to literal");
         }
+
+        std::cout << "Returned statistics:" << std::endl \
+                  << "- Min cell capacity: " << min_cell_capacity.value()->data<int>().data()[0] << std::endl \
+                  << "- Cell too small: " << cell_too_small.value()->data<int>().data()[0] << std::endl \
+                  << "- Min neighbors: " << min_neighbors.value()->data<int>().data()[0] << std::endl;
 
         // TODO
         // Get back the directions with too small cell sizes

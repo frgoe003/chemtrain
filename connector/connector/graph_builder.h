@@ -99,11 +99,11 @@ namespace jcn {
 
             // This will trigger an overflow during the first execution
             // and return better estimates
-            int n_edges = 1;
-            int n_cells_x = 3;
-            int n_cells_y = 3;
-            int n_cells_z = 3;
-            int capacity = 1;
+            int n_edges = 729;
+            int n_cells_x = 10;
+            int n_cells_y = 10;
+            int n_cells_z = 10;
+            int capacity = 23;
 
             std::unique_ptr<xla::Literal> xcells_lit;
             std::unique_ptr<xla::Literal> ycells_lit;

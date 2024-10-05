@@ -59,16 +59,15 @@ namespace jcn {
         ) {
 
         // For shape refinement, we have to provide the shapes of the input tensors
-        xla::Shape platform_index = xla::ShapeUtil::MakeShape(xla::S32, absl::Span<const int64_t>{});
         xla::Shape position_shape = xla::ShapeUtil::MakeShape(xla::F32, absl::Span<const int64_t>{n_atoms, 3});
         xla::Shape species_shape = xla::ShapeUtil::MakeShape(xla::S32, absl::Span<const int64_t>{n_atoms});
-        xla::Shape ghost_mask_shape = xla::ShapeUtil::MakeShape(xla::PRED, absl::Span<const int64_t>{n_atoms});
+        xla::Shape num_shape = xla::ShapeUtil::MakeShape(xla::S32, absl::Span<const int64_t>{1});
 
         std::vector<xla::Shape> inputShapes = {
-            position_shape, species_shape, ghost_mask_shape};
+            position_shape, species_shape, num_shape, num_shape};
 
         // For different graphs, the input shapes can vary
-        int input_args = 3;
+        int input_args = 4;
         for (size_t i = 0; i < graph_shapes.size(); i++) {
             xla::Shape neighbor_shape = xla::ShapeUtil::MakeShape(
                 graph_types[i], graph_shapes[i]);
