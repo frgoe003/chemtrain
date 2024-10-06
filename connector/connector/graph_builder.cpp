@@ -152,6 +152,14 @@ namespace jcn {
          // No reallocation necessary if buffers sufficiently large
          bool reallocate = false;
 
+         // Will not change shape (only a predicate)
+         if (!update_lit) {
+            xla::Shape shape = xla::ShapeUtil::MakeShape(
+                xla::PRED, absl::Span<const int64_t>{1});
+
+            update_lit = std::make_unique<xla::Literal>(xla::Literal::CreateFromShape(shape));
+         }
+
          // Check the cell dimensions (works also for the capacity and senders)
          reallocate |= adjust_dimension(xcells_lit, n_cells_x, xla::PRED);
          reallocate |= adjust_dimension(ycells_lit, n_cells_y, xla::PRED);
@@ -159,12 +167,11 @@ namespace jcn {
          reallocate |= adjust_dimension(capacity_lit, capacity, xla::PRED);
          reallocate |= adjust_dimension(senders_lit, n_edges, xla::S32);
 
-
          std::vector<std::vector<int64_t>> graph_shapes = {
-             {n_cells_x}, {n_cells_y}, {n_cells_z}, {capacity}, {n_edges}
+             {1}, {n_cells_x}, {n_cells_y}, {n_cells_z}, {capacity}, {n_edges}, {n_edges}
          };
          std::vector<xla::PrimitiveType> graph_types = {
-             xla::PRED, xla::PRED, xla::PRED, xla::PRED, xla::S32
+             xla::PRED, xla::PRED, xla::PRED, xla::PRED, xla::PRED, xla::S32, xla::S32
          };
 
          return NeighborListShapes{graph_shapes, graph_types, reallocate};
@@ -176,6 +183,13 @@ namespace jcn {
         xla::PjRtClient* client, int device_id, int inum, int *ilist,
         int *numneigh, int **firstneigh, bool update) {
 
+        // The update predicate can change
+        if (update_buffer) {
+            update_buffer->Delete();
+        }
+        update_lit->PopulateWithValue(update);
+        update_buffer = create_buffer(client, device_id, update_lit.get());
+
         if (update) {
             // Clear old buffers
             if (senders_buffer) {
@@ -184,6 +198,7 @@ namespace jcn {
                 zcells_buffer->Delete();
                 capacity_buffer->Delete();
                 senders_buffer->Delete();
+                receivers_buffer->Delete();
             }
 
             // Create buffers (value is not important)
@@ -191,17 +206,21 @@ namespace jcn {
             ycells_buffer = create_buffer(client, device_id, ycells_lit.get());
             zcells_buffer = create_buffer(client, device_id, zcells_lit.get());
             capacity_buffer = create_buffer(client, device_id, capacity_lit.get());
-            senders_buffer = create_buffer(client, device_id, senders_lit.get());
 
+            // When reallocated, these are only placeholders
+            senders_buffer = create_buffer(client, device_id, senders_lit.get());
+            receivers_buffer = create_buffer(client, device_id, senders_lit.get());
         }
 
         std::vector<xla::PjRtBuffer*> buffer_ptrs;
 
+        buffer_ptrs.push_back(update_buffer.get());
         buffer_ptrs.push_back(xcells_buffer.get());
         buffer_ptrs.push_back(ycells_buffer.get());
         buffer_ptrs.push_back(zcells_buffer.get());
         buffer_ptrs.push_back(capacity_buffer.get());
         buffer_ptrs.push_back(senders_buffer.get());
+        buffer_ptrs.push_back(receivers_buffer.get());
 
         return buffer_ptrs;
     }
@@ -241,6 +260,21 @@ namespace jcn {
             n_edges = static_cast<int>(std::ceil(req_nbrs_capacity * edge_multiplier));
             success = false;
         }
+
+        // Store the result buffers and reuse them
+        if (receivers_buffer) {
+            receivers_buffer->Delete();
+        }
+        if (senders_buffer) {
+            senders_buffer->Delete();
+        }
+
+        // We must remove these buffers from the results vector or they
+        // will be deleted after the evaluation function finished
+        receivers_buffer = std::move(results[0].back());
+        results[0].pop_back();
+        senders_buffer = std::move(results[0].back());
+        results[0].pop_back();
 
         // Returns whether rerun with bigger capacities is necessary
         return success;

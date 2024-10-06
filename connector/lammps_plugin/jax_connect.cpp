@@ -53,6 +53,7 @@ JaxConnect::~JaxConnect()
   memory->destroy(setflag);
   memory->destroy(cutsq);
   memory->destroy(cut);
+  memory->destroy(xold);
   //    memory->destroy(d0);
   //    memory->destroy(alpha);
   //    memory->destroy(r0);
@@ -62,6 +63,53 @@ JaxConnect::~JaxConnect()
 }
 
 /* ---------------------------------------------------------------------- */
+
+//int JaxConnect::pack_forward_comm(int n, int *list, double *buf, int pbc_flag, int *pbc)
+//{
+//  int i,j,m;
+//
+//  m = 0;
+//  for (i = 0; i < n; i++) {
+//    j = list[i];
+//    buf[m++] = fp[j];
+//  }
+//  return m;
+//}
+//
+//void JaxConnect::unpack_forward_comm(int n, int first, double *buf)
+//{
+//  int i,m,last;
+//
+//  m = 0;
+//  last = first + n;
+//  for (i = first; i < last; i++) fp[i] = buf[m++];
+//}
+
+
+bool JaxConnect::check_distance() {
+    double **x = atom->x;
+    int nlocal = atom->nlocal;
+
+    double deltasq = 2.0 * 2.0; // Hard coded skin distance
+
+    int flag = 0;
+    for (int i = 0; i < nlocal; i++) {
+        double delx = x[i][0] - xold[i][0];
+        double dely = x[i][1] - xold[i][1];
+        double delz = x[i][2] - xold[i][2];
+        double rsq = delx * delx + dely * dely + delz * delz;
+        if (rsq > deltasq) {
+            flag = 1;
+            break;
+        }
+    }
+
+    int flagall;
+    MPI_Allreduce(&flag, &flagall, 1, MPI_INT, MPI_MAX, world);
+
+    return (flagall > 0);
+}
+
 
 void JaxConnect::compute(int eflag, int vflag)
 {
@@ -77,11 +125,20 @@ void JaxConnect::compute(int eflag, int vflag)
   std::cout << "Neighborlist creation history: " << neighbor->ago << std::endl;
 
   // Check if neighborlist was updated just in this timestep
-  bool list_changed = (neighbor->ago == 0);
+  bool update_list = check_distance() || (neighbor->ago == 0);
+
+  if (update_list) {
+      for (int i = 0; i < atom->nlocal; i++) {
+          std::memcpy(xold[i], atom->x[i], 3 * sizeof(double));
+      }
+      std::cout << "Update positions" << std::endl;
+  } else {
+        std::cout << "No need to update old atom positions" << std::endl;
+  }
 
   double potential = connector->compute_force(
       atom->nlocal, atom->nghost, atom->x, atom->f, atom->type, list->ilist, list->numneigh,
-      list->firstneigh, list_changed
+      list->firstneigh, update_list
   );
 
   // Pass the evaluated potential energy to LAMMPS
@@ -181,6 +238,7 @@ void JaxConnect::allocate()
   memory->create(setflag, n + 1, n + 1, "pair:setflag");
   memory->create(cutsq, n + 1, n + 1, "pair:cutsq");
   memory->create(cut, n + 1, n + 1, "pair:cut");
+  memory->create(xold, atom->nmax, 3, "pair:xold");
 
 
   for (int i = 1; i <= n; i++) {
@@ -308,6 +366,11 @@ void JaxConnect::init_style()
 double JaxConnect::init_one(int i, int j)
 {
   if (setflag[i][j] == 0) error->all(FLERR, "All pair coeffs are not set");
+
+  // Initialize the old atom positions
+  for (int i = 0; i < atom->nlocal; i++) {
+      std::memcpy(xold[i], atom->x[i], 3 * sizeof(double));
+  }
 
 //  morse1[i][j] = 2.0 * d0[i][j] * alpha[i][j];
 //

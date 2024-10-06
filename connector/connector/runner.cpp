@@ -169,25 +169,6 @@ namespace jcn {
                 // Now we have to copy the results back to the host
                 std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>> results_buffers = std::move(results).value();
 
-                // Iterate through the results_buffers and print the shapes
-for (const auto& buffer_vector : results_buffers) {
-    std::cout << "Print contents" << std::endl;
-    for (const auto& buffer : buffer_vector) {
-        if (buffer) {
-            // Use ToLiteralSync to get the shape information
-            absl::StatusOr<std::shared_ptr<xla::Literal>> literal_or_status = buffer->ToLiteralSync();
-            if (literal_or_status.ok()) {
-                auto literal = literal_or_status.value();
-                std::cout << "Buffer shape: " << literal->shape().ToString() << std::endl;
-            } else {
-                std::cout << "Failed to get literal: " << literal_or_status.status().ToString() << std::endl;
-            }
-        } else {
-            std::cout << "Buffer is null" << std::endl;
-        }
-    }
-}
-
                 bool success = neighbor_list->evaluate_statistics(results_buffers);
 
                 end = std::chrono::high_resolution_clock::now();

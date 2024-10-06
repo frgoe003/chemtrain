@@ -43,6 +43,9 @@ class JaxConnect : public Pair {
 
   // double cut_global;
   double **cut;
+  double **xold;
+
+  bool check_distance();
 
   std::unique_ptr<jcn::Connector> connector;
 

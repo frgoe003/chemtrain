@@ -99,23 +99,31 @@ namespace jcn {
 
             // This will trigger an overflow during the first execution
             // and return better estimates
-            int n_edges = 729;
-            int n_cells_x = 10;
-            int n_cells_y = 10;
-            int n_cells_z = 10;
-            int capacity = 23;
 
+            // The number of computations (tested neighbors) is
+            // 27 * capacity^2 * nx * ny * nz. We should find a
+            // tradeoff or avoid computing the neighbor list too often.
+
+            int n_edges = 729;
+            int n_cells_x = 20;
+            int n_cells_y = 20;
+            int n_cells_z = 20;
+            int capacity = 10;
+
+            std::unique_ptr<xla::Literal> update_lit;
             std::unique_ptr<xla::Literal> xcells_lit;
             std::unique_ptr<xla::Literal> ycells_lit;
             std::unique_ptr<xla::Literal> zcells_lit;
             std::unique_ptr<xla::Literal> capacity_lit;
             std::unique_ptr<xla::Literal> senders_lit;
 
+            std::unique_ptr<xla::PjRtBuffer> update_buffer;
             std::unique_ptr<xla::PjRtBuffer> xcells_buffer;
             std::unique_ptr<xla::PjRtBuffer> ycells_buffer;
             std::unique_ptr<xla::PjRtBuffer> zcells_buffer;
             std::unique_ptr<xla::PjRtBuffer> capacity_buffer;
             std::unique_ptr<xla::PjRtBuffer> senders_buffer;
+            std::unique_ptr<xla::PjRtBuffer> receivers_buffer;
 
             bool adjust_dimension(std::unique_ptr<xla::Literal>& cells, int size, xla::PrimitiveType type);
 

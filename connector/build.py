@@ -449,7 +449,7 @@ def main():
            "executed, e.g. `run`.")
   parser.add_argument(
       "--output_path",
-      default=os.path.join(cwd, "lib"),
+      default=os.path.join(cwd, "out"),
       help="Directory to which the jaxlib wheel should be written")
   parser.add_argument(
       "--target_cpu",
@@ -546,8 +546,11 @@ def main():
   command_base = (
     bazel_path,
     *args.bazel_startup_options,
-    "run",
+    f"--output_base={output_path}",
+    "build",
     "--verbose_failures=true",
+    f"--compilation_mode=opt",
+    f"--copt=-O3",
     *args.bazel_options,
   )
 
@@ -555,18 +558,19 @@ def main():
       build_cpu_wheel_command = [
           *command_base,
           "//connector:libconnector.so", "--",
-          f"--output_path={output_path}",
-          f"--cpu={wheel_cpu}"
       ]
       print(" ".join(build_cpu_wheel_command))
       shell(build_cpu_wheel_command)
+      out_dir = pathlib.Path("./lib")
+      out_dir.mkdir(exist_ok=True, parents=True)
+      (out_dir / "libconnector.so").write_bytes(
+          pathlib.Path("./bazel-bin/connector/libconnector.so").read_bytes()
+      )
 
   if args.build_gpu_plugin or args.build_gpu_pjrt_plugin:
     build_pjrt_plugin_command = [
       *command_base,
       "@xla//xla/pjrt/c:pjrt_c_api_gpu_plugin.so", "--",
-      f"--output_path={output_path}",
-      f"--cpu={host_cpu}",
     ]
     if args.enable_cuda:
       build_pjrt_plugin_command.append(f"--enable-cuda={args.enable_cuda}")
