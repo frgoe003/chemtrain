@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@tsl//tsl/platform:build_config.bzl", "tf_proto_library")
+
 cc_binary(
     name = "libconnector.so",
     srcs = [
@@ -21,14 +23,13 @@ cc_binary(
     tags = ["manual"],
     deps = [
         ":runner",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@tsl//tsl/platform:logging",
         "@tsl//tsl/platform:platform_port",
         "@xla//xla:literal",
         "@xla//xla:literal_util",
         "@xla//xla:shape_util",
-        "@xla//xla:status",
-        "@xla//xla:statusor",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_c_api_client",
         "@xla//xla/pjrt:pjrt_executable",
@@ -57,14 +58,14 @@ cc_library(
         ":xla_call_module_loader",
         ":domain",
         ":pjrt",
+        ":model_proto_cc",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@tsl//tsl/platform:logging",
         "@tsl//tsl/platform:platform_port",
         "@xla//xla:literal",
         "@xla//xla:literal_util",
         "@xla//xla:shape_util",
-        "@xla//xla:status",
-        "@xla//xla:statusor",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_c_api_client",
         "@xla//xla/pjrt:pjrt_executable",
@@ -84,14 +85,13 @@ cc_library(
         "pjrt.h",
         ],
     deps = [
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@tsl//tsl/platform:logging",
         "@tsl//tsl/platform:platform_port",
         "@xla//xla:literal",
         "@xla//xla:literal_util",
         "@xla//xla:shape_util",
-        "@xla//xla:status",
-        "@xla//xla:statusor",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_c_api_client",
         "@xla//xla/pjrt:pjrt_executable",
@@ -110,14 +110,13 @@ cc_library(
     hdrs = ["graph_builder.h"],
     deps = [
         ":pjrt",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@tsl//tsl/platform:logging",
         "@tsl//tsl/platform:platform_port",
         "@xla//xla:literal",
         "@xla//xla:literal_util",
         "@xla//xla:shape_util",
-        "@xla//xla:status",
-        "@xla//xla:statusor",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_c_api_client",
         "@xla//xla/pjrt:pjrt_executable",
@@ -209,3 +208,7 @@ cc_library(
     ],
 )
 
+tf_proto_library(
+    name = "model_proto",
+    srcs = ["model.proto"]
+)

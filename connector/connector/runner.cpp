@@ -8,12 +8,15 @@
 #include <chrono>
 #include <memory>  // For std::unique_ptr
 #include <dlfcn.h>
+#include <filesystem>
+#include <regex>
 
-#include "runner.h"
-#include "compiler.h"
-#include "libconnector.h"
-#include "domain.h"
-#include "pjrt.h"
+#include "connector/runner.h"
+#include "connector/compiler.h"
+#include "connector/libconnector.h"
+#include "connector/domain.h"
+#include "connector/pjrt.h"
+#include "connector/model.pb.h"
 
 #include "xla/literal.h"
 #include "xla/literal_util.h"
@@ -23,8 +26,8 @@
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/pjrt/pjrt_stream_executor_client.h"
 #include "xla/pjrt/tfrt_cpu_pjrt_client.h"
-#include "xla/status.h"
-#include "xla/statusor.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "xla/service/dump.h"
 #include "tsl/platform/init_main.h"
 #include "tsl/platform/logging.h"
@@ -40,53 +43,83 @@ namespace jcn {
         // TODO: Make this more general
         std::cout << "Try to load GPU Plugin" << std::endl;
 
-        // Load the CUDA plugin from JAX
-        // TODO: Currently only finds devices if the pre-built plugin is used.
-        absl::StatusOr<const PJRT_Api*> status_or_api = pjrt::LoadPjrtPlugin(
-            "cuda",
-            "/home/paul/miniconda3/envs/chemtrain/lib/python3.11/site-packages/jax_plugins/xla_cuda12/xla_cuda_plugin.so");
-
-        if (!status_or_api.ok()) {
-            LOG(INFO) << "Failed to load CUDA plugin: " << status_or_api.status();
+        char* env_var = std::getenv("JCN_PJRT_PATH");
+        if (env_var == nullptr) {
+            std::cerr << "Set JCN_PJRT_PATH envvar to discover PJRT Plugins" << std::endl;
             return;
         }
 
-        std::cout << "Try to initiliaze plugin" << std::endl;
-        if (!pjrt::IsPjrtPluginInitialized("cuda").value()) {
-            std::cerr << "Initialize CUDA plugin" << std::endl;
+        std::string plugin_path = std::string(std::getenv("JCN_PJRT_PATH"));
 
-            pjrt::InitializePjrtPlugin("cuda");
+
+        try {
+            // Infer a name
+            std::regex pattern(R"(jax_plugins\.xla_(\w+)\.so)");
+
+            for (const auto& entry : std::filesystem::directory_iterator(plugin_path)) {
+                std::string path = entry.path().string();
+                std::smatch match;
+
+                if (!std::regex_search(path, match, pattern)) continue;
+
+                absl::StatusOr<const PJRT_Api*> status_or_api = pjrt::LoadPjrtPlugin(match.str(1), path);
+
+                if (status_or_api.ok()) {
+                    std::cout << "Loaded plugin: " << match.str(1) << std::endl;
+                }
+
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Failed to load pjrt plugins: " << e.what() << std::endl;
         }
-        std::cout << "Finished initialization" << std::endl;
-
 
     }
 
 
     Runner::Runner(ConnectorConfig config) :
-        atom_builder(1.25),
-        compiler(config.mlir_module)
+        atom_builder(std::make_unique<AtomBuilder>(config.atom_multiplier)),
+        model(std::make_unique<chemsim::Model>())
     {
 
-        // Select from the available neighbor list types
-        if (config.neighbor_list_type == "SimpleSparseNeighborList") {
-            neighbor_list = std::make_unique<SimpleSparseNeighborList>();
-            neighbor_list->initialize(config.neighbor_list_multipliers);
-        } else if (config.neighbor_list_type == "DeviceSparseNeighborList") {
-            neighbor_list = std::make_unique<DeviceSparseNeighborList>();
-            neighbor_list->initialize(config.neighbor_list_multipliers);
-        } else {
-            throw std::runtime_error("Unknown neighbor list type: " + config.neighbor_list_type);
-        }
-
-        // TODO: Maybe move this stuff to some better place
+        // Initialize PJRT
         initialize();
 
+        // Deserialize the protobuffer
+        model->ParseFromString(config.model);
+
+        // Pass the mlir module to the compiler
+        compiler = std::make_unique<Compiler>(model->mlir_module());
+
+        // Select from the available neighbor list types
+        switch (model->neighbor_list().type()) {
+            case chemsim::Model::SIMPLE_SPARSE:
+                neighbor_list = std::make_unique<SimpleSparseNeighborList>();
+                neighbor_list->initialize(config.neighbor_list_multipliers);
+                std::cout << "Initialize SimpleSparseNeighborList" << std::endl;
+                break;
+            case chemsim::Model::DEVICE_SPARSE:
+                neighbor_list = std::make_unique<DeviceSparseNeighborList>();
+                neighbor_list->initialize(config.neighbor_list_multipliers);
+                std::cout << "Initialize DeviceSparseNeighborList" << std::endl;
+                break;
+        }
+
         // Initialize the possible backends in the libconnector file
-        std::cout << "Try to create client" << std::endl;
+        absl::StatusOr<bool> status_or_success = pjrt::IsPjrtPluginInitialized(config.backend);
+        if (!status_or_success.ok()) {
+            throw std::runtime_error("Failed to initialize PjRtClient: " + status_or_success.status().ToString());
+        }
+
+        if (!status_or_success.value()) {
+            absl::Status status = pjrt::InitializePjrtPlugin(config.backend);
+            if (!status.ok()) {
+                throw std::runtime_error("Failed to initialize PjRtClient: " + status.ToString());
+            }
+        }
+
+        // Get the client
         absl::StatusOr<std::unique_ptr<xla::PjRtClient>> client_or_status = xla::GetCApiClient(config.backend);
         if (!client_or_status.ok()) {
-            throw std::runtime_error("Cannot create client: " + client_or_status.status().ToString());
             client = xla::GetTfrtCpuClient(/*asynchronous=*/true).value();
         } else {
             client = std::move(client_or_status).value();
@@ -106,13 +139,13 @@ namespace jcn {
                 // First we build the domain and the neighbor list, then we can
                 // determine the input shapes to the program
 
-                AtomShapes atoms = atom_builder.get_shapes(inum, gnum);
+                AtomShapes atoms = atom_builder->get_shapes(inum, gnum);
                 NeighborListShapes neighbors = neighbor_list->get_neighbor_list_shapes(
                     atoms.n_atoms, inum, numneigh);
 
                 // Now we have all shapes setup to build the module if required
                 if (!executable || atoms.reallocate || neighbors.reallocate ) {
-                     xla::XlaComputation callable = compiler.compile(
+                     xla::XlaComputation callable = compiler->compile(
                         atoms.n_atoms, neighbors.graph_shapes, neighbors.graph_types);
 
                     // No idea what to specify here...
@@ -134,7 +167,7 @@ namespace jcn {
 
                 // Now we have to create the buffers, i.e., copy the data onto
                 // the device
-                std::vector<xla::PjRtBuffer*> buffer_ptrs = atom_builder.build_domain(client.get(), 0, inum, gnum, x, type);
+                std::vector<xla::PjRtBuffer*> buffer_ptrs = atom_builder->build_domain(client.get(), 0, inum, gnum, x, type);
 
                 std::vector<xla::PjRtBuffer*> graph_buffers = neighbor_list->build_graph(
                     client.get(), 0, inum, ilist, numneigh, firstneigh, update);
@@ -177,7 +210,7 @@ namespace jcn {
 
 
                 // Write back the results
-                double potential = atom_builder.evaluate_domain(
+                double potential = atom_builder->evaluate_domain(
                     success, inum, f, results_buffers);
 
                 auto trial_end = std::chrono::high_resolution_clock::now();
@@ -194,5 +227,38 @@ namespace jcn {
         throw std::runtime_error("Failed to compute forces after " + std::to_string(max_trials) + " trials");
 
       }
+
+        ModelProperties Runner::get_model_properties() {
+            ModelProperties properties;
+
+            switch (model->neighbor_list().type()) {
+                case chemsim::Model::SIMPLE_SPARSE:
+                    // Neighbor list cutoff must be larger than the model cutoff
+                    properties.cutoff = model->neighbor_list().cutoff();
+
+                    if (model->neighbor_list().has_num_mpl()) {
+                        // Ghost atoms sending edges only required if we perform message passing
+                        properties.neighbor_list.include_ghosts = (model->neighbor_list().num_mpl() > 0);
+                    };
+                    if (model->neighbor_list().has_half_list()) {
+                        properties.neighbor_list.half_list = model->neighbor_list().half_list();
+                    };
+
+                    break;
+                case chemsim::Model::DEVICE_SPARSE:
+                    // Does not specify a cutoff for the particles as neighbor
+                    // list is computed on the device
+                    properties.cutoff = 0.0;
+
+                    // Atoms still need to be communicated
+                    properties.comm_dist = model->neighbor_list().cutoff();
+                    if (model->neighbor_list().has_num_mpl()) {
+                        properties.comm_dist *= model->neighbor_list().num_mpl();
+                    }
+                    break;
+            }
+
+            return properties;
+        }
 
 } // namespace jcn

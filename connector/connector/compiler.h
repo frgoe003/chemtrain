@@ -50,7 +50,7 @@
 namespace jcn {
     class Compiler {
     public:
-        Compiler(std::string mlir_module);
+        Compiler(const std::string& mlir_module);
         ~Compiler() = default;
 
         /**

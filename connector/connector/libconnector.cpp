@@ -15,8 +15,8 @@
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/pjrt/pjrt_stream_executor_client.h"
 #include "xla/pjrt/tfrt_cpu_pjrt_client.h"
-#include "xla/status.h"
-#include "xla/statusor.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "xla/service/dump.h"
 #include "tsl/platform/init_main.h"
 #include "tsl/platform/logging.h"
@@ -43,6 +43,10 @@ namespace jcn {
 
         return impl_->runner.compute_forces(
           inum, gnum, x, f, type, ilist, numneigh, firstneigh, list_changed);
+    }
+
+    ModelProperties Connector::get_model_properties() {
+        return impl_->runner.get_model_properties();
     }
 
     Connector::Connector(ConnectorConfig config) : impl_(std::make_unique<Impl>(config)) {};

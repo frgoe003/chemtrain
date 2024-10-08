@@ -33,7 +33,7 @@
 
 namespace jcn {
 
-    Compiler::Compiler(std::string mlir_module) : mlir_module(mlir_module) {
+    Compiler::Compiler(const std::string& mlir_module) : mlir_module(mlir_module) {
 
         // We add some dialects to interpret the MLIR module from JAX
 

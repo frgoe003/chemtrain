@@ -11,14 +11,20 @@ boundary p p p
 neighbor 	2.0 bin
 neigh_modify 	every 1 delay 0 check yes once no
 
+comm_modify cutoff 1.0
+
 # 2) Create random positions
-region simulation_box block -100 100 -100 100 -100 100
+region simulation_box block -50 50 -50 50 -50 50
+# region simulation_box block -5 5 -5 5 -5 5
+
 create_box 1 simulation_box
-create_atoms 1 random 266000 341341 simulation_box
+
+create_atoms 1 random 33000 341341 simulation_box
+# create_atoms 1 random 30 341341 simulation_box
 
 # 3) Simulation settings
 mass 1 18
-pair_coeff * * 10 lennard_jones.mlir
+pair_coeff * * lennard_jones.pb cuda12 1.1 1.1
 
 # 4) Visualization
 thermo 10

@@ -31,6 +31,14 @@ import sys
 import textwrap
 import urllib.request
 
+import pkgutil
+import importlib
+
+try:
+    import jax_plugins
+except ModuleNotFoundError:
+    jax_plugins = None
+
 logger = logging.getLogger(__name__)
 
 def shell(cmd):
@@ -48,6 +56,54 @@ def shell(cmd):
 
 
 # Python
+
+def load_pjrt_plugin_libraries(out) -> None:
+    """Discovers plugins in the namespace package `jax_plugins` and loads
+     the shared libraries.
+    """
+    plugin_modules = set()
+    # Scan installed modules under |jax_plugins|. Note that not all packaging
+    # scenarios are amenable to such scanning, so we also use the entry-point
+    # method to seed the list.
+    if jax_plugins:
+        for _, name, _ in pkgutil.iter_modules(
+            jax_plugins.__path__, jax_plugins.__name__ + '.'
+        ):
+            logger.debug("Discovered path based JAX plugin: %s", name)
+            plugin_modules.add(name)
+    else:
+        raise ModuleNotFoundError("To load shared libraries, the jax_plugins "
+                                  "namespace package must be available.")
+
+    # Augment with advertised entrypoints.
+    from importlib.metadata import entry_points
+
+    for entry_point in entry_points(group="jax_plugins"):
+        logger.debug("Discovered entry-point based JAX plugin: %s",
+                     entry_point.value)
+        plugin_modules.add(entry_point.value)
+
+    # Now load and initialize them all.
+    for plugin_module_name in plugin_modules:
+        logger.debug("Loading plugin module %s", plugin_module_name)
+        plugin_module = None
+        try:
+            plugin_module = importlib.import_module(plugin_module_name)
+        except ModuleNotFoundError:
+            logger.warning("Jax plugin configuration error: Plugin module %s "
+                           "does not exist", plugin_module_name)
+        except ImportError:
+            logger.exception("Jax plugin configuration error: Plugin module %s "
+                             "could not be loaded")
+
+        if plugin_module:
+            try:
+                so_path = plugin_module._get_library_path()
+                out_path = (out / f"{plugin_module_name}.so")
+
+                out_path.write_bytes(pathlib.Path(so_path).read_bytes())
+            except:
+                raise RuntimeError(f"Failed to load plugin {plugin_module_name}")
 
 def get_python_bin_path(python_bin_path_flag):
   """Returns the path to the Python interpreter to use."""
@@ -568,21 +624,7 @@ def main():
       )
 
   if args.build_gpu_plugin or args.build_gpu_pjrt_plugin:
-    build_pjrt_plugin_command = [
-      *command_base,
-      "@xla//xla/pjrt/c:pjrt_c_api_gpu_plugin.so", "--",
-    ]
-    if args.enable_cuda:
-      build_pjrt_plugin_command.append(f"--enable-cuda={args.enable_cuda}")
-      build_pjrt_plugin_command.append(f"--platform_version={args.gpu_plugin_cuda_version}")
-    elif args.enable_rocm:
-      build_pjrt_plugin_command.append(f"--enable-rocm={args.enable_rocm}")
-      build_pjrt_plugin_command.append(f"--platform_version={args.gpu_plugin_rocm_version}")
-    else:
-      raise ValueError("Unsupported GPU plugin backend. Choose either 'cuda' or 'rocm'.")
-    print(" ".join(build_pjrt_plugin_command))
-    shell(build_pjrt_plugin_command)
-
+    load_pjrt_plugin_libraries(pathlib.Path("./lib"))
 
 if __name__ == "__main__":
   main()

@@ -43,7 +43,8 @@ namespace jcn {
 
         // Check if reallocation is necessary
         if (current_edges > n_edges) {
-            std::cout << "Reallocation necessary " << std::endl;
+            std::cout << "Reallocation necessary, current edges are " << current_edges << std::endl;
+            std::cout << "Increasing edge count by multiplier " << edge_multiplier << std::endl;
             n_edges = static_cast<int>(std::ceil(current_edges * edge_multiplier));
             reallocate = true;
         }
