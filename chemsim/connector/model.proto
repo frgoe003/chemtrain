@@ -1,0 +1,23 @@
+syntax = "proto2";
+
+package chemsim;
+
+message Model {
+
+  required string mlir_module = 1;
+
+  enum NeighborListType {
+    SIMPLE_SPARSE = 0;
+    DEVICE_SPARSE = 1;
+  }
+
+  message NeighborList {
+    required NeighborListType type = 1;
+    required float cutoff = 2;
+
+    optional int32 num_mpl = 3; // Number of message passing steps
+    optional bool half_list = 4; // Expect only a half neighbor list
+  }
+
+  required NeighborList neighbor_list=4;
+}

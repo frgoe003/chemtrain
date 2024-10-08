@@ -12,6 +12,8 @@
 #
 import os
 import sys
+import subprocess
+
 sys.path.insert(0, os.path.abspath('..'))
 
 from datetime import datetime
@@ -26,6 +28,13 @@ author = 'Multiscale Modeling of Fluid Materials'
 
 release = chemtrain_version
 
+
+# -- Build docs with Doxygen -------------------------------------------------
+
+subprocess.call("cd .. && doxygen Doxyfile", shell=True)
+
+breathe_projects = { "jax_connector": "doxygen/xml" }
+breathe_default_project = "jax_connector"
 
 # -- General configuration ---------------------------------------------------
 
@@ -44,6 +53,7 @@ extensions = [
     'sphinx_autodoc_typehints',
     'sphinx_remove_toctrees',
     'myst_nb',
+    'breathe',
 ]
 
 napoleon_numpy_docstring = False
