@@ -31,10 +31,10 @@ release = chemtrain_version
 
 # -- Build docs with Doxygen -------------------------------------------------
 
-subprocess.call("cd .. && doxygen Doxyfile", shell=True)
+subprocess.call("doxygen Doxyfile", shell=True)
 
-breathe_projects = { "jax_connector": "doxygen/xml" }
-breathe_default_project = "jax_connector"
+breathe_projects = { "chemsim": "doxygen/xml" }
+breathe_default_project = "chemsim"
 
 # -- General configuration ---------------------------------------------------
 
