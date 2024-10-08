@@ -15,9 +15,11 @@
 """Exporting potential models to MLIR."""
 
 import abc
+import functools
 
 import jax
-from jax import numpy as jnp, export
+from fontTools.misc.cython import returns
+from jax import numpy as jnp, export, lax
 
 from typing import Dict, NamedTuple, Any, List, Tuple, Callable
 
@@ -25,7 +27,7 @@ import jax_md_mod
 from jax_md import util as md_util
 
 from . import graphs, shape_util
-
+from ._protobuf import model_pb2 as model_proto
 
 
 class Exporter(metaclass=abc.ABCMeta):
@@ -70,6 +72,9 @@ class Exporter(metaclass=abc.ABCMeta):
     # Use the default graph containing the full neighbor indices
     graph_type: graphs.NeighborList = graphs.SimpleSparseNeighborList
 
+    num_mpl: int = 0
+
+
     _symbols: List[str] = []
     _constraints: List[str] = []
     _init_fns: List[Callable] = []
@@ -95,8 +100,9 @@ class Exporter(metaclass=abc.ABCMeta):
     def _define_position_shapes(n_atoms, **kwargs):
         shape_defs = (
             jax.ShapeDtypeStruct((n_atoms, 3), jnp.float32),
-            jax.ShapeDtypeStruct((n_atoms,), jnp.bool),
-            jax.ShapeDtypeStruct((n_atoms,), jnp.int32)
+            jax.ShapeDtypeStruct((n_atoms,), jnp.int32),
+            jax.ShapeDtypeStruct((1,), jnp.int32),
+            jax.ShapeDtypeStruct((1,), jnp.int32),
         )
 
         return shape_defs
@@ -121,37 +127,60 @@ class Exporter(metaclass=abc.ABCMeta):
         return shapes
 
 
-    def _energy_fn(self, position, species, ghost_mask, *graph_args):
-        graph, build_statistics = self.graph_type.create_from_args(position, species, ghost_mask,*graph_args)
-        per_atom_energies = self.energy_fn(position, species, graph)
+    def _energy_fn(self, position, species, n_local, n_ghost, *graph_args):
+        # Expects particles to be sorted by local, ghost, and padding atoms
+        valid_mask = jnp.arange(position.shape[0]) < (n_local + n_ghost)
+        ghost_mask = (jnp.arange(position.shape[0]) < n_ghost) & valid_mask
 
-        # Attention: Force is negative gradient of potential
-        total_neg_energy = jnp.float32(-1.0) * md_util.high_precision_sum(
-            per_atom_energies)
-        local_energy = md_util.high_precision_sum(
-            ghost_mask * per_atom_energies)
+        graph, build_statistics = self.graph_type.create_from_args(
+            position, species, ghost_mask, valid_mask, *graph_args)
+        graph = lax.stop_gradient(graph)
 
-        # Differentiate w.r.t. the total potential in the box, but exclude
-        # ghost atom contributions to the total potential
-        aux = local_energy, *build_statistics
+        @functools.partial(jax.grad, has_aux=True)
+        def force_and_aux(pos):
+            per_atom_energies = self.energy_fn(pos, species, graph)
 
-        return total_neg_energy, aux
+            assert per_atom_energies.shape == ghost_mask.shape, (
+                f"Per particle energies have shape {per_atom_energies.shape}, "
+                f"but should have shape {ghost_mask.shape}."
+            )
+
+            # Attention: Force is negative gradient of potential
+            total_neg_energy = jnp.float32(-1.0) * md_util.high_precision_sum(
+                per_atom_energies)
+            local_energy = md_util.high_precision_sum(
+                ghost_mask * per_atom_energies)
+
+            # Differentiate w.r.t. the total potential in the box, but exclude
+            # ghost atom contributions to the total potential
+            aux = local_energy, *build_statistics
+            return total_neg_energy, aux
+
+        return force_and_aux(position)
 
     def export(self) -> str:
         """Exports the potential model to an MLIR module."""
+
+        proto = model_proto.Model()
+
+        # Hard-coded for now
+        proto.neighbor_list.cutoff = 5.0
+        proto.neighbor_list.num_mpl = self.num_mpl
+
+        self.graph_type.set_properties(proto)
 
         # Using the ghost mask in the last layer we can compute correct forces
         # by accounting for their contribution to the gradient but
         # mask them out when we compute the total potential to not count
         # them double.
-        force_and_energy_fn = jax.grad(self._energy_fn, argnums=0, has_aux=True)
-
         self._add_shapes(self._define_position_shapes)
         self._add_shapes(self.graph_type.create_symbolic_input_format)
 
         shapes = self._create_shapes()
 
         exp: export.Exported = export.export(
-            jax.jit(force_and_energy_fn), platforms=["cuda"])(*shapes)
+            jax.jit(self._energy_fn), platforms=["cuda"])(*shapes)
 
-        return exp.mlir_module()
+        proto.mlir_module = exp.mlir_module()
+
+        return proto

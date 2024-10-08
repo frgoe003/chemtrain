@@ -25,17 +25,19 @@ def main():
 
     exporter = build_export_model()()
 
-    mlir_str = exporter.export()
+    export_module = exporter.export()
 
-    with open("lennard_jones.mlir", "w") as f:
-        f.write(mlir_str)
+    print(export_module)
+
+    with open("lennard_jones.ptb", "wb") as f:
+        f.write(export_module.SerializeToString())
 
 
 def build_export_model():
 
     class LennardJonesExport(exporter.Exporter):
 
-        graph_type = graphs.DeviceSparseNeighborList
+        graph_type = graphs.SimpleSparseNeighborList
 
         def energy_fn(self, pos, species, graph):
 
@@ -46,11 +48,13 @@ def build_export_model():
             )
 
             assert neighbors.idx.shape[0] == 2, "Wrong shape"
+            print(neighbors.idx.shape)
 
             apply_fn = custom_energy.customn_lennard_jones_neighbor_list(
                 lambda ra, rb, **kwargs: rb - ra, None, None,
-                sigma=3.165, epsilon=1.0, r_onset=4.0, r_cutoff=5.0,
-                initialize_neighbor_list=False
+                sigma=3.156, epsilon=0.35,
+                r_onset=4.0, r_cutoff=5.0,
+                initialize_neighbor_list=False, per_particle=True
             )
 
             return apply_fn(pos, neighbors)
