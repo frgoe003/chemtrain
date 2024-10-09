@@ -26,6 +26,7 @@
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/pjrt/pjrt_stream_executor_client.h"
 #include "xla/pjrt/tfrt_cpu_pjrt_client.h"
+#include "xla/pjrt/gpu/se_gpu_pjrt_client.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "xla/service/dump.h"
@@ -126,8 +127,13 @@ namespace jcn {
             }
         }
 
+
+        absl::flat_hash_map<std::string, xla::PjRtValueType> create_options = {
+            {"memory_fraction", xla::PjRtValueType(0.95f)},
+        };
+
         // Get the client
-        absl::StatusOr<std::unique_ptr<xla::PjRtClient>> client_or_status = xla::GetCApiClient(config.backend);
+        absl::StatusOr<std::unique_ptr<xla::PjRtClient>> client_or_status = xla::GetCApiClient(config.backend, create_options);
         if (!client_or_status.ok()) {
             client = xla::GetTfrtCpuClient(/*asynchronous=*/true).value();
         } else {
