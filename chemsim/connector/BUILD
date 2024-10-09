@@ -166,6 +166,7 @@ cc_library(
         "@stablehlo//:version",
         "@tsl//tsl/platform:logging",
         "@tsl//tsl/platform:platform_port",
+        "@xla//xla/translate/hlo_to_mhlo:hlo_to_mlir_hlo",
         "@xla//xla/client:xla_computation",
         "@xla//xla/mlir_hlo:hlo_dialect_registration",
         "@xla//xla/mlir_hlo:mhlo_passes",
