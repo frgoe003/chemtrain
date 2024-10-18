@@ -99,7 +99,7 @@ def masked_neighbor_list(displacement_or_metric,
 
 
 def mask_neighbor_list(nbrs: partition.NeighborList,
-                       mask: Array) -> partition.NeighborList:
+                       mask: Array = None) -> partition.NeighborList:
     """Masks the neighbor list indices.
 
     Args:
@@ -112,23 +112,22 @@ def mask_neighbor_list(nbrs: partition.NeighborList,
 
     """
 
-    def mask_dense(idx, mask):
+    def mask_dense(idx, valid_mask):
         # Mask out edges to self
-        self_mask = idx == jnp.reshape(
-            jnp.arange(idx.shape[0]), (idx.shape[0], 1))
+        self_mask = idx == jnp.arange(idx.shape[0])[:, jnp.newaxis]
 
         # Only mask edges to self
-        if mask is None:
+        if valid_mask is None:
             return jnp.where(self_mask, idx.shape[0], idx)
 
         # Mask out all senders
         sender_mask = jax.vmap(
             jnp.logical_or, in_axes=(None, 1), out_axes=1
-        )(jnp.logical_not(mask), self_mask)
+        )(jnp.logical_not(valid_mask), self_mask)
 
         # Mask out all receivers
         total_mask = jax.vmap(jnp.logical_or)(
-            sender_mask, jnp.logical_not(mask[idx])
+            sender_mask, jnp.logical_not(valid_mask[idx])
         )
 
         return jnp.where(total_mask, idx.shape[0], idx)
