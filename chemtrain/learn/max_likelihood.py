@@ -393,9 +393,12 @@ def _batch_masked_loss(per_sample_loss, mask=None):
 def _masked_loss(per_element_loss, mask=None, weights=None):
     """Computes average loss, accounting for masked elements, if applicable."""
     if weights is not None:
-        per_element_loss = jnp.moveaxis(per_element_loss, 0, -1)
-        per_element_loss *= weights
-        per_element_loss = jnp.moveaxis(per_element_loss, -1, 0)
+        if per_element_loss.ndim > 0:
+            per_element_loss = jnp.moveaxis(per_element_loss, 0, -1)
+            per_element_loss *= weights
+            per_element_loss = jnp.moveaxis(per_element_loss, -1, 0)
+        else:
+            per_element_loss *= weights
 
     if mask is None:
         return jnp.mean(per_element_loss)
