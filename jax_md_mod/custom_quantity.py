@@ -84,7 +84,9 @@ def force_wrapper(energy_fn_template, fixed_energy_params=None):
     return energy
 
 
-def energy_force_wrapper(energy_fn_template, fixed_energy_params=None):
+def energy_force_wrapper(energy_fn_template,
+                         fixed_energy_params=None,
+                         has_aux=False):
     """Wrapper around energy_fn to allow energy and force computation via
     traj_util.quantity_traj.
 
@@ -94,6 +96,9 @@ def energy_force_wrapper(energy_fn_template, fixed_energy_params=None):
         fixed_energy_params: Always use the energy function obtained when
             using the fixed energy params. If not given, the function uses
             dynamially specified parameters.
+        has_aux: Whether the energy function has an auxiliary output. In this
+            case, the energy function will be called with the argument
+            ``mode="with_aux"`` and should return a tuple with ``(energy, aux)``.
 
     """
     def energy_and_force_fn(state, neighbor, energy_params, **kwargs):
@@ -102,17 +107,37 @@ def energy_force_wrapper(energy_fn_template, fixed_energy_params=None):
         else:
             energy_fn = energy_fn_template(fixed_energy_params)
 
+        if has_aux:
+            kwargs['mode'] = 'with_aux'
+
         box = kwargs.pop('box', None)
-        @partial(jax.value_and_grad, argnums=(0, 1))
+        @partial(jax.value_and_grad, argnums=(0, 1), has_aux=has_aux)
         def energy_and_grads_fn(R, _box):
             if box is not None:
                 return energy_fn(R, neighbor=neighbor, box=_box, **kwargs)
             else:
                 return energy_fn(R, neighbor=neighbor, **kwargs)
 
-        energy, (neg_force, box_grads) = energy_and_grads_fn(state.position, box)
-        return {'energy': energy, 'force': -neg_force, 'box_grad': box_grads}
+        energy_or_aux, (neg_force, box_grads) = energy_and_grads_fn(state.position, box)
+        if has_aux:
+            energy, aux = energy_or_aux
+        else:
+            aux = None
+            energy = energy_or_aux
+
+        return {'energy': energy, 'force': -neg_force, 'box_grad': box_grads, 'aux': aux}
     return energy_and_force_fn
+
+
+def get_aux(aux_key=""):
+    """Reads out auxiliary output from the energy function."""
+    def snapshot_fn(state, energy_and_force=None, **kwargs):
+        assert energy_and_force is not None, f"Need to provide aux for {aux_key}."
+        assert aux_key in energy_and_force['aux'].keys(), f"Need to provide aux for {aux_key}."
+        print(f"Read out {aux_key} from aux.")
+
+        return energy_and_force['aux'][aux_key]
+    return snapshot_fn
 
 
 def kinetic_energy_wrapper(state, **unused_kwargs):

@@ -121,6 +121,9 @@ class ForceMatching(tt.DataParallelTrainer):
             and energy are derived automatically from the energy_fn_template.
         feature_extract_fns: Features to extract from the data, passed to
             all snapshot functions as keyword arguments.
+        energy_fn_has_aux: Energy function has an auxiliary output. The
+            energy function will be called with argument ``mode="with_aux"``
+            and should return a tuple ``(pot, aux)``.
         batch_per_device: Number of samples to process vectorized on every
             device.
         batch_cache: Number of batches to load into the device memories.
@@ -145,6 +148,7 @@ class ForceMatching(tt.DataParallelTrainer):
                  weights_keys: Dict[str, str] = None,
                  additional_targets: Dict[str, Dict] = None,
                  feature_extract_fns: Dict[str, Callable] = None,
+                 energy_fn_has_aux: bool = False,
                  batch_per_device: int = 1,
                  batch_cache: int = 10,
                  full_checkpoint: bool = False,
@@ -160,7 +164,7 @@ class ForceMatching(tt.DataParallelTrainer):
         # only once for all computations involving the energy and forces.
         feature_fns = {
             "energy_and_force": custom_quantity.energy_force_wrapper(
-                energy_fn_template
+                energy_fn_template, has_aux=energy_fn_has_aux
             )
         }
 

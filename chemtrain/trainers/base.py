@@ -436,8 +436,7 @@ class MLETrainerTemplate(TrainerInterface):
                 # be performed.
                 self._diverged = True
                 if self.checkpoint_path is not None:
-                    path = (self.checkpoint_path
-                            + f'/epoch{self._epoch - 1}_error_state.pkl')
+                    path = (self.checkpoint_path / f'epoch{self._epoch - 1}_error_state.pkl')
                     self.save_trainer(save_path=path)
                 print(f'Training has been unsuccessful due to the following'
                       f' error: {err}')
