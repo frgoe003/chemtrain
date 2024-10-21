@@ -335,6 +335,10 @@ def batch_map(f, xs, batch_size: int = 1):
     # Then, we map over the batches and compute the remainder in a single pass
     batch_results = lax.map(
         f_vmapped, tree_util.tree_unflatten(tree_structure, batches))
+    # We are done if we can split the data into batches without remainder
+    if len(remainders) == 0:
+        return tree_concat(batch_results)
+
     remainder_results = f_vmapped(
         tree_util.tree_unflatten(tree_structure, remainders))
 

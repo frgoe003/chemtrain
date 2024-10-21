@@ -24,21 +24,23 @@ from jax_md import partition, space
 
 from chemtrain import util
 
+from typing import Tuple
+
 
 def allocate_neighborlist(dataset,
                           displacement: space.DisplacementOrMetricFn,
                           box: space.Box,
                           r_cutoff: float,
                           capacity_multiplier: float = 1.0,
-                          disable_cell_list: bool = False,
-                          mask_self: bool = True,
+                          disable_cell_list: bool = True,
                           fractional_coordinates: bool = True,
                           format: partition.NeighborListFormat = partition.NeighborListFormat.Dense,
                           pairwise_distances: bool = True,
                           box_key: str = None,
                           mask_key: str = None,
                           batch_size: int = 1000,
-                          **static_kwargs) -> partition.NeighborList:
+                          **static_kwargs) -> Tuple[partition.NeighborList,
+                                                   Tuple[int, int]]:
     """Allocates an optimally sized neighbor list.
 
     Args:
@@ -57,8 +59,6 @@ def allocate_neighborlist(dataset,
         disable_cell_list: An optional boolean. If set to `True` then the neighbor
             list is constructed using only distances. This can be useful for
             debugging but should generally be left as `False`.
-        mask_self: An optional boolean. Determines whether points can consider
-            themselves to be their own neighbors.
         fractional_coordinates: An optional boolean. Specifies whether positions
             will be supplied in fractional coordinates in the unit cube, :math:`[0, 1]^d`.
             If this is set to True then the `box_size` will be set to `1.0` and the

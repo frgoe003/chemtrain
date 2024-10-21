@@ -27,6 +27,28 @@ import numpy as onp
 
 from jax_md import partition
 
+
+def mask_dense(idx, mask=None):
+    # Mask out edges to self
+    self_mask = (idx == jnp.arange(idx.shape[0])[:, jnp.newaxis])
+
+    # Only mask edges to self
+    if mask is None:
+        return jnp.where(self_mask, idx.shape[0], idx)
+
+    # Mask out all senders
+    sender_mask = jnp.logical_or(
+        jnp.logical_not(mask)[:, jnp.newaxis], self_mask
+    )
+
+    # Mask out all receivers
+    total_mask = jnp.logical_or(
+        sender_mask, jnp.logical_not(mask[idx])
+    )
+
+    return jnp.where(total_mask, idx.shape[0], idx)
+
+
 @functools.wraps(partition.neighbor_list)
 def masked_neighbor_list(displacement_or_metric,
                          box,
@@ -45,33 +67,8 @@ def masked_neighbor_list(displacement_or_metric,
             "Setting a too high threshold might lead to unexpected behavior."
         )
 
-    def custom_neighbor_list_fn(position, neighbors=None, mask=None, **kwargs):
+    def custom_neighbor_list_fn(mask=None):
         # Enforce neighbor list re-computation if mask changes
-        if mask is not None:
-            position = jnp.where(mask[:, None], position, 0.0)
-
-        @jax.jit
-        def custom_mask_fn(idx):
-            # Mask out edges to self
-            self_mask = idx == jnp.reshape(
-                jnp.arange(idx.shape[0]),(idx.shape[0], 1))
-
-            # Only mask edges to self
-            if mask is None:
-                return jnp.where(self_mask, idx.shape[0], idx)
-
-            # Mask out all senders
-            sender_mask = jax.vmap(
-                jnp.logical_or, in_axes=(None, 1), out_axes=1
-            )(jnp.logical_not(mask), self_mask)
-
-            # Mask out all receivers
-            total_mask = jax.vmap(jnp.logical_or)(
-                sender_mask, jnp.logical_not(mask[idx])
-            )
-
-            return jnp.where(total_mask, idx.shape[0], idx)
-
         neighbor_fns = partition.neighbor_list(
             displacement_or_metric,
             box,
@@ -79,21 +76,31 @@ def masked_neighbor_list(displacement_or_metric,
             dr_threshold,
             capacity_multiplier,
             disable_cell_list,
-            False,
-            custom_mask_function=custom_mask_fn,
+            True,
+            custom_mask_function=functools.partial(mask_dense, mask=mask),
             fractional_coordinates=fractional_coordinates,
             format=format,
             **static_kwargs
         )
 
-        return neighbor_fns.allocate(position, neighbors=neighbors, **kwargs)
+        return neighbor_fns
 
+    # Ensure that the neighbor list calls the correct (modified) update function
     def init_neighbor_fn(position, extra_capacity: int = 0, mask=None, **kwargs):
-        return custom_neighbor_list_fn(position, extra_capacity=extra_capacity, mask=mask, **kwargs)
+        if mask is not None:
+            position = jnp.where(mask[:, jnp.newaxis], position, jnp.inf)
+
+        nbrs = custom_neighbor_list_fn(mask).allocate(position, extra_capacity=extra_capacity, **kwargs)
+        # Explicitely set the update function that modifies the mask function
+        return nbrs.set(update_fn=update_neighbor_fn)
 
     @jax.jit
     def update_neighbor_fn(position, nbrs, mask=None, **kwargs):
-        return custom_neighbor_list_fn(position, neighbors=nbrs, mask=mask, **kwargs)
+        if mask is not None:
+            position = jnp.where(mask[:, jnp.newaxis], position, jnp.inf)
+
+        nbrs = custom_neighbor_list_fn(mask).update(position, neighbors=nbrs, **kwargs)
+        return nbrs.set(update_fn=update_neighbor_fn)
 
     return partition.NeighborListFns(init_neighbor_fn, update_neighbor_fn)
 
@@ -112,41 +119,23 @@ def mask_neighbor_list(nbrs: partition.NeighborList,
 
     """
 
-    def mask_dense(idx, valid_mask):
-        # Mask out edges to self
-        self_mask = idx == jnp.arange(idx.shape[0])[:, jnp.newaxis]
-
-        # Only mask edges to self
-        if valid_mask is None:
-            return jnp.where(self_mask, idx.shape[0], idx)
-
-        # Mask out all senders
-        sender_mask = jax.vmap(
-            jnp.logical_or, in_axes=(None, 1), out_axes=1
-        )(jnp.logical_not(valid_mask), self_mask)
-
-        # Mask out all receivers
-        total_mask = jax.vmap(jnp.logical_or)(
-            sender_mask, jnp.logical_not(valid_mask[idx])
-        )
-
-        return jnp.where(total_mask, idx.shape[0], idx)
-
     def mask_sparse(idx, mask):
         # Mask out all invalid edges
+        senders, receivers = idx
+
         edge_mask = jnp.logical_or(
-            jnp.logical_not(mask[idx[0]]),
-            jnp.logical_not(mask[idx[1]])
+            jnp.logical_not(mask[senders]),
+            jnp.logical_not(mask[receivers])
         )
 
-        return jnp.where(edge_mask[:, None], nbrs.reference_position.shape[0], idx)
+        return jnp.where(edge_mask[jnp.newaxis, :], nbrs.reference_position.shape[0], idx)
 
     if nbrs.format == partition.NeighborListFormat.Dense:
         new_idx = mask_dense(nbrs.idx, mask)
     else:
         new_idx = mask_sparse(nbrs.idx, mask)
 
-    new_position = jnp.where(mask[:, None], nbrs.reference_position, 0.0)
+    new_position = jnp.where(mask[:, jnp.newaxis], nbrs.reference_position, 0.0)
 
     return nbrs.set(idx=new_idx, reference_position=new_position)
 
