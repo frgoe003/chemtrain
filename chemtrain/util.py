@@ -19,7 +19,8 @@ from typing import Any
 import chex
 import cloudpickle as pickle
 # import h5py
-from jax import tree_map, tree_util, device_count, numpy as jnp
+import jax
+from jax import tree_map, tree_util, device_count, numpy as jnp, tree_unflatten, lax
 from jax_md import simulate
 import numpy as onp
 
@@ -299,3 +300,48 @@ def load_trainer(file_path):
 def format_not_recognized_error(file_format):
     raise ValueError(f'File format {file_format} not recognized. '
                      f'Expected ".hdf5" or ".pkl".')
+
+def batch_map(f, xs, batch_size: int = 1):
+    """Maps a function over an array in batches.
+
+    Substitute for ``lax.map`` with batch size argument from later jax versions.
+
+    Args:
+        f: Function to map.
+        xs: List of arguments to map over.
+        batch_size: Size of each batch.
+
+    Returns:
+        Returns results of f evaluated at element entry of xs.
+
+    """
+
+    f_vmapped = jax.vmap(f)
+    tree_leaves, tree_structure = tree_util.tree_flatten(xs)
+
+    # First, we split the pytree into batch and remainder part
+    batches = []
+    remainders = []
+
+    for leave in tree_leaves:
+        n_batches = leave.shape[0] // batch_size
+        remainder = leave.shape[0] % batch_size
+
+        if n_batches > 0:
+            batches.append(jnp.reshape(leave[:n_batches * batch_size], (n_batches, batch_size, *leave.shape[1:])))
+        if remainder > 0:
+            remainders.append(leave[-remainder:])
+
+    # Then, we map over the batches and compute the remainder in a single pass
+    batch_results = lax.map(
+        f_vmapped, tree_util.tree_unflatten(tree_structure, batches))
+    remainder_results = f_vmapped(
+        tree_util.tree_unflatten(tree_structure, remainders))
+
+    # Concatenate remainder results and batches
+    results = tree_util.tree_map(
+        lambda x, y: jnp.concat([x, y], axis=0),
+        tree_concat(batch_results), remainder_results
+    )
+
+    return results
