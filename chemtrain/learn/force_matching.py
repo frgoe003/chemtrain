@@ -240,7 +240,7 @@ def init_loss_fn(error_fn: ErrorFn = max_likelihood.mse_loss,
             errors['U'] = error_fn(predictions['U'], targets['U'], weights=weights)
             loss_val += gamma_U * errors['U']
         if 'F' in targets.keys():
-            weights = targets.get(weights_keys.get('U'))
+            weights = targets.get(weights_keys.get('F'))
             errors['F'] = error_fn(predictions['F'], targets['F'], weights=weights)
             loss_val += gamma_F * errors['F']
 

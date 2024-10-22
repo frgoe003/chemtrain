@@ -696,8 +696,11 @@ class DataParallelTrainer(MLETrainerTemplate):
         self.batch_cache = batch_cache
         self.batch_size = batch_per_device * device_count()
 
-        # replicate params and optimizer states for pmap
-        opt_state = optimizer.init(init_params)  # initialize optimizer state
+        if optimizer is None:
+            print(f"No optimizer specified")
+            opt_state = None
+        else:
+            opt_state = optimizer.init(init_params)  # initialize optimizer state
         init_state = util.TrainerState(params=init_params, opt_state=opt_state)
 
         super().__init__(
@@ -785,7 +788,13 @@ class DataParallelTrainer(MLETrainerTemplate):
 
         self.set_loader(loaders.train_loader, stage=stage, include_all=include_all, **kwargs)
 
-    def set_loader(self, data_loader, stage="training", include_all=False, batch_size=None, **kwargs):
+    def set_loader(self,
+                   data_loader,
+                   stage="training",
+                   include_all=False,
+                   batch_size=None,
+                   rng_seed=None,
+                   **kwargs):
         """Sets a data loader for a specific stage, e.g., training.
 
         If the dataset consists of numpy arrays, it is simpler to use
@@ -798,6 +807,9 @@ class DataParallelTrainer(MLETrainerTemplate):
             include_all: Compute the loss for all samples of the split by
                 padding the last batch and masking out double samples.
                 Not applied to the training split.
+            rng_seed: Seed to include random keys in the reference data.
+                The keys are refreshed whenever a new batch is drawn.
+            batch_size: Overwrites the default batch size.
 
         """
         if stage in self.release_fns.keys():
@@ -846,6 +858,7 @@ class DataParallelTrainer(MLETrainerTemplate):
         # Initialize the access functions
         batch_fns = data_loaders.init_batch_functions(
             data_loader, mb_size=batch_size, cache_size=self.batch_cache,
+            rng_seed=rng_seed,
         )
         init_train_state, get_train_batch, release = batch_fns
 
@@ -870,6 +883,13 @@ class DataParallelTrainer(MLETrainerTemplate):
 
         Useful, e.g., when the validation loss should be computed more
         regularly.
+
+        Args:
+            stage: Key to the stage that should be limited. Currently,
+                stage other than ``"training"`` is not supported to avoid
+                wrongful computations of the validation loss.
+            max_batches: Maximum number of batches, i.e., number of batched
+                optimizer updates.
 
         """
         if stage != "training":

@@ -461,6 +461,6 @@ def identity_loss(predictions, *args, **kwargs):
 
 def step_optimizer(params, opt_state, grad, optimizer):
     """Steps optimizer and updates state using the gradient."""
-    scaled_grad, new_opt_state = optimizer.update(grad, opt_state)
+    scaled_grad, new_opt_state = optimizer.update(grad, opt_state, params)
     new_params = optax.apply_updates(params, scaled_grad)
     return new_params, new_opt_state

@@ -135,6 +135,12 @@ API Documentation
    api/trainers
    api/typing
 
+.. toctree::
+   :titlesonly:
+   :caption: Chemsim
+   :maxdepth: 2
+
+   chemsim/connector
 
 .. toctree::
    :titlesonly:
@@ -149,6 +155,7 @@ API Documentation
    jax_md_mod/jax_md_mod.custom_quantity
    jax_md_mod/jax_md_mod.custom_space
    jax_md_mod/jax_md_mod.io
+
 
 
 Indices and tables
