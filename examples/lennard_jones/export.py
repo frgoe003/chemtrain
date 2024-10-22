@@ -50,12 +50,9 @@ def build_export_model():
             assert neighbors.idx.shape[0] == 2, "Wrong shape"
             print(neighbors.idx.shape)
 
-            apply_fn = custom_energy.customn_lennard_jones_neighbor_list(
-                lambda ra, rb, **kwargs: rb - ra, None, None,
-                sigma=3.156, epsilon=0.35,
-                r_onset=4.0, r_cutoff=5.0,
-                initialize_neighbor_list=False, per_particle=True
-            )
+            box = onp.eye(3) / 10.0 # Convert to Angstrom
+
+            apply_fn =
 
             return apply_fn(pos, neighbors)
 

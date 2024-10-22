@@ -12,6 +12,7 @@
 
 #include "xla/client/xla_computation.h"
 #include "xla/service/hlo_parser.h"
+#include "xla/translate/hlo_to_mhlo/hlo_to_mlir_hlo.h"
 #include "xla/mlir_hlo/mhlo/IR/register.h"
 #include "xla/mlir_hlo/mhlo/transforms/passes.h"
 #include "xla/mlir/utils/error_util.h"
@@ -52,7 +53,7 @@ namespace jcn {
 
     }
 
-    xla::XlaComputation Compiler::compile(
+    void Compiler::compile(
         const int n_atoms,
         std::vector<std::vector<int64_t>> graph_shapes,
         std::vector<xla::PrimitiveType> graph_types
@@ -132,7 +133,19 @@ namespace jcn {
             );
         }
 
-        return std::move(res).value();
+        xla::XlaComputation computation = std::move(res).value();
+
+        absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> status_or_ref = xla::ConvertHloToMlirHlo(export_context, computation.mutable_proto(), false, false);
+        if (!status_or_ref.ok()) {
+            throw std::runtime_error(
+                "Failed to convert the computation to MLIR: " + std::string(status.message())
+            );
+        }
+
+        module_ref = std::move(status_or_ref).value();
+
+        std::cout << "Finished converting the computation to MLIR" << std::endl;
+
     }
 
 

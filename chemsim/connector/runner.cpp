@@ -26,6 +26,7 @@
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/pjrt/pjrt_stream_executor_client.h"
 #include "xla/pjrt/tfrt_cpu_pjrt_client.h"
+#include "xla/pjrt/gpu/se_gpu_pjrt_client.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "xla/service/dump.h"
@@ -84,6 +85,15 @@ namespace jcn {
         // Initialize PJRT
         initialize();
 
+        compile_options.profile_version = 9;
+
+        compile_options.executable_build_options = compile_options.executable_build_options.set_run_backend_only(false);
+        compile_options.executable_build_options = compile_options.executable_build_options.set_device_ordinal(config.device);
+        compile_options.executable_build_options = compile_options.executable_build_options.set_deduplicate_hlo(true);
+
+
+        std::cout << "Build options: " << compile_options.executable_build_options.ToString() << std::endl;
+
         // Deserialize the protobuffer
         model->ParseFromString(config.model);
 
@@ -117,8 +127,13 @@ namespace jcn {
             }
         }
 
+
+        absl::flat_hash_map<std::string, xla::PjRtValueType> create_options = {
+            {"memory_fraction", xla::PjRtValueType(0.95f)},
+        };
+
         // Get the client
-        absl::StatusOr<std::unique_ptr<xla::PjRtClient>> client_or_status = xla::GetCApiClient(config.backend);
+        absl::StatusOr<std::unique_ptr<xla::PjRtClient>> client_or_status = xla::GetCApiClient(config.backend, create_options);
         if (!client_or_status.ok()) {
             client = xla::GetTfrtCpuClient(/*asynchronous=*/true).value();
         } else {
@@ -145,13 +160,13 @@ namespace jcn {
 
                 // Now we have all shapes setup to build the module if required
                 if (!executable || atoms.reallocate || neighbors.reallocate ) {
-                     xla::XlaComputation callable = compiler->compile(
+                    std::cout << "Recompilation necessary" << std::endl;
+
+                    compiler->compile(
                         atoms.n_atoms, neighbors.graph_shapes, neighbors.graph_types);
 
-                    // No idea what to specify here...
-                    xla::CompileOptions compile_options;
-
-                    absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> executable_or_status = client->Compile(callable, compile_options);
+                    absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> executable_or_status = client->Compile(
+                        compiler->module(), compile_options);
 
                     if (!executable_or_status.ok()) {
                         throw std::runtime_error("Failed to compile: " + executable_or_status.status().ToString());
@@ -167,10 +182,10 @@ namespace jcn {
 
                 // Now we have to create the buffers, i.e., copy the data onto
                 // the device
-                std::vector<xla::PjRtBuffer*> buffer_ptrs = atom_builder->build_domain(client.get(), 0, inum, gnum, x, type);
+                std::vector<xla::PjRtBuffer*> buffer_ptrs = atom_builder->build_domain(client.get(), config.device, inum, gnum, x, type);
 
                 std::vector<xla::PjRtBuffer*> graph_buffers = neighbor_list->build_graph(
-                    client.get(), 0, inum, ilist, numneigh, firstneigh, update);
+                    client.get(), config.device, inum, ilist, numneigh, firstneigh, update);
                 buffer_ptrs.insert(buffer_ptrs.end(), graph_buffers.begin(), graph_buffers.end());
 
                 std::vector<std::vector<xla::PjRtBuffer*>> arg_handles = {buffer_ptrs};

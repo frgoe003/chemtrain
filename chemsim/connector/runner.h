@@ -56,6 +56,8 @@ namespace jcn {
         std::unique_ptr<AtomBuilder> atom_builder;
         std::unique_ptr<Compiler> compiler;
 
+        xla::CompileOptions compile_options;
+
         ConnectorConfig config;
 
     };

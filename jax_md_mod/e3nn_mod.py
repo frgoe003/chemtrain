@@ -31,27 +31,51 @@ def _distinct_but_small(x: jax.Array):
     shape = x.shape
     x = x.ravel()
     # We sort the array
-    sorted, sorted_idx = jnp.sort(x), jnp.argsort(x)
+    sorted_idx = jnp.argsort(x)
 
-    def _cum_count(state, elem):
-        unique_idx, last_val, counter = state
-        # We check whether we found a new value in the sorted array and update
-        # our unique indices accordingly. We remember the first index
-        unique_idx, last_val = lax.cond(
-            elem == last_val,
-            lambda u, l, e: (u, l),
-            lambda u, l, e: (u + 1, e),
-            unique_idx, last_val, elem
-        )
-        # We now update our one-hot counter and return the class assignment
-        counter += jax.nn.one_hot(unique_idx, x.size, dtype=jnp.int32)
-        return (unique_idx, last_val, counter), unique_idx
-
-    # We do the assignment and counting (DO WE NEED THE COUNTING?)
-    _, assignment = lax.scan(
-        _cum_count, (0, sorted[0], jnp.zeros(x.size, dtype=jnp.int32)), sorted
-    )
+    # We assign indices to the sorted array
+    new_group = jnp.concat([jnp.zeros(1), jnp.diff(x[sorted_idx]) > 0], axis=0)
+    group_idx = jnp.cumsum(new_group)
 
     # We assign the unique indices
-    x = x.at[sorted_idx].set(assignment)
+    x = x.at[sorted_idx].set(group_idx)
     return x.reshape(shape)
+
+
+# def _distinct_but_small(x: jax.Array):
+#     """Maps the entries of x into integers from 0 to n-1 denoting unique values.
+#
+#     Note:
+#         This implementation replaces the original e3nn_jax implementation
+#         and allows to use Shape Polymorphism for exporting.
+#
+#     """
+#     print(f"Use a custom scatter implementation")
+#
+#     shape = x.shape
+#     x = x.ravel()
+#     # We sort the array
+#     sorted, sorted_idx = jnp.sort(x), jnp.argsort(x)
+#
+#     def _cum_count(state, elem):
+#         unique_idx, last_val, counter = state
+#         # We check whether we found a new value in the sorted array and update
+#         # our unique indices accordingly. We remember the first index
+#         unique_idx, last_val = lax.cond(
+#             elem == last_val,
+#             lambda u, l, e: (u, l),
+#             lambda u, l, e: (u + 1, e),
+#             unique_idx, last_val, elem
+#         )
+#         # We now update our one-hot counter and return the class assignment
+#         counter += jax.nn.one_hot(unique_idx, x.size, dtype=jnp.int32)
+#         return (unique_idx, last_val, counter), unique_idx
+#
+#     # We do the assignment and counting (DO WE NEED THE COUNTING?)
+#     _, assignment = lax.scan(
+#         _cum_count, (0, sorted[0], jnp.zeros(x.size, dtype=jnp.int32)), sorted
+#     )
+#
+#     # We assign the unique indices
+#     x = x.at[sorted_idx].set(assignment)
+#     return x.reshape(shape)

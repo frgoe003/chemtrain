@@ -63,16 +63,21 @@ namespace jcn {
         * @param graph_types A list of types for each graph argument.
         * @return Returns the compiled XLA computation with refined shapes.
         */
-        xla::XlaComputation compile(
+        void compile(
             const int n_atoms,
             std::vector<std::vector<int64_t>> graph_shapes,
             std::vector<xla::PrimitiveType> graph_types
         );
 
+        mlir::ModuleOp module() const { return module_ref.get(); }
+
     private:
 	    mlir::MLIRContext context;
+        mlir::MLIRContext export_context;
+
         std::string mlir_module;
 
+        mlir::OwningOpRef<mlir::ModuleOp> module_ref;
     };
 }
 

@@ -28,6 +28,7 @@
 #include <iostream>
 #include <fstream>
 #include <chrono>
+#include <stdlib.h>
 
 using namespace LAMMPS_NS;
 
@@ -183,10 +184,16 @@ void JaxConnect::coeff(int narg, char **arg)
 
     jcn::ConnectorConfig config;
 
+    const char* nl_rank = getenv("OMPI_COMM_WORLD_LOCAL_RANK");
+
     config.model = exported_model;
     config.neighbor_list_multipliers = neighbor_list_multipliers;
     config.atom_multiplier = atom_multiplier;
     config.backend = backend;
+    config.device = 0; // std::stoi(nl_rank);
+
+    std::cout << "Running on device: " << config.device << std::endl;
+    setenv("CUDA_VISIBLE_DEVICES", nl_rank, 1);
 
     // Set the flags to mark initialization of all pair coefficients
     int ilo, ihi, jlo, jhi;

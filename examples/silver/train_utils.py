@@ -108,8 +108,11 @@ def define_model(config, dataset, nbrs_init, max_edges, max_triplets):
             p=model_kwargs.get("p", 6),
         )
 
+        # TODO: We need to make the model definition more flexible such that
+        #       we can easily export the trained model.
+
         @hk.transform
-        def haiku_model(pos, neighbor, box=None, **dynamic_kwargs):
+        def haiku_model(pos, neighbor, box=None, per_particle=False, export=False, **dynamic_kwargs):
             allegro_model = Allegro(
                 avg_num_neighbors=max_edges / r_init.shape[0],
                 radial_cutoff=config["model"]["r_cutoff"],  # In nm
@@ -117,15 +120,19 @@ def define_model(config, dataset, nbrs_init, max_edges, max_triplets):
             )
 
             # Create a neighbor list with maximum capacity first
-            dense_idx = neighbor.idx
-            senders = jnp.arange(dense_idx.shape[0]).repeat(dense_idx.shape[1])
-            receivers = dense_idx.ravel()
+            if neighbor.format == partition.Dense:
+                dense_idx = neighbor.idx
+                senders = jnp.arange(dense_idx.shape[0]).repeat(dense_idx.shape[1])
+                receivers = dense_idx.ravel()
+            else:
+                senders, receivers = neighbor.idx
 
             # Sort the indices of the receivers (invalids will be last)
             # and only keep a pre-defined amount
-            _, sorted_idx = lax.top_k(-receivers, max_edges)
-            senders = senders[sorted_idx]
-            receivers = receivers[sorted_idx]
+            if not export:
+                _, sorted_idx = lax.top_k(-receivers, max_edges)
+                senders = senders[sorted_idx]
+                receivers = receivers[sorted_idx]
 
             # Mask out all invalid neighbors
             mask = receivers < pos.shape[0]
@@ -134,17 +141,24 @@ def define_model(config, dataset, nbrs_init, max_edges, max_triplets):
             species = jnp.ones(pos.shape[0], dtype=int)
             node_attrs = nn.one_hot(species, n_species)
 
-            displacements = jax.vmap(
-                functools.partial(displacement_fn, box=box)
-            )(pos[senders, :], pos[receivers, :])
-            displacements = jnp.where(mask[:, None], displacements, config["model"]["r_cutoff"])
+            # Only apply PBC if box is provided
+            if box is None:
+                displacements = pos[senders, :] - pos[receivers, :]
+            else:
+                displacements = jax.vmap(
+                    functools.partial(displacement_fn, box=box)
+                )(pos[senders, :], pos[receivers, :])
+                displacements = jnp.where(mask[:, None], displacements, config["model"]["r_cutoff"])
 
             vectors = e3nn_jax.IrrepsArray("1o", displacements)
 
             maybe_energy = allegro_model(node_attrs, vectors, senders, receivers).array
             maybe_energy = (maybe_energy.T * mask).T
 
-            return util.high_precision_sum(maybe_energy)
+            if per_particle:
+                return jax.ops.segment_sum(maybe_energy, senders, pos.shape[0])[:, 0]
+            else:
+                return util.high_precision_sum(maybe_energy)
 
 
         init_params = haiku_model.init(key, r_init, nbrs_init, box=box_init)
@@ -279,17 +293,15 @@ def init_optimizer(config, dataset):
     lr_schedule_fm = optax.exponential_decay(
         config["optimizer"]["init_lr"], transition_steps, decay_rate=0.33, end_value=config["optimizer"]["lr_decay"])
     optimizer_fm = optax.chain(
-        # optax.scale_by_adam(
-        #     b1=0.5,
-        #     b2=0.9,
-        #     eps=1e-8,
-        #     eps_root=1e-16,
-        #     nesterov=True,
-        # ),
-        optax.scale_by_belief(0.5, 0.9),
+        optax.scale_by_adam(
+            b1=0.9,
+            b2=0.95,
+            eps=1e-8,
+            eps_root=1e-16,
+            nesterov=True,
+        ),
         optax.transforms.add_decayed_weights(config["optimizer"].get("weight_decay", 1e-2)),
         optax.scale_by_learning_rate(lr_schedule_fm, flip_sign=True),
-        # optax.add_noise(1e-4, 0.55, 11)
     )
 
     return optimizer_fm
@@ -339,7 +351,7 @@ def plot_predictions(predictions, reference_data, out_dir, name):
     scale_energy = 96.4853722  # [eV] ->   [kJ/mol]
     scale_pos = 0.1  # [Å] -> [nm]
 
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(11, 5),
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 5),
                                         layout="constrained")
 
     fig.suptitle("Predictions")
@@ -361,16 +373,6 @@ def plot_predictions(predictions, reference_data, out_dir, name):
     ax2.set_xlabel("Ref. F [eV/A]")
     ax2.set_ylabel("Pred. F [eV/A]")
 
-    mae = onp.mean(onp.abs(predictions['virial'] - reference_data[
-        'virial'])) / scale_energy * (scale_pos ** 3)
-    ax3.set_title(f"Virial (MAE: {mae * 1000:.1f} meV/A^3)")
-    ax3.plot(reference_data['virial'][
-                 reference_data['type'] == 0].ravel() / scale_energy * (
-                     scale_pos ** 3), predictions['virial'][
-                 reference_data['type'] == 0].ravel() / scale_energy * (
-                     scale_pos ** 3), "*")
-    ax3.set_xlabel("Ref. W [eV/A^3]")
-    ax3.set_ylabel("Pred. W [eV/A^3]")
 
     fig.savefig(out_dir / f"{name}.pdf", bbox_inches="tight")
 

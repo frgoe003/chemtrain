@@ -8,19 +8,20 @@ import jax
 import tomli
 
 import numpy as onp
-from google.protobuf.proto import parse
 
 from jax import numpy as jnp, tree_util
 
 from jax_md_mod import custom_quantity
-from jax_md import space
+from jax_md import space, partition
 
 import matplotlib.pyplot as plt
 
 from chemtrain import trainers
+from chemtrain.deploy import exporter, graphs
 
 import train_utils
-import data_utils
+from chemutils.datasets import utils as data_utils
+from chemutils.datasets import silver
 
 def main():
     parser = argparse.ArgumentParser()
@@ -45,7 +46,10 @@ def main():
     #             dataset[split] = {key: arr[0:args.n_samples, ...] for key, arr in dataset[split].items()}
 
     #    dataset = data_utils.make_supercell(dataset, args.a, args.b, args.c)
-    dataset = data_utils.download_dataset('./')
+    scale_energy = 96.4853722  # [eV] ->   [kJ/mol]
+    scale_pos = 0.1  # [Å] -> [nm]
+
+    dataset = silver.download_and_prepare_dataset("./", scale_R=scale_pos, scale_U=scale_energy)
     displacement_fn, _ = space.periodic_general(1.0, fractional_coordinates=True)
 
     # We estimate the maximum number of edges and triplets and also initialize
@@ -72,13 +76,6 @@ def main():
         batch_per_device=config["optimizer"]["batch"],
         batch_cache=config["optimizer"]["cache"],
         gammas=config["gammas"],
-        additional_targets={
-            'virial': custom_quantity.init_virial_stress_tensor(
-                energy_fn_template, reference_box=None, include_kinetic=False)
-        },
-        weights_keys={
-            'virial': 'virial_weights'
-        }
     )
 
     energy_params = onp.load(
@@ -101,12 +98,40 @@ def main():
         config["optimizer"]["batch"] // (args.a * args.b * args.c), 1
     ])
 
+    class Export(exporter.Exporter):
+
+        graph_type = graphs.SimpleSparseNeighborList
+
+        def energy_fn(self, pos, species, graph):
+
+            neighbors = partition.NeighborList(
+                jnp.stack((graph.senders, graph.receivers)),
+                pos, None, None, graph.senders.size, partition.Sparse,
+                None, None, None
+            )
+
+            assert neighbors.idx.shape[0] == 2, "Wrong shape"
+            print(neighbors.idx.shape)
+
+            pos /= 10.0
+
+            apply_fn = energy_fn_template(energy_params)
+
+            return apply_fn(pos, neighbors, export=True, per_particle=True) / 4.184 # Convert to kcal/mol
+
+    module = Export().export()
+    print(module)
+
+    with open(out_dir / "model.ptb", "wb") as f:
+        f.write(module.SerializeToString())
+
     predictions = trainer_fm.predict(
         dataset["validation"], energy_params, batch_size=batch_size,
     )
 
     train_utils.save_predictions(out_dir, f"preds_validation_a={args.a}_b={args.b}_c={args.c}", predictions)
     train_utils.plot_predictions(predictions, dataset["validation"], out_dir, f"preds_validation_a={args.a}_b={args.b}_c={args.c}")
+
 
     plt.show()
 

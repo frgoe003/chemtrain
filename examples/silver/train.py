@@ -67,18 +67,18 @@ def get_default_config():
     print(f"Run on device {args.device}")
     return OrderedDict(
         model=OrderedDict(
-            type="MACE",
+            type="Allegro",
             r_cutoff=args.cutoff,
             edge_multiplier=1.15,
             model_kwargs=OrderedDict(
-                # max_ell=3,
-                # n_irreps=128,
-                # irreps="0o + 1o + 1e + 2e + 2o + 3o + 3e",
-                # mlp_n_hidden=128,
-                # mlp_n_layers=3,
-                # n_radial_basis=8,
-                # num_layer=3,
-                # p=48,
+                max_ell=3,
+                n_irreps=128,
+                irreps="0o + 1o + 1e + 2e + 2o + 3o + 3e",
+                mlp_n_hidden=128,
+                mlp_n_layers=3,
+                n_radial_basis=8,
+                num_layer=3,
+                p=48,
             ),
             no_shift=True
         ),
