@@ -319,14 +319,7 @@ def write_bazelrc(*, remote_build,
     if cpu is not None:
       f.write(f"build --cpu={cpu}\n")
 
-    if wheel_cpu == "x86_64":
-      f.write("build --config=avx_posix\n")
-    else:
-      raise ValueError(f"Unsupported wheel_cpu: {wheel_cpu}")
 
-
-    if enable_mkl_dnn:
-      f.write("build --config=mkl_open_source_only\n")
     if enable_cuda:
       f.write("build --config=cuda\n")
       if not enable_nccl:
@@ -601,6 +594,7 @@ def main():
 
   command_base = (
     bazel_path,
+    "--bazelrc=config.bazelrc",
     *args.bazel_startup_options,
     f"--output_base={output_path}",
     "build",
