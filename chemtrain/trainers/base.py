@@ -785,7 +785,7 @@ class DataParallelTrainer(MLETrainerTemplate):
 
         self.set_loader(loaders.train_loader, stage=stage, include_all=include_all, **kwargs)
 
-    def set_loader(self, data_loader, stage="training", include_all=False, **kwargs):
+    def set_loader(self, data_loader, stage="training", include_all=False, batch_size=None, **kwargs):
         """Sets a data loader for a specific stage, e.g., training.
 
         If the dataset consists of numpy arrays, it is simpler to use
@@ -807,9 +807,14 @@ class DataParallelTrainer(MLETrainerTemplate):
 
         assert observation_count > 0
 
-        batch_size = observation_count
-        if self.batch_size < observation_count:
+        # Overwrite batch size for splits
+        if batch_size is not None:
+            print(f"Chose custom batch size {batch_size} for split {stage}")
+
+        if batch_size is None:
             batch_size = self.batch_size
+        if batch_size > observation_count:
+            batch_size = observation_count
 
         # Ensures that the batch size is divisible by the number of devices
         batch_size -= onp.mod(batch_size, device_count())
@@ -858,6 +863,22 @@ class DataParallelTrainer(MLETrainerTemplate):
             self._batch_states[stage], train_batch = self._get_batch_fns[stage](
                 self._batch_states[stage], information=information)
             yield train_batch
+
+
+    def set_batches_per_epoch(self, stage="training", max_batches: int = 1):
+        """Limits the number of updates within an epoch.
+
+        Useful, e.g., when the validation loss should be computed more
+        regularly.
+
+        """
+        if stage != "training":
+            raise NotImplementedError("Only training stage implemented.")
+
+        self._batches_per_epoch[stage] = min([
+            self._batches_per_epoch[stage], max_batches
+        ])
+
 
     def _get_batch(self):
         return self._get_batch_stage("training")
