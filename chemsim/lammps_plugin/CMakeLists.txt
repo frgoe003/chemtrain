@@ -81,7 +81,7 @@ add_library(jaxconnector MODULE
 target_link_libraries(
         jaxconnector PRIVATE lammps ${LIB_DIR}/libconnector.so
 )
-set_target_properties(jaxconnector PROPERTIES PREFIX "" SUFFIX ".so" LINKER_LANGUAGE CXX CXX_STANDARD 17)
+set_target_properties(jaxconnector PROPERTIES PREFIX "" SUFFIX "plugin.so" LINKER_LANGUAGE CXX CXX_STANDARD 17)
 
 
 # MacOS seems to need this

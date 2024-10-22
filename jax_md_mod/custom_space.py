@@ -53,59 +53,46 @@ def init_fractional_coordinates(box: Box) -> Tuple[Box, Callable]:
     return box, scale_fn
 
 
-def open_general(box: Box,
-                fractional_coordinates: bool = True,
-                wrapped: bool = True) -> space.Space:
-    """Open boundary conditions on a parallelepiped."""
-    inv_box = space.inverse(box)
+def nonperiodic_general(box: Box = None,
+                        fractional_coordinates: bool = True,
+                        wrapped: bool = True) -> space.Space:
+    """Nonperiodic boundary conditions on a parallelepiped."""
+    del wrapped
+    
+    if box is not None:
+        inv_box = space.inverse(box)
+    else:
+        inv_box = None
 
     def displacement_fn(Ra, Rb, perturbation=None, **kwargs):
         _box, _inv_box = box, inv_box
 
         if 'box' in kwargs:
+            assert fractional_coordinates, (
+                "Coordinates must be fractional to specify a new box."
+            )
             _box = kwargs['box']
 
-            if not fractional_coordinates:
-                _inv_box = space.inverse(_box)
-
         if 'new_box' in kwargs:
+            assert fractional_coordinates, (
+                "Coordinates must be fractional to specify a new box."
+            )
             _box = kwargs['new_box']
 
-        if not fractional_coordinates:
-            Ra = space.transform(_inv_box, Ra)
-            Rb = space.transform(_inv_box, Rb)
-
         dR = space.pairwise_displacement(Ra, Rb)
-        dR = space.transform(_box, dR)
+        if fractional_coordinates:
+            assert _box is not None, (
+                "Box must be provided for fractional coordinates."
+            )
+            dR = space.transform(_box, dR)
 
         if perturbation is not None:
-            dR = space.raw_transform(perturbation, dR)
+            raise NotImplementedError(
+                "Perturbation not supported for nonperiodic_general.")
 
         return dR
 
-    def u(R, dR):
-        return R + dR
-
     def shift_fn(R, dR, **kwargs):
-        if not fractional_coordinates and not wrapped:
-            return R + dR
-
-        _box, _inv_box = box, inv_box
-        if 'box' in kwargs:
-            _box = kwargs['box']
-            _inv_box = space.inverse(_box)
-
-        if 'new_box' in kwargs:
-            _box = kwargs['new_box']
-
-        dR = space.transform(_inv_box, dR)
-        if not fractional_coordinates:
-            R = space.transform(_inv_box, R)
-
-        R = u(R, dR)
-
-        if not fractional_coordinates:
-            R = space.transform(_box, R)
-        return R
+        return R + dR
 
     return displacement_fn, shift_fn

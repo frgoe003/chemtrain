@@ -74,10 +74,12 @@ class Exporter(metaclass=abc.ABCMeta):
 
     num_mpl: int = 0
 
+    mask: bool = False
 
     _symbols: List[str] = []
     _constraints: List[str] = []
     _init_fns: List[Callable] = []
+    _proto: model_proto.Model = None
 
     @abc.abstractmethod
     def energy_fn(self, position, species, graph):
@@ -129,6 +131,7 @@ class Exporter(metaclass=abc.ABCMeta):
 
     def _energy_fn(self, position, species, n_local, n_ghost, *graph_args):
         # Expects particles to be sorted by local, ghost, and padding atoms
+
         valid_mask = jnp.arange(position.shape[0]) < (n_local + n_ghost)
         ghost_mask = (jnp.arange(position.shape[0]) < n_ghost) & valid_mask
 
@@ -138,7 +141,10 @@ class Exporter(metaclass=abc.ABCMeta):
 
         @functools.partial(jax.grad, has_aux=True)
         def force_and_aux(pos):
-            per_atom_energies = self.energy_fn(pos, species, graph)
+            if self.mask:
+                per_atom_energies = self.energy_fn(pos, species, valid_mask, graph)
+            else:
+                per_atom_energies = self.energy_fn(pos, species, graph)
 
             assert per_atom_energies.shape == ghost_mask.shape, (
                 f"Per particle energies have shape {per_atom_energies.shape}, "
@@ -158,7 +164,7 @@ class Exporter(metaclass=abc.ABCMeta):
 
         return force_and_aux(position)
 
-    def export(self) -> str:
+    def export(self) -> None:
         """Exports the potential model to an MLIR module."""
 
         proto = model_proto.Model()
@@ -183,4 +189,21 @@ class Exporter(metaclass=abc.ABCMeta):
 
         proto.mlir_module = exp.mlir_module()
 
-        return proto
+        self._proto = proto
+
+    def __str__(self):
+        assert self._proto is not None, (
+            "Model has not been exported yet. Please call `export()` first."
+        )
+
+        return str(self._proto)
+
+    def save(self, file: str):
+        """Saves the exported protobuffer to a file."""
+
+        assert self._proto is not None, (
+            "Model has not been exported yet. Please call `export()` first."
+        )
+
+        with open(file, "wb") as f:
+            f.write(self._proto.SerializeToString())

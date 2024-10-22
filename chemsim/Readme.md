@@ -36,7 +36,7 @@ Next, the connector can be built using the following command:
 ## Building Lammps Plugin
 
 ```bash
-lammps_plugin cmake -D LAMMPS_HEADER_DIR=../../lammps/src ..
+cmake -D LAMMPS_HEADER_DIR=../../../lammps/src ../lammps_plugin
 make
 ```
 
@@ -53,34 +53,21 @@ cmake -D PKG_PLUGIN=yes ../cmake
 make
 ```
 
-## Test the plugin
+## "Installing" LAMMPS and the plugin
 
-First, copy the HLO instruction into the build folder:
+To "install" LAMMPS and the plugin, we can create a script to set the
+correct environment variables. The script should look like this:
 
+__activate:__ 
 ```bash
-cp connector/fn_hlo.txt lammps/build/fn_hlo.txt
+#! /bin/bash
+
+export PATH=/home/paul/nn_prior/external/lammps/build:$PATH
+export LAMMPS_PLUGIN_PATH=/home/paul/nn_prior/external/chemtrain/chemsim/build
+export JCN_PJRT_PATH=/home/paul/nn_prior/external/chemtrain/chemsim/lib
 ```
 
-Then, we can run LAMMPS inside the container:
-
-```bash
-docker exec lammps ./lmp -i input.lmp
-```
-
-## Execute an example
-
-```bash
-docker run --name lmp_example --gpus all -w /mnt/example/alanine_dipeptide -it -d --rm -v $PWD:/mnt jaxconnector bash
-docker exec lmp_example pip install "chemtrain[all]" 
-docker exec lmp_example ../../lammps/build/lmp -i input.lmp
-docker exec lmp_example ../../lammps/build/lmp -i in.lammps
-```
+Calling the script with ``source ./activate`` will set all necessary variables
+to discover the LAMMPS executable, the plugin, and the PJRT library.
 
 
-## You want to acces your own files?
-
-You can get back ownership of the docker output by running:
-
-```bash
-docker exec lammps chown -R `stat -c "%u:%g" /mnt` /mnt
-```

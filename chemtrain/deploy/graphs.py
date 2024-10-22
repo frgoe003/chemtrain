@@ -100,6 +100,12 @@ class SimpleSparseNeighborList(NeighborList):
         graph = SimpleSparseNeighborList(*args)
         return graph, NeighborListStatistics().tuple
 
+    def to_neighborlist(self):
+        idx = jnp.stack([self.senders, self.receivers], axis=0)
+        nbrs = partition.NeighborList(
+            idx, None, None, None, None, partition.Sparse, None, None, None)
+        return nbrs
+
 
 class DeviceSparseNeighborListArgs(NamedTuple):
     update: jax.Array | jax.ShapeDtypeStruct
