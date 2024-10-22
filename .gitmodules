@@ -1,3 +1,0 @@
-[submodule "chemutils"]
-	path = chemutils
-	url = git@gitlab.lrz.de:mfm/science/chemutils.git
