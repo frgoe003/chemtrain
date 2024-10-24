@@ -40,7 +40,7 @@ def allocate_neighborlist(dataset,
                           mask_key: str = None,
                           batch_size: int = 1000,
                           **static_kwargs) -> Tuple[partition.NeighborList,
-                                                   Tuple[int, int]]:
+                                                   Tuple[int, int, float]]:
     """Allocates an optimally sized neighbor list.
 
     Args:
@@ -123,9 +123,13 @@ def allocate_neighborlist(dataset,
             if mask is not None:
                 neighbors *= mask
 
+            avg_neighbors = jnp.mean(neighbors)
+            if mask is not None:
+                avg_neighbors /= jnp.mean(mask)
+
             max_neighbors = jnp.max(neighbors)
             max_edges = jnp.sum(neighbors)
-            return max_neighbors, max_edges
+            return max_neighbors, max_edges, avg_neighbors
 
         # We find the sample with the maximum number of neighbors or edges
         return util.batch_map(
@@ -134,7 +138,7 @@ def allocate_neighborlist(dataset,
             batch_size=batch_size
         )
 
-    n_neighbors, n_edges = find_max_neighbors_and_edges(dataset)
+    n_neighbors, n_edges, avg_neighbors = find_max_neighbors_and_edges(dataset)
 
     print(
         f"The dataset has max. {jnp.max(n_neighbors)} neighbors per particle "
@@ -157,4 +161,4 @@ def allocate_neighborlist(dataset,
     nbrs_init = neighbor_fn.allocate(
         jnp.asarray(dataset["R"][sample_idx]), **init_kwargs)
 
-    return nbrs_init, (n_neighbors.max(), n_edges.max())
+    return nbrs_init, (n_neighbors.max(), n_edges.max(), avg_neighbors.mean())
