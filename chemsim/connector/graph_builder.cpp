@@ -107,6 +107,11 @@ namespace jcn {
             std::chrono::duration<double> duration = end - start;
             std::cout << "Time taken for neighborlist array creation: " << duration.count() << " seconds" << std::endl;
 
+            std::cout << "Updated the neighbors buffer." << std::endl;
+            std::cout << "Senders: " << senders_literal->ToString() << std::endl;
+            std::cout << "Receivers: " << receivers_literal->ToString() << std::endl;
+
+
             // Create buffers
             senders_buffer = create_buffer(client, device_id, senders_literal.get());
             receivers_buffer = create_buffer(client, device_id, receivers_literal.get());

@@ -193,7 +193,8 @@ void JaxConnect::coeff(int narg, char **arg)
     config.device = 0; // std::stoi(nl_rank);
 
     std::cout << "Running on device: " << config.device << std::endl;
-    setenv("CUDA_VISIBLE_DEVICES", nl_rank, 1);
+
+    if (nl_rank != nullptr) setenv("CUDA_VISIBLE_DEVICES", nl_rank, 1);
 
     // Set the flags to mark initialization of all pair coefficients
     int ilo, ihi, jlo, jhi;
@@ -227,7 +228,7 @@ void JaxConnect::init_style()
     request |= NeighConst::REQ_FULL;
   }
 
-  neighbor->add_request(this, NeighConst::REQ_FULL | NeighConst::REQ_GHOST);
+  neighbor->add_request(this, request);
 
 }
 

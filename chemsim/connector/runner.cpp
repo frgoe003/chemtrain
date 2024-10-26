@@ -26,7 +26,6 @@
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/pjrt/pjrt_stream_executor_client.h"
 #include "xla/pjrt/tfrt_cpu_pjrt_client.h"
-#include "xla/pjrt/gpu/se_gpu_pjrt_client.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "xla/service/dump.h"
@@ -126,7 +125,6 @@ namespace jcn {
                 throw std::runtime_error("Failed to initialize PjRtClient: " + status.ToString());
             }
         }
-
 
         absl::flat_hash_map<std::string, xla::PjRtValueType> create_options = {
             {"memory_fraction", xla::PjRtValueType(0.95f)},
@@ -254,9 +252,11 @@ namespace jcn {
                     if (model->neighbor_list().has_num_mpl()) {
                         // Ghost atoms sending edges only required if we perform message passing
                         properties.neighbor_list.include_ghosts = (model->neighbor_list().num_mpl() > 0);
+                        std::cout << "Include ghosts: " << properties.neighbor_list.include_ghosts << std::endl;
                     };
                     if (model->neighbor_list().has_half_list()) {
                         properties.neighbor_list.half_list = model->neighbor_list().half_list();
+                        std::cout << "Use half list only " << properties.neighbor_list.half_list << std::endl;
                     };
 
                     break;

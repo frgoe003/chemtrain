@@ -74,7 +74,6 @@ cc_library(
         "@xla//xla/service:hlo_proto_cc",
         "@xla//xla/service:hlo_parser",
         "@xla//xla/service:dump",
-        "@xla//xla/pjrt/gpu:se_gpu_pjrt_client"
     ],
 )
 

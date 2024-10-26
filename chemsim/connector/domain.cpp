@@ -62,6 +62,12 @@ namespace jcn {
             throw std::runtime_error("Domain not initialized or too many atoms");
         }
 
+        char* debug = getenv("JCN_DEBUG");
+        if (debug != nullptr) {
+            std::cout << "Positions: " << position_literal->ToString() << std::endl;
+            std::cout << "Species: " << species_literal->ToString() << std::endl;
+        }
+
         float *position_data = position_literal->data<float>().data();
         int *species_data = species_literal->data<int>().data();
 
@@ -72,14 +78,13 @@ namespace jcn {
         std::fill(position_data + (inum + gnum) * 3, position_data + max_atoms * 3, 0.0f);
 
         // Adjust species values
-        std::transform(species_data, species_data + inum + gnum, species_data, [](int t) { return t - 1; });
+        std::transform(type, type + inum + gnum, species_data, [](int t) { return t - 1; });
         std::fill(species_data + inum + gnum, species_data + max_atoms, 0);
 
         // Provide information about number of ghost and number of local atoms
         locals_literal->data<int>().data()[0] = inum;
         ghosts_literal->data<int>().data()[0] = gnum;
 
-        std::cout << "Position of atom 3: " << position_data[3] << position_data[4] << position_data[5] << std::endl;
 
         auto end = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> duration = end - start;
@@ -131,6 +136,11 @@ namespace jcn {
             for (int i = 0; i < inum; i++) {
                 std::transform(force_data + 3 * i, force_data + 3 * (i + 1),
                     f[i], [](float t) { return static_cast<double>(t); });
+            }
+
+            char* debug = getenv("JCN_DEBUG");
+            if (debug != nullptr) {
+                std::cout << "Force literal: " << force_literal.value()->ToString() << std::endl;
             }
 
             std::cout << "Force of atom 3: " << force_data[3] << force_data[4] << force_data[5] << std::endl;
