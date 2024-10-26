@@ -153,7 +153,7 @@ class Exporter(metaclass=abc.ABCMeta):
 
             # Attention: Force is negative gradient of potential
             total_neg_energy = jnp.float32(-1.0) * md_util.high_precision_sum(
-                per_atom_energies)
+                per_atom_energies * valid_mask)
             local_energy = md_util.high_precision_sum(
                 ghost_mask * per_atom_energies)
 
