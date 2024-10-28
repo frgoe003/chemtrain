@@ -11,10 +11,9 @@
 #include <bitset>
 #include <iostream>
 
-#include "graph_builder.h"
-#include "pjrt.h"
-
-#include "pjrt.h"
+#include "connector/graph_builder.h"
+#include "connector/pjrt.h"
+#include "connector/utils.h"
 
 namespace jcn {
 
@@ -26,6 +25,8 @@ namespace jcn {
     NeighborListShapes SimpleSparseNeighborList::get_neighbor_list_shapes(
         int max_atoms, int inum, int* numneigh) {
         // We pass the neighbor list of LAMMPS
+
+        Logger logger = Logger::getlogger();
 
         fill_value = max_atoms;
 
@@ -43,14 +44,15 @@ namespace jcn {
 
         // Check if reallocation is necessary
         if (current_edges > n_edges) {
-            std::cout << "Reallocation necessary, current edges are " << current_edges << std::endl;
-            std::cout << "Increasing edge count by multiplier " << edge_multiplier << std::endl;
+            logger.log(LogLevel::INFO, "Reallocation necessary, current edges are " + std::to_string(current_edges));
+            logger.log(LogLevel::INFO, "Increasing edge count by multiplier " + std::to_string(edge_multiplier));
             n_edges = static_cast<int>(std::ceil(current_edges * edge_multiplier));
             reallocate = true;
         }
 
         if (reallocate) {
-            std::cout << "Reallocating to " << n_edges << " edges" << std::endl;
+            logger.log(LogLevel::INFO, "Reallocating to " + std::to_string(n_edges) + " edges");
+
             xla::Shape shape = xla::ShapeUtil::MakeShape(
                 xla::S32, absl::Span<const int64_t>{n_edges});
 
@@ -70,6 +72,8 @@ namespace jcn {
             xla::PjRtClient* client, int device_id, int inum, int *ilist, int *numneigh, int **firstneigh, bool update) {
 
         if (update) {
+
+            Logger logger = Logger::getlogger();
 
             // Clear old buffers
             if (senders_buffer) {
@@ -105,12 +109,12 @@ namespace jcn {
 
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double> duration = end - start;
-            std::cout << "Time taken for neighborlist array creation: " << duration.count() << " seconds" << std::endl;
+            logger.log(LogLevel::DEBUG, "Time taken for neighborlist array creation: " + std::to_string(duration.count()) + " seconds");
 
-            std::cout << "Updated the neighbors buffer." << std::endl;
-            std::cout << "Senders: " << senders_literal->ToString() << std::endl;
-            std::cout << "Receivers: " << receivers_literal->ToString() << std::endl;
-
+            if (logger.log(LogLevel::DEBUG)) {
+                logger.log(LogLevel::DEBUG, "Senders: " + senders_literal->ToString());
+                logger.log(LogLevel::DEBUG, "Receivers: " + receivers_literal->ToString());
+            }
 
             // Create buffers
             senders_buffer = create_buffer(client, device_id, senders_literal.get());
@@ -137,8 +141,6 @@ namespace jcn {
 
         // Check if evaluation of the statistics increased the number of cells
         if (cells && cells->shape().dimensions(0) >= size) return false;
-
-        std::cout << "Reallocate literal" << std::endl;
 
         // Reallocate the cells
         xla::Shape shape = xla::ShapeUtil::MakeShape(
@@ -245,10 +247,10 @@ namespace jcn {
             throw std::runtime_error("Failed to convert buffer to literal");
         }
 
-        std::cout << "Returned statistics:" << std::endl \
-                  << "- Min cell capacity: " << min_cell_capacity.value()->data<int>().data()[0] << std::endl \
-                  << "- Cell too small: " << cell_too_small.value()->data<int>().data()[0] << std::endl \
-                  << "- Min neighbors: " << min_neighbors.value()->data<int>().data()[0] << std::endl;
+//        std::cout << "Returned statistics:" << std::endl \
+//                  << "- Min cell capacity: " << min_cell_capacity.value()->data<int>().data()[0] << std::endl \
+//                  << "- Cell too small: " << cell_too_small.value()->data<int>().data()[0] << std::endl \
+//                  << "- Min neighbors: " << min_neighbors.value()->data<int>().data()[0] << std::endl;
 
         // TODO
         // Get back the directions with too small cell sizes

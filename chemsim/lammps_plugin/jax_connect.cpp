@@ -84,9 +84,6 @@ bool JaxConnect::check_distance() {
     for (int i = 0; i < atom->nlocal; i++) {
       std::memcpy(xold[i], atom->x[i], 3 * sizeof(double));
     }
-    std::cout << "Update positions" << std::endl;
-  } else {
-    std::cout << "No need to update old atom positions" << std::endl;
   }
 
   return update_list;
@@ -100,7 +97,6 @@ void JaxConnect::compute(int eflag, int vflag)
   ev_init(eflag, vflag);
 
   auto start = std::chrono::high_resolution_clock::now();
-  std::cout << "Neighborlist creation history: " << neighbor->ago << std::endl;
 
   // Check if neighborlist was updated just in this timestep resulting in newly communicated atoms
   bool update_list = check_distance() || (neighbor->ago == 0);
@@ -117,7 +113,6 @@ void JaxConnect::compute(int eflag, int vflag)
 
   auto end = std::chrono::high_resolution_clock::now();
   std::chrono::duration<double> duration = end - start;
-  std::cout << "Computed potential " + std::to_string(potential) << " in " << duration.count() << " seconds with JAX connector." << std::endl;
 
   if (vflag_fdotr) virial_fdotr_compute();
 

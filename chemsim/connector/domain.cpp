@@ -4,13 +4,15 @@
 
 #include <chrono>
 
-#include "domain.h"
-#include "pjrt.h"
+#include "connector/domain.h"
+#include "connector/pjrt.h"
+#include "connector/utils.h"
 
 #include "xla/pjrt/pjrt_api.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_c_api_client.h"
 #include "xla/literal_util.h"
+
 
 
 namespace jcn {
@@ -34,13 +36,6 @@ namespace jcn {
             xla::Shape count_shape = xla::ShapeUtil::MakeShape(
                xla::S32, absl::Span<const int64_t>{1,});
 
-            // Destroy old literals and allocate new ones with large capacity
-//            if (position_literal) {
-//              	position_literal->Destroy();
-//              	species_literal->Destroy();
-//                ghosts_literal->Destroy();
-//            }
-
             position_literal = std::make_unique<xla::Literal>(xla::Literal::CreateFromShape(position_shape));
             species_literal = std::make_unique<xla::Literal>(xla::Literal::CreateFromShape(species_shape));
             locals_literal = std::make_unique<xla::Literal>(xla::Literal::CreateFromShape(count_shape));
@@ -56,16 +51,17 @@ namespace jcn {
         // If number of atoms in domain (including ghost) exceeds the allocated
         // buffers
 
+        Logger logger = Logger::getlogger();
+
         auto start = std::chrono::high_resolution_clock::now();
 
         if (!position_literal || (inum + gnum) > max_atoms) {
             throw std::runtime_error("Domain not initialized or too many atoms");
         }
 
-        char* debug = getenv("JCN_DEBUG");
-        if (debug != nullptr) {
-            std::cout << "Positions: " << position_literal->ToString() << std::endl;
-            std::cout << "Species: " << species_literal->ToString() << std::endl;
+        if (logger.log(LogLevel::DEBUG)) {
+            logger.log(LogLevel::DEBUG, "Positions: " + position_literal->ToString());
+            logger.log(LogLevel::DEBUG, "Species: " + species_literal->ToString());
         }
 
         float *position_data = position_literal->data<float>().data();
@@ -88,13 +84,8 @@ namespace jcn {
 
         auto end = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> duration = end - start;
-        std::cout << "Time taken for atom array creation: " << duration.count() << " seconds" << std::endl;
 
-        start = std::chrono::high_resolution_clock::now();
-
-        end = std::chrono::high_resolution_clock::now();
-        duration = end - start;
-        std::cout << "Time taken for atom literal creation: " << duration.count() << " seconds" << std::endl;
+        logger.log(LogLevel::DEBUG, "Time taken for atom literal creation: " + std::to_string(duration.count()) + " seconds");
 
         // Create the buffers
      	// TODO: Maybe explicit deallocation is required
@@ -118,6 +109,8 @@ namespace jcn {
 
         double potential;
 
+        Logger logger = Logger::getlogger();
+
         if (success) {
             auto start = std::chrono::high_resolution_clock::now();
 
@@ -138,16 +131,14 @@ namespace jcn {
                     f[i], [](float t) { return static_cast<double>(t); });
             }
 
-            char* debug = getenv("JCN_DEBUG");
-            if (debug != nullptr) {
-                std::cout << "Force literal: " << force_literal.value()->ToString() << std::endl;
+            if (logger.log(LogLevel::DEBUG)) {
+                logger.log(LogLevel::DEBUG, "Force literal: " + force_literal.value()->ToString());
             }
-
-            std::cout << "Force of atom 3: " << force_data[3] << force_data[4] << force_data[5] << std::endl;
 
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double> duration = end - start;
-            std::cout << "Time taken for force backtransfer: " << duration.count() << " seconds" << std::endl;
+
+            logger.log(LogLevel::DEBUG, "Time taken for force backtransfer: " + std::to_string(duration.count()) + " seconds");
 
             potential = static_cast<double>(potential_data[0]);
 

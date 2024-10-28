@@ -5,21 +5,46 @@
 #ifndef UTILS_H
 #define UTILS_H
 
+#include <functional>
+#include <string>
+#include <iostream>
+
 
 namespace jcn {
 
-    class DEBUGSettings {
-        public:
-            DEBUGSettings() {
-                char* ll = getenv("JCN_LOG_LEVEL");
-                if (ll != nullptr) {
-                    log_level = std::stoi(ll);
-                }
-            };
+    // Enum to represent log levels
+    enum LogLevel {
+        DEBUG = 2,
+        INFO = 1,
+        WARNING = 0,
+        ERROR = -1,
+        CRITICAL = -2
+    };
 
-            int log_level = 0;
-    }
+    class Logger {
+    public:
+        ~Logger() = default;
 
+        // Singleton instance
+        static Logger& getlogger() {
+            static Logger instance;
+            return instance;
+        }
+
+        // Logs a message with a given log level
+        void log(LogLevel level, const std::string& message);
+
+        // Checks if the log level is sufficiently high
+        bool log(LogLevel level);
+
+    private:
+        Logger();
+
+        int loglevel = 1;
+
+        std::string levelToString(LogLevel level);
+
+    };
 
 } // namespace jcn
 

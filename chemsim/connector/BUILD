@@ -59,6 +59,7 @@ cc_library(
         ":domain",
         ":pjrt",
         ":model_proto_cc",
+        ":utils",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@tsl//tsl/platform:logging",
@@ -110,6 +111,7 @@ cc_library(
     hdrs = ["graph_builder.h"],
     deps = [
         ":pjrt",
+        ":utils",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@tsl//tsl/platform:logging",
@@ -134,6 +136,7 @@ cc_library(
     hdrs = ["domain.h"],
     deps = [
         ":pjrt",
+        ":utils",
         "@com_google_absl//absl/types:span",
         "@xla//xla:literal_util",
     ]
@@ -145,6 +148,7 @@ cc_library(
     hdrs = ["compiler.h"],
     deps = [
         ":xla_call_module_loader",
+        ":utils",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:BytecodeWriter",
@@ -208,6 +212,13 @@ cc_library(
         "@stablehlo//:vhlo_ops",
     ],
 )
+
+cc_library(
+    name = "utils",
+    srcs = ["utils.cpp"],
+    hdrs = ["utils.h"],
+)
+
 
 tf_proto_library(
     name = "model_proto",

@@ -7,8 +7,9 @@
 #include <string>
 #include <cstdlib>
 
-#include "compiler.h"
-#include "xla_call_module_loader.h"
+#include "connector/compiler.h"
+#include "connector/utils.h"
+#include "connector/xla_call_module_loader.h"
 
 #include "xla/client/xla_computation.h"
 #include "xla/service/hlo_parser.h"
@@ -59,6 +60,8 @@ namespace jcn {
         std::vector<xla::PrimitiveType> graph_types
         ) {
 
+        Logger logger = Logger::getlogger();
+
         // For shape refinement, we have to provide the shapes of the input tensors
         xla::Shape position_shape = xla::ShapeUtil::MakeShape(xla::F32, absl::Span<const int64_t>{n_atoms, 3});
         xla::Shape species_shape = xla::ShapeUtil::MakeShape(xla::S32, absl::Span<const int64_t>{n_atoms});
@@ -76,14 +79,16 @@ namespace jcn {
             input_args++;
         }
 
-        for (const auto& shape : inputShapes) {
-            std::cout << "Shape: " << shape.ToString() << std::endl;
-            std::cout << "Element Type: " << xla::PrimitiveType_Name(shape.element_type()) << std::endl;
+        if (logger.log(LogLevel::INFO)) {
+            logger.log(LogLevel::INFO, "Input shapes for the XLA computation:");
+            for (const auto& shape : inputShapes) {
+                logger.log(
+                    LogLevel::INFO,
+                    "Input: " +  xla::PrimitiveType_Name(shape.element_type()) + ":" + shape.ToString()
+                );
+            }
         }
 
-        std::cout << "Input arguments: " << input_args << std::endl;
-
-        std::cout << "Start loading the module" << std::endl;
         std::vector<std::string> disabled_checks = {};
         std::vector<std::string> platforms = {"cuda"};
 
@@ -93,7 +98,6 @@ namespace jcn {
         // We now follow the steps as in the XLACallModuleLoader from tensorflow
         absl::Status status;
 
-        std::cout << "Validate dialect" << std::endl;
         status = module_loader->ValidateDialect();
         if (!status.ok()) {
             throw std::runtime_error(
@@ -101,7 +105,6 @@ namespace jcn {
             );
         }
 
-        std::cout << "Start setting the platform index" << std::endl;
         status = module_loader->SetPlatformIndex("cuda");
         if (!status.ok()) {
             throw std::runtime_error(
@@ -109,7 +112,6 @@ namespace jcn {
             );
         }
 
-        std::cout << "Start refining the dynamic shapes" << std::endl;
         status = module_loader->RefineDynamicShapes(inputShapes);
         if (!status.ok()) {
             throw std::runtime_error(
@@ -117,7 +119,6 @@ namespace jcn {
             );
         }
 
-        std::cout << "Start lowering the module to MHLO" << std::endl;
         status = module_loader->LowerModuleToMhlo();
         if (!status.ok()) {
             throw std::runtime_error(
@@ -125,7 +126,6 @@ namespace jcn {
             );
         }
 
-        std::cout << "Finished preparing the XLA computation" << std::endl;
         auto res = module_loader->ToXlaComputation();
         if (!res.ok()) {
             throw std::runtime_error(
@@ -143,8 +143,6 @@ namespace jcn {
         }
 
         module_ref = std::move(status_or_ref).value();
-
-        std::cout << "Finished converting the computation to MLIR" << std::endl;
 
     }
 
