@@ -118,3 +118,25 @@ def wandb_log_data_parallel(run, trainer: base.DataParallelTrainer):
         run.log(data=statistics, commit=True)
 
     trainer.add_task("post_epoch", log_fn)
+
+
+def log_batch_progress(trainer: base.DataParallelTrainer, frequency=10):
+    """Logs batch progress to stdout.
+
+    Args:
+        trainer: Trainer to log to W&B
+        frequency: Frequency to log the batch progress
+
+    """
+    def log_fn(trainer: base.DataParallelTrainer, *args, **kwargs):
+        total_batches = trainer._batches_per_epoch["training"]
+        counter = 0
+
+        counter %= total_batches
+
+        if counter % frequency == 0:
+            print(f"Processed batch {counter}/{total_batches}")
+
+        counter += 1
+
+    trainer.add_task("post_batch", log_fn)
