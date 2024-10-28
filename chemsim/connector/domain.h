@@ -36,9 +36,9 @@ namespace jcn {
     class AtomBuilder {
     public:
          /**
-          * @brief Constructor
+          * Constructor
           * @param atom_multiplier Fraction of extra atoms to consider when re-allocate
-    	  *         the arrays
+    	  *     the arrays
           */
         AtomBuilder(float atom_multiplier) : max_atoms(0), atom_multiplier(atom_multiplier) {};
         ~AtomBuilder() = default;
@@ -46,22 +46,30 @@ namespace jcn {
         AtomShapes get_shapes(int inum, int gnum);
 
         /**
-         * Padds the atom data to reduce number of recompilations
+         * Writes atom positions into device buffers. Padds the atom data to
+         * reduce the number of recompilations.
          *
+         * @param client PjRt client to allocate buffers
+         * @param device_id Device ID to allocate buffers
          * @param inum Number of local atoms
          * @param gnum Number of ghost atoms
-         * @param x Atom positions
-         * @param type Atom types (one-based species)
+         * @param x Pointer to atom positions
+         * @param type Pointer to atom types (one-based species)
+         *
+         * @return A vector holding references to the buffers
          */
         std::vector<xla::PjRtBuffer*> build_domain(xla::PjRtClient* client, int device_id, int inum, int gnum, double **x, int *type);
 
         /**
          * Writes back the force to the original array and returns the potential
          *
+         * @param success True if the computation was successful, i.e., the
+         *     neighbor list did not overflow.
          * @param inum Number of local atoms
-         * @param f Target force array
-         * @param forces Forces from the XLA computation
-         * @param potential Potential from the XLA computation
+         * @param f Pointer to target force array
+         * @param results Vector of vector of pointers to the result buffers.
+         *
+         * @return The potential energy of the system
          */
         double evaluate_domain(bool success, int inum, double **f, std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results);
 

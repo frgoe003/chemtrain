@@ -54,13 +54,14 @@ namespace jcn {
         ~Compiler() = default;
 
         /**
-        * @brief Prepares the MLIR module for XLA by performing dynamic shape refinement.
+        * Prepares the MLIR module for XLA by performing dynamic shape refinement.
         *
         * @param n_atoms The number of atoms in the system (including ghost atoms)
         *     and invalid atoms to be masked out. Determines also the size of
         *     the species array and the ghost mask.
         * @param graph_shapes A list of shapes for each graph argument.
         * @param graph_types A list of types for each graph argument.
+        *
         * @return Returns the compiled XLA computation with refined shapes.
         */
         void compile(
@@ -69,6 +70,7 @@ namespace jcn {
             std::vector<xla::PrimitiveType> graph_types
         );
 
+        // Seems no longer needed
         mlir::ModuleOp module() const { return module_ref.get(); }
 
     private:

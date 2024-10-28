@@ -12,16 +12,30 @@
 
 namespace jcn {
 
+    /**
+     * Contains shapes and types of the graph input buffers.
+     */
     struct NeighborListShapes {
-        // Return the shapes in the neighbor list builder
+
+        /**
+         * Shapes of the neighborlist inputs.
+         */
         std::vector<std::vector<int64_t>> graph_shapes;
+
+        /**
+         * Types of the neighborlist inputs.
+         */
         std::vector<xla::PrimitiveType> graph_types;
 
-        // Let the neighbor list keep track whether reallocation is needed
-        // in case of an increased number of atoms or neighbors
+        /**
+         * Indicates whether a shape change requires recompilation.
+         */
         bool reallocate;
     };
 
+    /**
+     * Abstract baseclass for all graph / neighborlist builders.
+     */
     class GraphBuilder {
     public:
         GraphBuilder() = default;
@@ -42,20 +56,53 @@ namespace jcn {
 
     };
 
+    /**
+     * Class that interfaces neighborlists, e.g., from LAMMPS, to a sparse
+     * neighbor list in chemtrain.
+     */
     class SimpleSparseNeighborList : public GraphBuilder {
 
         public:
-            // TODO: Documentation
-            //
-            // @param ilist: Index of the sender atom
-            // @param numneigh: Number of neighbors for the sender atom
-            // @param firstneigh: Start of the neighbor list for the first atom
-
+            /**
+             * Initializes the interface.
+             *
+             * @params multipliers: A vector of multipliers specifying the
+             *     relative increase of the neighborlist buffers. Only the
+             *     first element is used.
+             */
             void initialize(std::vector<float> multipliers) override;
 
+            /**
+             * Returns the required shapes and types of the sparse neighborlist
+             * based on the reference neighborlist.
+             *
+             * @param max_atoms: The maximum number of atoms in the system.
+             * @param inum: The number of local atoms.
+             * @param numneigh: Array holding the number of neighbors for each
+             *     atom.
+             *
+             * @returns Returns ``NeighborListShapes`` struct with necessary
+             *     dimensions.
+             */
             NeighborListShapes get_neighbor_list_shapes(
                 int max_atoms, int inum, int* numneigh) override;
 
+            /**
+              * Builds the sparse neighborlist from the reference neighborlist.
+              *
+              * @param client: The PjRt client to allocate buffers.
+              * @param device_id: The device ID on which to allocate buffers.
+              * @param inum: The number of local atoms.
+              * @param ilist: Array holding the indices of the senders of
+              *     each neighborlist entry.
+              * @param numneigh: Array holding the number of neighbors for each
+              *     atom.
+              * @param firstneigh: Array holding the index of the neighbors
+              *     (receivers) for each sender.
+              * @param update: Whether the neighbor list data must be updated.
+              *
+              * @returns A vector holding references to the buffers.
+              */
             std::vector<xla::PjRtBuffer*> build_graph(
                 xla::PjRtClient* client, int device_id, int inum, int *ilist,
                 int *numneigh, int **firstneigh, bool update) override;
@@ -77,17 +124,68 @@ namespace jcn {
     class DeviceSparseNeighborList : public GraphBuilder {
 
         public:
-
+            /**
+             * Initializes the interface.
+             *
+             * @params multipliers: A vector of multipliers specifying the
+             *     relative increase of the neighborlist buffers.
+             *     TODO: Document the required multipliers.
+             */
             void initialize(std::vector<float> multipliers) override;
 
+            /**
+             * Returns the required shapes and types of the sparse neighborlist
+             * based on the reference neighborlist.
+             *
+             * @param max_atoms: The maximum number of atoms in the system.
+             * @param inum: The number of local atoms.
+             * @param numneigh: Array holding the number of neighbors for each
+             *     atom.
+             *
+             * @returns Returns ``NeighborListShapes`` struct with necessary
+             *     dimensions.
+             */
             NeighborListShapes get_neighbor_list_shapes(
                 int max_atoms, int inum, int* numneigh) override;
 
+            /**
+              * Builds the sparse neighborlist from the reference neighborlist.
+              *
+              * @param client: The PjRt client to allocate buffers.
+              * @param device_id: The device ID on which to allocate buffers.
+              * @param inum: The number of local atoms.
+              * @param ilist: Array holding the indices of the senders of
+              *     each neighborlist entry.
+              * @param numneigh: Array holding the number of neighbors for each
+              *     atom.
+              * @param firstneigh: Array holding the index of the neighbors
+              *     (receivers) for each sender.
+              * @param update: Whether the neighbor list should be regenerated,
+              *     e.g., due to newly communicated atoms.
+              *
+              * @returns A vector holding references to the buffers.
+              *
+              */
             std::vector<xla::PjRtBuffer*> build_graph(
                 xla::PjRtClient* client, int device_id, int inum, int *ilist,
                 int *numneigh, int **firstneigh, bool update) override;
 
-            // Adjusts capacities if necessary
+            /**
+             * Evaluates the statistics of the neighborlist computation and
+             * increase buffer dimensions if necessary.
+             *
+             * This class generates the neighbor list completely on the device
+             * using a cell list. Therefore, it can be necessary to increase
+             * the buffers of the cell list and neighborlist or the dimension
+             * of the cell grid. Cells must be at least as large as the
+             * cutoff radius, but their size might change in NPT simulations.
+             *
+             * @param results: A vector of vectors holding references to all
+             *     result buffers.
+             *
+             * @returns True if the neighborlist generation was sucessful and
+             *     no overflow occured.
+             */
             bool evaluate_statistics(
                 std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results
             ) override;
