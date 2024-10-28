@@ -1121,6 +1121,64 @@ def init_rmsd(reference_positions,
     return rmsd_fn
 
 
+def init_rigid_body_alignment(displacement_fn, reference_position, weights=None, **kwargs):
+    """Initializes a function that aligns a structure to a reference structure.
+
+    The aligned structure minimizes the (weighted) root mean squared distance
+    to the reference structure under rotations and translations, i.e.,
+    rigig body motions.
+
+    Args:
+        displacement_fn: Displacement function
+        reference_position: Reference positions including all atoms.
+        weights: Weight the rmsd, e.g., with masses of the particles.
+        **kwargs: Additional arguments for the displacement function.
+
+    Returns:
+        Returns a function to compute optimally aligned positions.
+
+    """
+
+    ref_displacement_fn = partial(displacement_fn, **kwargs)
+    n_particles, dim = reference_position.shape
+
+    if weights is None:
+        weights = jnp.ones(n_particles)
+    weights /= jnp.mean(weights)
+
+    def align_fn(position, **kwargs):
+
+        # Compute the centers of both point sets
+        q = vmap(ref_displacement_fn, in_axes=(None, 0))(
+            reference_position[0, :], reference_position)
+        q_bar = jnp.mean(weights[:, jnp.newaxis] * q, axis=0)
+        p = vmap(displacement_fn, in_axes=(None, 0))(
+            position[0, :], position)
+        p_bar = jnp.mean(weights[:, jnp.newaxis] * p, axis=0)
+
+        # Recenter the points
+        p -= p_bar[jnp.newaxis, :]
+        q -= q_bar[jnp.newaxis, :]
+
+        # Compute the [d, d] covariance matrix for p.shape = (N, d) and perform
+        # a singular value decomposition to obtain the optimal rotation and
+        # translation that minimizes the weighted squared distance
+        cov = jnp.einsum('ji,j,jk->ik', p, weights, q)
+
+        U, _, Vh = jnp.linalg.svd(cov, full_matrices=True, compute_uv=True)
+
+        det = -jnp.linalg.det(jnp.dot(U, Vh.T).T)
+        sig = jnp.append(jnp.ones(p.shape[1] - 1), det)
+        rotation = jnp.einsum('ji,j,kj->ik', Vh, sig, U)
+        translation = q_bar - jnp.dot(rotation, p_bar)
+
+        # With the rigid body motion we can now compute the rmsd
+        p_opt = jnp.einsum('ij,nj->ni', rotation, p)
+        p_opt += translation[jnp.newaxis, :]
+
+        return p_opt
+    return align_fn
+
 
 def init_velocity_autocorrelation(num_lags):
     """Returns the velocity autocorrelation function (VACF).
