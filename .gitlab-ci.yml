@@ -42,11 +42,9 @@ pages:
     - virtualenv venv_docs
     - source venv_docs/bin/activate
     - pip install ".[all,docs]"
+    - make -C docs html
     - mkdir public
-    - cd docs
     - mv _build/html/ ../public/$CI_COMMIT_BRANCH # Documentation for each branch
   artifacts:
     paths:
       - public
-#  rules:
-#    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
