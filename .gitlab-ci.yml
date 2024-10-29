@@ -43,8 +43,8 @@ pages:
     - source venv_docs/bin/activate
     - pip install ".[all,docs]"
     - make -C docs html
-    - mkdir -p public/$CI_COMMIT_BRANCH
-    - mv docs/_build/html/ public/$CI_COMMIT_BRANCH # Documentation for each branch
+    - mkdir -p "public/$CI_COMMIT_BRANCH"
+    - mv docs/_build/html/ "public/$CI_COMMIT_BRANCH" # Documentation for each branch
   pages:
     path_prefix: "$CI_COMMIT_BRANCH"
   artifacts:
