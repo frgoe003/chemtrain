@@ -18,7 +18,8 @@ cache:
     - .cache/pip
 
 before_script:
-  - apt-get install doxygen
+  - apt-get update
+  - apt-get install -y doxygen
   - python --version ; pip --version  # For debugging
   - pip install virtualenv
 
