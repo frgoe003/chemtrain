@@ -42,8 +42,8 @@ pages:
     - virtualenv venv_docs
     - source venv_docs/bin/activate
     - pip install ".[all,docs]"
+    - mkdir public
     - cd docs
-    - make html
     - mv _build/html/ ../public/$CI_COMMIT_BRANCH # Documentation for each branch
   artifacts:
     paths:
