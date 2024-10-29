@@ -44,7 +44,7 @@ pages:
     - pip install ".[all,docs]"
     - cd docs
     - make html
-    - mv _build/html/ ../public/
+    - mv _build/html/ ../public/$CI_COMMIT_BRANCH # Documentation for each branch
   artifacts:
     paths:
       - public
