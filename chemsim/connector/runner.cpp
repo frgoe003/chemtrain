@@ -164,7 +164,7 @@ namespace jcn {
 
             AtomShapes atoms = atom_builder->get_shapes(inum, gnum);
             NeighborListShapes neighbors = neighbor_list->get_neighbor_list_shapes(
-                atoms.n_atoms, inum, numneigh);
+                atoms.n_atoms, inum + gnum, numneigh);
 
             // Now we have all shapes setup to build the module if required
             if (!executable || atoms.reallocate || neighbors.reallocate ) {
@@ -193,7 +193,7 @@ namespace jcn {
             std::vector<xla::PjRtBuffer*> buffer_ptrs = atom_builder->build_domain(client.get(), config.device, inum, gnum, x, type);
 
             std::vector<xla::PjRtBuffer*> graph_buffers = neighbor_list->build_graph(
-                client.get(), config.device, inum, ilist, numneigh, firstneigh, update);
+                client.get(), config.device, inum + gnum, ilist, numneigh, firstneigh, update);
             buffer_ptrs.insert(buffer_ptrs.end(), graph_buffers.begin(), graph_buffers.end());
 
             std::vector<std::vector<xla::PjRtBuffer*>> arg_handles = {buffer_ptrs};

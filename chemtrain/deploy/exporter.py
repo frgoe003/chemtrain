@@ -133,7 +133,7 @@ class Exporter(metaclass=abc.ABCMeta):
         # Expects particles to be sorted by local, ghost, and padding atoms
 
         valid_mask = jnp.arange(position.shape[0]) < (n_local + n_ghost)
-        ghost_mask = (jnp.arange(position.shape[0]) < n_ghost) & valid_mask
+        ghost_mask = jnp.arange(position.shape[0]) < n_local
 
         graph, build_statistics = self.graph_type.create_from_args(
             position, species, ghost_mask, valid_mask, *graph_args)
