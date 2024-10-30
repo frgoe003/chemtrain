@@ -133,6 +133,7 @@ class ForceMatching(tt.DataParallelTrainer):
         convergence_criterion: Check convergence via
             :class:`base.EarlyStopping`.
         checkpoint_path: Path to the folder to store checkpoints.
+        log_file: Path to file where to log training progress.
 
     Warning:
         Currently neighborlist overflow is not checked.
@@ -155,6 +156,7 @@ class ForceMatching(tt.DataParallelTrainer):
                  disable_shmap: bool = False,
                  penalty_fn: Callable = None,
                  convergence_criterion: str = 'window_median',
+                 log_file: str = 'force_matching.log',
                  checkpoint_path: PathLike = 'checkpoints'):
         # Add additional trainable targets
         if gammas is None:
@@ -192,6 +194,7 @@ class ForceMatching(tt.DataParallelTrainer):
                          disable_shmap=disable_shmap, penalty_fn=penalty_fn,
                          convergence_criterion=convergence_criterion,
                          full_checkpoint=full_checkpoint,
+                         log_file=log_file,
                          energy_fn_template=energy_fn_template)
 
         self._nbrs_init = nbrs_init

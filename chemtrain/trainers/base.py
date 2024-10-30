@@ -15,9 +15,11 @@
 """Abstract templates for trainers, defining common functionality and
 requirements."""
 import abc
+import contextlib
 import copy
 import logging
 import pathlib
+import sys
 import time
 import warnings
 from abc import abstractmethod
@@ -43,6 +45,48 @@ from chemtrain.ensemble.reweighting import init_pot_reweight_propagation_fns
 from chemtrain.ensemble import sampling
 from chemtrain.typing import EnergyFnTemplate
 from chemtrain.util import format_not_recognized_error
+
+
+class CaptureStdout:
+    """Capture stdout and writes to file.
+
+    This context manager writes messages to stdout and a file.
+
+    Args:
+        file: Path to file where to write the stdout.
+
+    """
+    def __init__(self, file=None):
+        self.files = []
+        if file is not None:
+            self.files = [file]
+
+    def write(self, message):
+        for f in self.out:
+            f.write(message)
+            f.flush()
+
+    def flush(self):
+        for f in self.out:
+            f.flush()
+
+    def __enter__(self):
+        try:
+            self.files = [open(file_path, 'w') for file_path in self.files]
+            self.out = (sys.stdout, *self.files)
+            sys.stdout = self
+        except Exception as e:
+            self.__exit__(None, None, None)
+            raise e
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        sys.stdout = self.out[0]
+        for f in self.files:
+            try:
+                f.close()
+            except Exception as e:
+                print(f"Error closing file: {e}")
 
 
 class TrainerInterface(metaclass=abc.ABCMeta):
@@ -98,13 +142,13 @@ class TrainerInterface(metaclass=abc.ABCMeta):
         else:
             data = self._statistics
             try:
-                self._statistics["trainer_state"] = dict(self.state)
+                data["trainer_state"] = dict(self.state)
             except AttributeError:
                 print(f"Skipping trainer state")
 
             # Try to save the best parameters when provided
             try:
-                self._statistics["best_params"] = self.best_params
+                data["best_params"] = self.best_params
             except AttributeError:
                 pass
 
@@ -232,6 +276,7 @@ class MLETrainerTemplate(TrainerInterface):
                  init_state: util.TrainerState,
                  checkpoint_path: PathLike,
                  full_checkpoint: bool = True,
+                 log_file: PathLike = None,
                  reference_energy_fn_template: EnergyFnTemplate = None):
         super().__init__(
             checkpoint_path, reference_energy_fn_template, full_checkpoint)
@@ -241,6 +286,8 @@ class MLETrainerTemplate(TrainerInterface):
         self.gradient_norm_history = []
         self._converged = False
         self._diverged = False
+
+        self.log_file = log_file
 
         self._tasks = {}
 
@@ -418,36 +465,38 @@ class MLETrainerTemplate(TrainerInterface):
         start_epoch = self._epoch
         end_epoch = start_epoch + max_epochs
 
-        self._execute_tasks("pre_training")
-        for _ in range(start_epoch, end_epoch):
-            try:
-                self._execute_tasks("pre_epoch")
-                for batch in self._get_batch():
-                    self._execute_tasks("pre_batch", batch)
-                    self._update(batch)
-                    self._execute_tasks("post_batch", batch)
-                self._execute_tasks("post_epoch",
-                                    checkpoint_freq=checkpoint_freq,
-                                    convergence_thresh=thresh)
-                self._epoch += 1
-            except RuntimeError as err:
-                # In case the simulation diverges, break the optimization
-                # and checkpoint the last state such that an analysis can
-                # be performed.
-                self._diverged = True
-                if self.checkpoint_path is not None:
-                    path = (self.checkpoint_path / f'epoch{self._epoch - 1}_error_state.pkl')
-                    self.save_trainer(save_path=path)
-                print(f'Training has been unsuccessful due to the following'
-                      f' error: {err}')
-                break
 
-            if self._converged:
-                break
-        else:
-            if thresh is not None:
-                print('Maximum number of epochs reached without convergence.')
-        self._execute_tasks("post_training")
+        with CaptureStdout(self.log_file):
+            self._execute_tasks("pre_training")
+            for _ in range(start_epoch, end_epoch):
+                try:
+                    self._execute_tasks("pre_epoch")
+                    for batch in self._get_batch():
+                        self._execute_tasks("pre_batch", batch)
+                        self._update(batch)
+                        self._execute_tasks("post_batch", batch)
+                    self._execute_tasks("post_epoch",
+                                        checkpoint_freq=checkpoint_freq,
+                                        convergence_thresh=thresh)
+                    self._epoch += 1
+                except RuntimeError as err:
+                    # In case the simulation diverges, break the optimization
+                    # and checkpoint the last state such that an analysis can
+                    # be performed.
+                    self._diverged = True
+                    if self.checkpoint_path is not None:
+                        path = (self.checkpoint_path / f'epoch{self._epoch - 1}_error_state.pkl')
+                        self.save_trainer(save_path=path)
+                    print(f'Training has been unsuccessful due to the following'
+                          f' error: {err}')
+                    break
+
+                if self._converged:
+                    break
+            else:
+                if thresh is not None:
+                    print('Maximum number of epochs reached without convergence.')
+            self._execute_tasks("post_training")
 
     def _update_dropout(self, batch):
         """Updates params, while keeping track of Dropout."""
@@ -676,7 +725,7 @@ class DataParallelTrainer(MLETrainerTemplate):
     def __init__(self, loss_fn, model, init_params, optimizer, checkpoint_path,
                  batch_per_device: int,  batch_cache: int = 1,
                  full_checkpoint=True, penalty_fn=None, energy_fn_template=None,
-                 convergence_criterion='window_median',
+                 convergence_criterion='window_median', log_file=None,
                  disable_shmap: bool = False):
 
         self._disable_shmap = disable_shmap
@@ -707,6 +756,7 @@ class DataParallelTrainer(MLETrainerTemplate):
             optimizer=optimizer, init_state=init_state,
             checkpoint_path=checkpoint_path,
             full_checkpoint=full_checkpoint,
+            log_file=log_file,
             reference_energy_fn_template=energy_fn_template)
 
         self.train_batch_losses = self.checkpoint('train_batch_losses', [])
