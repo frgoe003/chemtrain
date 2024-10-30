@@ -140,6 +140,8 @@ API Documentation
    :caption: Chemsim
    :maxdepth: 2
 
+   chemsim/installation
+   chemsim/getting_started
    chemsim/connector
 
 .. toctree::
