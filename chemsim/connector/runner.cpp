@@ -192,6 +192,9 @@ namespace jcn {
             // the device
             std::vector<xla::PjRtBuffer*> buffer_ptrs = atom_builder->build_domain(client.get(), config.device, inum, gnum, x, type);
 
+            // TODO: We have to add the gnum option to the neighbor list.
+            //       This is only a workaround for the sparse neighbor list
+            //       which includes the ghost atoms as senders.
             std::vector<xla::PjRtBuffer*> graph_buffers = neighbor_list->build_graph(
                 client.get(), config.device, inum + gnum, ilist, numneigh, firstneigh, update);
             buffer_ptrs.insert(buffer_ptrs.end(), graph_buffers.begin(), graph_buffers.end());
