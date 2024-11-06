@@ -226,10 +226,6 @@ def init_loss_fn(error_fn: ErrorFn = max_likelihood.mse_loss,
     if weights_keys is None:
         weights_keys = {}
 
-    # Default weights for the common quantities
-    gamma_U = gammas.pop('U', 1.0)
-    gamma_F = gammas.pop('F', 1.0)
-
     def loss_fn(predictions, targets):
         errors = {}
         loss_val = 0.
@@ -238,13 +234,15 @@ def init_loss_fn(error_fn: ErrorFn = max_likelihood.mse_loss,
         if 'U' in targets.keys():
             weights = targets.get(weights_keys.get('U'))
             errors['U'] = error_fn(predictions['U'], targets['U'], weights=weights)
-            loss_val += gamma_U * errors['U']
+            loss_val += gammas.get('U', 1.0) * errors['U']
         if 'F' in targets.keys():
             weights = targets.get(weights_keys.get('F'))
             errors['F'] = error_fn(predictions['F'], targets['F'], weights=weights)
-            loss_val += gamma_F * errors['F']
+            loss_val += gammas.get('F', 1.0) * errors['F']
 
         for key, gamma in gammas.items():
+            if key in ['U', 'F']: continue
+
             weights = None
             if key in weights_keys.keys():
                 weights = targets[weights_keys[key]]
