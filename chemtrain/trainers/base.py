@@ -465,7 +465,6 @@ class MLETrainerTemplate(TrainerInterface):
         start_epoch = self._epoch
         end_epoch = start_epoch + max_epochs
 
-
         with CaptureStdout(self.log_file):
             self._execute_tasks("pre_training")
             for _ in range(start_epoch, end_epoch):
@@ -561,9 +560,9 @@ class PropagationBase(MLETrainerTemplate):
     """
     def __init__(self, init_trainer_state, optimizer, checkpoint_path,
                  reweight_ratio=0.9, sim_batch_size=1, energy_fn_template=None,
-                 full_checkpoint=True, key=None):
+                 full_checkpoint=True, key=None, log_dir=None,):
         super().__init__(optimizer, init_trainer_state, checkpoint_path,
-                         full_checkpoint, energy_fn_template)
+                         full_checkpoint, log_dir, energy_fn_template)
         self.sim_batch_size = sim_batch_size
         self.reweight_ratio = reweight_ratio
 
@@ -584,9 +583,13 @@ class PropagationBase(MLETrainerTemplate):
                          resample_simstates=False):
         """Initializes the simulation and reweighting functions as well
         as the initial trajectory for a statepoint."""
+
         # TODO ref pressure only used in print and to have barostat values.
         #  Reevaluate this parameter of barostat values not used in reweighting
         # TODO document ref_press accordingly
+
+        # TODO: Extend this function to allow for multiple statepoints to be
+        #       added. Requires batch argument to be set here.
 
         assert 'kT' in state_kwargs, (
             "Reweighting requires at least the temperature to be specified in "
@@ -629,9 +632,22 @@ class PropagationBase(MLETrainerTemplate):
         )
         if initialize_traj:
             self.key, split = random.split(self.key)
-            init_traj, runtime = gen_init_traj(
-                split, self.params, reference_state)
-            print(f'Time for trajectory initialization {key}: {runtime} mins')
+
+            num_runs = 2
+            # To get the correct timings, first compile before evaluation
+            start = time.time()
+            init_traj_fn = gen_init_traj.lower(split, self.params, reference_state, num_runs=num_runs, **state_kwargs)
+            init_traj_fn = init_traj_fn.compile()
+            compile_time = (time.time() - start) / 60.
+
+            start = time.time()
+            init_traj = init_traj_fn(split, self.params, reference_state, **state_kwargs)
+            run_time = (time.time() - start) / 60. / num_runs
+
+            assert not init_traj.overflow, "[Propagation] Neighborlist buffer overflowed."
+            assert not onp.any(onp.isnan(init_traj.trajectory.position)), "[Propagation] Initial simulation produced NaNs."
+
+            print(f'[Propagation] Time for trajectory initialization {key}: {compile_time} mins (compilation) and {run_time} mins (execution).')
             self.trajectory_states[key] = init_traj
         else:
             print('Not initializing the initial trajectory is only valid if '

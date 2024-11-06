@@ -36,7 +36,10 @@ def load_box(filename):
     """
     traj = mdtraj.load(filename)
     coordinates = traj.xyz[0]
-    box = traj.unitcell_lengths[0]
+
+    box = traj.unitcell_lengths
+    if box is not None:
+        box = jnp.asarray(box[0])
 
     species = onp.zeros(coordinates.shape[0])
     masses = onp.zeros_like(species)
@@ -46,7 +49,7 @@ def load_box(filename):
 
     # _, bonds = traj.topology.to_dataframe()
 
-    return (jnp.array(box), jnp.array(coordinates), jnp.array(masses),
+    return (box, jnp.array(coordinates), jnp.array(masses),
             jnp.array(species, dtype=jnp.int32))
 
 

@@ -283,7 +283,8 @@ class Difftre(tt.PropagationBase):
                  energy_fn_template: EnergyFnTemplate = None,
                  full_checkpoint: bool = False,
                  convergence_criterion: str = 'window_median',
-                 checkpoint_path: os.PathLike = 'Checkpoints'):
+                 checkpoint_path: os.PathLike = 'Checkpoints',
+                 log_dir: os.PathLike = None):
         init_state = util.TrainerState(params=init_params,
                                        opt_state=optimizer.init(init_params))
 
@@ -300,7 +301,7 @@ class Difftre(tt.PropagationBase):
             init_trainer_state=init_state, optimizer=optimizer,
             checkpoint_path=checkpoint_path, reweight_ratio=reweight_ratio,
             sim_batch_size=sim_batch_size, full_checkpoint=full_checkpoint,
-            energy_fn_template=energy_fn_template)
+            energy_fn_template=energy_fn_template, log_dir=log_dir)
 
         self.batch_losses = self.checkpoint("batch_losses", [])
         self.epoch_losses = self.checkpoint("epoch_losses", [])

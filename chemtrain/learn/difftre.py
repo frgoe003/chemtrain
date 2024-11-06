@@ -167,7 +167,7 @@ def init_difftre_gradient_and_propagation(
         when needed and computes gradients of the loss wrt. energy function
         parameters for a single state point.
         """
-        traj_state = propagate_fn(params, traj_state)
+        traj_state = propagate_fn(params, traj_state, **state_dict)
         (loss_val, predictions), loss_grad = loss_grad_fn(
             params, traj_state, state_dict, targets)
         return traj_state, loss_val, loss_grad, predictions
