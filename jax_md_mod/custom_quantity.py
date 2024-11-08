@@ -159,9 +159,27 @@ def total_energy_wrapper(energy_fn_template):
     return energy
 
 
-def temperature(state, **unused_kwargs):
+def connected(state, neighbor, mask=None, **kwargs):
+    """Checks whether the system is connected."""
+
+    return custom_partition.check_connectivity(neighbor, mask=mask)
+
+
+def temperature(state, mask=None, **kwargs):
     """Temperature function that is consistent with quantity_traj interface."""
-    return quantity.temperature(velocity=state.velocity, mass=state.mass)
+    mass = state.mass
+    velocity = state.velocity
+
+    if mask is None:
+        mask = jnp.ones(velocity.shape[0], dtype=bool)
+    else:
+        print(f"Masked temperature computation")
+
+    velocity = jnp.where(mask[:, jnp.newaxis], velocity, 0.0)
+    mass = jnp.where(mask[:, jnp.newaxis], mass, 1.0)
+    dof = jnp.sum(mask) * jnp.shape(velocity)[-1]
+
+    return jnp.sum(velocity ** 2 * mass) / dof
 
 
 def _dyn_box(reference_box, **kwargs):
