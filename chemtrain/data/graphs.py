@@ -39,6 +39,7 @@ def allocate_neighborlist(dataset,
                           box_key: str = None,
                           mask_key: str = None,
                           batch_size: int = 1000,
+                          init_kwargs: dict = None,
                           **static_kwargs) -> Tuple[partition.NeighborList,
                                                    Tuple[int, int, float]]:
     """Allocates an optimally sized neighbor list.
@@ -72,6 +73,8 @@ def allocate_neighborlist(dataset,
         mask_key: The key in the dataset dictionary that contains the mask. If
             not provided, all particles are considered valid.
         batch_size: Evaluate multiple samples in parallel.
+        init_kwargs: Keyword arguments passed to the neighbor list allocation,
+            e.g., to specify a capacity multiplier.
         **static_kwargs: kwargs that get threaded through the calculation of
             example positions.
 
@@ -152,7 +155,8 @@ def allocate_neighborlist(dataset,
         # The maximum number of edges determine the capacity of the neighbor list.
         sample_idx = jnp.argmax(n_edges)
 
-    init_kwargs = {}
+    if init_kwargs is None:
+        init_kwargs = {}
     if box_key is not None:
         init_kwargs['box'] = jnp.asarray(dataset[box_key][sample_idx])
     if mask_key is not None:

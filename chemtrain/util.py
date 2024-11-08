@@ -319,6 +319,9 @@ def batch_map(f, xs, batch_size: int = 1):
     f_vmapped = jax.vmap(f)
     tree_leaves, tree_structure = tree_util.tree_flatten(xs)
 
+    # Ensure that the batch size is not larger than the number of samples
+    batch_size = onp.min([batch_size, tree_leaves[0].shape[0]])
+
     # First, we split the pytree into batch and remainder part
     batches = []
     remainders = []
