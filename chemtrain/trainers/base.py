@@ -17,6 +17,7 @@ requirements."""
 import abc
 import contextlib
 import copy
+import functools
 import logging
 import pathlib
 import sys
@@ -630,16 +631,22 @@ class PropagationBase(MLETrainerTemplate):
             entropy_approximation=entropy_approximation,
             resample_simstates=resample_simstates
         )
+
+        self.key, split = random.split(self.key)
+
+        num_runs = 2
+        # To get the correct timings, first compile before evaluation
+        start = time.time()
+        init_traj_fn = gen_init_traj.lower(split, self.params, reference_state,
+                                           num_runs=num_runs, **state_kwargs)
+        init_traj_fn = init_traj_fn.compile()
+        compile_time = (time.time() - start) / 60.
+        print(
+            f'[Propagation] Time for trajectory compilation {key}: '
+            f'{compile_time} mins'
+        )
+
         if initialize_traj:
-            self.key, split = random.split(self.key)
-
-            num_runs = 2
-            # To get the correct timings, first compile before evaluation
-            start = time.time()
-            init_traj_fn = gen_init_traj.lower(split, self.params, reference_state, num_runs=num_runs, **state_kwargs)
-            init_traj_fn = init_traj_fn.compile()
-            compile_time = (time.time() - start) / 60.
-
             start = time.time()
             init_traj = init_traj_fn(split, self.params, reference_state, **state_kwargs)
             run_time = (time.time() - start) / 60. / num_runs
@@ -647,9 +654,14 @@ class PropagationBase(MLETrainerTemplate):
             assert not init_traj.overflow, "[Propagation] Neighborlist buffer overflowed."
             assert not onp.any(onp.isnan(init_traj.trajectory.position)), "[Propagation] Initial simulation produced NaNs."
 
-            print(f'[Propagation] Time for trajectory initialization {key}: {compile_time} mins (compilation) and {run_time} mins (execution).')
+            print(
+                f'[Propagation] Time for trajectory simulation {key}: '
+                f'{run_time} mins'
+            )
+
             self.trajectory_states[key] = init_traj
         else:
+            self.trajectory_states[key] = functools.partial(init_traj_fn, split, self.params, reference_state, **state_kwargs)
             print('Not initializing the initial trajectory is only valid if '
                   'a checkpoint is loaded. In this case, please be use to add '
                   'state points in the same sequence, otherwise loaded '
@@ -701,7 +713,7 @@ class PropagationBase(MLETrainerTemplate):
             traj = self.trajectory_states[sim_key]
             print(f'[Statepoint {sim_key}]')
             statepoint = self.statepoints[sim_key]
-            measured_kbt = jnp.mean(traj.aux['kbT'])
+            measured_kbt = jnp.mean(traj.aux['kT'])
             if 'pressure' in statepoint:  # NPT
                 measured_press = jnp.mean(traj.aux['pressure'])
                 press_print = (f'\n\tpress = {measured_press:.2f} ref_press = '
