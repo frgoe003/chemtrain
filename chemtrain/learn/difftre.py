@@ -307,7 +307,7 @@ def init_rel_entropy_gradient_and_propagation(reference_dataloader,
     return propagation_and_grad
 
 
-def init_step_size_adaption(weight_fns: Dict[Any, Callable],
+def init_step_size_adaption(weight_fn: Callable,
                             allowed_reduction: ArrayLike = 0.5,
                             interior_points: int = 10,
                             step_size_scale: float = 1e-7
@@ -339,6 +339,8 @@ def init_step_size_adaption(weight_fns: Dict[Any, Callable],
         N = \\left\\lceil -\\log(a) / \\log(n_i + 1)\\right\\rceil.
 
     Args:
+        weight_fn: Function computing a tuple (weights, N_eff) from the
+            parameter states.
         allowed_reduction: Target reduction of the effective sample size
         interior_points: Number of interiour points
         step_size_scale: Accuracy of the found optimal interpolation
@@ -357,15 +359,8 @@ def init_step_size_adaption(weight_fns: Dict[Any, Callable],
     iterations = int(onp.ceil(-onp.log(step_size_scale) / onp.log(interior_points + 1)))
     print(f"[Step size] Use {iterations} iterations for {interior_points} interior points.")
 
-    def _initialize_search(params, traj_states):
-        N_effs = {
-            sim_key: weight_fn(params, traj_states[sim_key])[1]
-            for sim_key, weight_fn in weight_fns.items()
-        }
-        return N_effs
-
     @functools.partial(jax.vmap, in_axes=(0, None, None, None, None, None))
-    def _residual(alpha, params, N_effs, batch_grad, proposal, traj_states):
+    def _residual(alpha, params, N_eff, batch_grad, proposal, traj_state):
         # Find the biggest reduction among the statepoints
 
         new_params = jax.tree_util.tree_map(
@@ -373,20 +368,12 @@ def init_step_size_adaption(weight_fns: Dict[Any, Callable],
             params, proposal
         )
 
-        reductions = []
-        for sim_key, weight_fn in weight_fns.items():
-            # Calculate the expected effective number of weights
-            _, N_eff_new = weight_fn(
-                new_params, traj_states[sim_key]
-            )
-
-            reductions.append(jnp.log(N_eff_new) - jnp.log(N_effs[sim_key]))
-
-        min_reduction = jnp.min(jnp.array(reductions))
+        _, N_eff_new = weight_fn(new_params, traj_state)
+        reduction = jnp.log(N_eff_new) - jnp.log(N_eff)
         # Allow a reduction of the current effective sample size
         # The minimum reduction must still be larger than the allowed reduction
         # i.e. the residual of the final alpha must be greater than zero
-        return min_reduction - jnp.log(allowed_reduction)
+        return reduction - jnp.log(allowed_reduction)
 
     def _step(state, _, params=None, N_effs=None, batch_grad=None, proposal=None, traj_states=None):
         a, b, res_a, res_b = state
@@ -416,12 +403,12 @@ def init_step_size_adaption(weight_fns: Dict[Any, Callable],
         return (a, b, res_a, res_b), None
 
     @jit
-    def _adaptive_step_size(params, batch_grad, proposal, traj_states):
-        N_effs = _initialize_search(params, traj_states)
+    def _adaptive_step_size(params, batch_grad, proposal, traj_state):
+        _, N_eff = weight_fn(params, traj_state)
         a, b = 1.0e-5, 1.0
         res_a, res_b = _residual(
             jnp.asarray([a, b]),
-            params, N_effs, batch_grad, proposal, traj_states)
+            params, N_eff, batch_grad, proposal, traj_state)
 
         # Check that minimum step size is sufficiently small, else just keep
         # the minimum step size
@@ -434,8 +421,8 @@ def init_step_size_adaption(weight_fns: Dict[Any, Callable],
         # In the other case, do the bisection with the unchanged initial
         # values of a and b
         _step_fn = functools.partial(
-            _step, N_effs=N_effs, batch_grad=batch_grad, proposal=proposal,
-            traj_states=traj_states, params=params)
+            _step, N_effs=N_eff, batch_grad=batch_grad, proposal=proposal,
+            traj_states=traj_state, params=params)
         (a, b, res_a, _), _ = lax.scan(
             _step_fn,
             (a, b, res_a, res_b), onp.arange(iterations)

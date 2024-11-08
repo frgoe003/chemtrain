@@ -279,6 +279,7 @@ class Difftre(tt.PropagationBase):
                  init_params: Any,
                  optimizer: GradientTransformationExtraArgs,
                  reweight_ratio: ArrayLike = 1.0,
+                 adaptive_step_size_threshold: float = 1e-4,
                  sim_batch_size: int = 1,
                  energy_fn_template: EnergyFnTemplate = None,
                  full_checkpoint: bool = False,
@@ -290,8 +291,8 @@ class Difftre(tt.PropagationBase):
 
         # Optional: Initialized by calling trainer.init_step_size_adaption
         # after all statepoints to be considered have been set up.
-        self._adaptive_step_size = None
-        self._adaptive_step_size_threshold = None
+        self._adaptive_step_size = {}
+        self._adaptive_step_size_threshold = adaptive_step_size_threshold
         self._recompute = False
 
         self.state_dicts = {}
@@ -328,7 +329,8 @@ class Difftre(tt.PropagationBase):
                        initialize_traj: bool = True,
                        set_key: str = None,
                        entropy_approximation: bool = False,
-                       resample_simstates: bool = False):
+                       resample_simstates: bool = False,
+                       allowed_reduction: ArrayLike = None):
         """
         Adds a state point to the pool of simulations with respective targets.
 
@@ -380,6 +382,8 @@ class Difftre(tt.PropagationBase):
                 training.
             resample_simstates: Resample the sim states from all trajectories
                 instead of simulating independent chains.
+            allowed_reduction: Allowed reduction of the effective sample size
+                for the given statepoint.
 
         """
         # init simulation, reweighting functions and initial trajectory
@@ -431,6 +435,11 @@ class Difftre(tt.PropagationBase):
         self.state_dicts[key] = state_kwargs
         self.targets[key] = targets
 
+        if allowed_reduction is not None:
+            self._adaptive_step_size[key] = difftre.init_step_size_adaption(
+                self.weights_fn[key], allowed_reduction
+            )
+
         # Reset loss measures if new state point es added since loss values
         # are not necessarily comparable
         self.early_stop.reset_convergence_losses()
@@ -456,11 +465,22 @@ class Difftre(tt.PropagationBase):
         losses = 0.0
         grads = None
 
+
         for sim_key in batch:
+            traj_state = self.trajectory_states[sim_key]
+            try:
+                traj_state.overflow
+            except:
+                start = time.time()
+                traj_state = traj_state()
+                compute_time = (time.time() - start) / 60.
+
+                print(f"Delayed initialization of trajectory state in {compute_time :.2f} min.")
+
             grad_fn = self.grad_fns[sim_key]
             (new_traj_state, loss_val, curr_grad,
              state_point_predictions) = grad_fn(
-                self.params, self.trajectory_states[sim_key],
+                self.params, traj_state,
                 self.state_dicts[sim_key], self.targets[sim_key],
                 recompute=self._recompute
             )
@@ -475,6 +495,13 @@ class Difftre(tt.PropagationBase):
             else:
                 grads = util.tree_sum(grads, curr_grad)
 
+            # Print scalar predictions and statepoint measurements
+            self._print_measured_statepoint(sim_key=sim_key)
+            last_predictions = self.predictions[sim_key][self._epoch]
+            for quantity, value in last_predictions.items():
+                if value.ndim == 0:
+                    print(f'\tPredicted {quantity}: {value}')
+
             if jnp.isnan(loss_val):
                 warnings.warn(f'Loss of state point {sim_key} in epoch '
                               f'{self._epoch} is NaN. This was likely caused by'
@@ -486,19 +513,26 @@ class Difftre(tt.PropagationBase):
         self.batch_losses.append(onp.asarray(losses / len(batch)))
         batch_grad = tree_util.tree_map(lambda x: x / len(batch), grads)
 
-        if self._adaptive_step_size is not None:
-            proposal = self._optimizer_step(batch_grad)
-            alpha, residual = self._adaptive_step_size(
-                self.params, batch_grad, proposal, self.trajectory_states)
+        step_size = 1.0
+        recompute = False
+        proposal = self._optimizer_step(batch_grad)
+        for sim_key in batch:
+            if sim_key not in self._adaptive_step_size: continue
 
-            # Recompute all traj states if step size scale is too small
-            self._recompute = alpha < self._adaptive_step_size_threshold
-            print(f"[Step Size] Found optimal step size {alpha} with residual "
+            alpha, residual = self._adaptive_step_size[sim_key](
+                self.params, batch_grad, proposal, self.trajectory_states[sim_key]
+            )
+
+            recompute |= alpha < self._adaptive_step_size_threshold
+
+            print(f"[Step Size] Found optimal step size for {alpha} for statepoint {sim_key} with residual "
                   f"{residual}", flush=True)
-        else:
-            alpha = 1.0
 
-        self._step_optimizer(batch_grad, alpha=alpha)
+            if alpha < step_size:
+                step_size = alpha
+
+        # self._recompute = recompute
+        self._step_optimizer(batch_grad, alpha=step_size)
 
         batch_norm = util.tree_norm(batch_grad)
         self.gradient_norm_history.append(onp.asarray(batch_norm))
@@ -551,14 +585,6 @@ class Difftre(tt.PropagationBase):
             f'\n\tEpoch loss = {epoch_loss:.5f}'
             f'\n\tGradient norm: {self.gradient_norm_history[-1]}'
             f'\n\tElapsed time = {duration:.3f} min')
-
-        # Print scalar predictions
-        for statepoint, prediction_series in self.predictions.items():
-            self._print_measured_statepoint(sim_key=statepoint)
-            last_predictions = prediction_series[self._epoch]
-            for quantity, value in last_predictions.items():
-                if value.ndim == 0:
-                    print(f'\tPredicted {quantity}: {value}')
 
         self._converged = self.early_stop.early_stopping(
             epoch_loss, thresh, self.params)
