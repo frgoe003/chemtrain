@@ -442,7 +442,7 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
         quantities = {}
 
     # temperature is inexpensive and generally useful: compute it by default
-    quantities['kbT'] = custom_quantity.temperature
+    quantities['kT'] = custom_quantity.temperature
 
     def generate_reference_trajectory(params, sim_state, combine=True, **kwargs):
         """
