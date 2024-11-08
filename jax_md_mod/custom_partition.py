@@ -55,7 +55,7 @@ def masked_neighbor_list(displacement_or_metric,
                          r_cutoff: float,
                          dr_threshold: float = 0.0,
                          capacity_multiplier: float = 1.25,
-                         disable_cell_list: bool = False,
+                         disable_cell_list: bool = True,
                          fractional_coordinates: bool = False,
                          format = partition.NeighborListFormat.Dense,
                          **static_kwargs) -> partition.NeighborFn:
@@ -297,6 +297,97 @@ def get_triplet_indices(neighbor: partition.NeighborList):
         raise NotImplementedError(
             f"Neighbor list format {neighbor.format} not yet supported."
         )
+
+
+def check_connectivity(neighbor: partition.NeighborList, mask=None):
+    """Check the connectivity of the neighbor list.
+
+    Args:
+        neighbor: Neighbor list
+
+    Returns:
+        Returns True if a connection between any nodes exists.
+
+    """
+    if mask is None:
+        mask = jnp.ones(neighbor.reference_position.shape[0], dtype=bool)
+
+    def _update_connectivity(state):
+        reachable, idx = state
+
+        if neighbor.format == partition.NeighborListFormat.Dense:
+            pass
+        elif neighbor.format == partition.NeighborListFormat.Sparse:
+            senders, receivers = neighbor.idx
+
+            # Propagate reachable state from senders to receivers
+            reachable = jax.ops.segment_sum(
+                jnp.int_(reachable[senders]), receivers, reachable.size)
+            reachable = jnp.logical_and(reachable > 0, mask)
+        else:
+            raise NotImplementedError(
+                f"Neighbor list format {neighbor.format} not yet supported."
+            )
+
+        return reachable, idx + 1
+
+    def _search(state):
+        reachable, idx = state
+        # We stop when one of the following conditions is met:
+        # 1. Iterations equal to the number of actual particles. Worst case
+        #    scenario when graph is line
+        # 2. All valid particles are reachable
+        return jnp.logical_and(idx < jnp.sum(mask), jnp.sum(reachable) < jnp.sum(mask))
+
+    # Find one non-masked particle and start the search from there
+    first_nonzero = jnp.argmax(mask)
+    reachable = jnp.logical_and(mask, jnp.arange(mask.size) == first_nonzero)
+
+    reachable, _ = jax.lax.while_loop(
+        _search, _update_connectivity, (reachable, 0)
+    )
+
+    return jnp.sum(reachable) >= jnp.sum(mask)
+
+
+def find_clusters(neighbor: partition.NeighborList, mask=None):
+    """Discovers separate subgraphs in the neighbor list.
+
+    Args:
+        neighbor: Neighbor list
+        mask: Mask indicating whether particles are real or padded
+
+    Returns:
+        Returns a vector with unique cluster-ids to which a particle belongs
+        to and the number of discovered separate subgraphs.
+
+    """
+    if mask is None:
+        mask = jnp.ones(neighbor.reference_position.shape[0], dtype=bool)
+
+    def _update_connectivity(clusters, _):
+        # Particles propagate their cluster information
+        if neighbor.format == partition.NeighborListFormat.Dense:
+            pass
+        elif neighbor.format == partition.NeighborListFormat.Sparse:
+            senders, receivers = neighbor.idx
+
+            # Propagate cluster state from senders to receivers
+            clusters = jax.ops.segment_min(
+                jnp.int_(clusters[senders]), receivers, clusters.size)
+        else:
+            raise NotImplementedError(
+                f"Neighbor list format {neighbor.format} not yet supported."
+            )
+
+        return clusters, jnp.sum(jnp.diff(jnp.sort(clusters) * mask) > 0) + 1
+
+    # Each valid particle gets its own cluster in the beginning
+    clusters = jnp.where(mask, jnp.arange(mask.size), mask.size)
+    clusters -= jnp.min(clusters) # Start the cluster counter with 0
+    _, nclusters = jax.lax.scan(_update_connectivity, clusters, jnp.arange(clusters.size))
+
+    return clusters, nclusters[-1]
 
 
 def to_networkx(neighbor: partition.NeighborList):
