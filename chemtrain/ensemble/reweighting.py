@@ -600,23 +600,14 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
                 jnp.exp(exponent - max_exp))
             log_n = jnp.log(exponent.size)
             free_energy_diff = jnp.log(ratio_sum) + max_exp - log_n
-            free_energy_diff *= -1. / beta
 
             if entropy_approximation:
-                # Use an approximate formulation of the entropy with an
-                # analytically equivalent gradient
-                w_fixed = lax.stop_gradient(weights)
-                entropy = jnp.sum(
-                    (reweight_properties['energy'].T ** 2) * w_fixed)
-                entropy -= jnp.sum(
-                    reweight_properties['energy'].T * w_fixed) ** 2
-                entropy -= jnp.var(traj_state.aux['energy'])
-                entropy *= -constants.kb * beta ** 2
-            else:
-                # This is the thermodynamic entropy definition
-                eng_diff = jnp.sum(reweight_properties['energy'].T * weights)
-                eng_diff -= jnp.mean(traj_state.aux['energy'])
-                entropy = constants.kb * beta * (eng_diff - free_energy_diff)
+                raise NotImplementedError("Approximation not implemented.")
+
+            # This is the thermodynamic entropy definition
+            eng_diff = jnp.sum(reweight_properties['energy'].T * weights)
+            eng_diff -= jnp.mean(traj_state.aux['energy'])
+            entropy = eng_diff - free_energy_diff
 
             # Add the differences with respect to the initial potential
             entropy += traj_state.entropy_diff
@@ -853,6 +844,9 @@ def init_bar(energy_fn_template: EnergyFnTemplate,
 
     def _vmap_potential_energy_differences(old_traj, new_traj):
         """Performs the reweighting procedure vectorized."""
+        # print(f"Old trajectory has shapes {tree_util.tree_map(jnp.shape, old_traj)}")
+        # print(f"New trajectory has shapes {tree_util.tree_map(jnp.shape, new_traj)}")
+
         @jax_sgmc.util.list_vmap
         def _inner(pair):
             traj_state, params = pair

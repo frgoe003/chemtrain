@@ -252,11 +252,11 @@ def run_to_next_printout_neighbors(apply_fn,
         }
 
         # Step the simulator and update the neighbor list to new positions
+        nbrs = util.neighbor_update(state.nbrs, state.sim_state, **apply_kwargs)
         new_state = apply_fn(
-            state.sim_state, neighbor=state.nbrs, **apply_kwargs)
-        new_nbrs = util.neighbor_update(state.nbrs, new_state, **apply_kwargs)
+            state.sim_state, neighbor=nbrs, **apply_kwargs)
 
-        return SimulatorState(sim_state=new_state, nbrs=new_nbrs), t
+        return SimulatorState(sim_state=new_state, nbrs=nbrs), t
 
     def run_small_simulation(start_state: SimulatorState, t_start=0.):
         times = jnp.arange(timings.timesteps_per_printout) * timings.time_step

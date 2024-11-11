@@ -500,7 +500,11 @@ class Difftre(tt.PropagationBase):
             last_predictions = self.predictions[sim_key][self._epoch]
             for quantity, value in last_predictions.items():
                 if value.ndim == 0:
-                    print(f'\tPredicted {quantity}: {value}')
+                    if quantity in self.targets[sim_key]:
+                        target = f'({self.targets[sim_key][quantity]["target"]})'
+                    else:
+                        target = ''
+                    print(f'\tPredicted {quantity}: {value} {target}')
 
             if jnp.isnan(loss_val):
                 warnings.warn(f'Loss of state point {sim_key} in epoch '
