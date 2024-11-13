@@ -26,7 +26,7 @@ from typing import Dict, Any, Callable, Tuple
 import numpy as onp
 
 import jax
-from jax import jit, numpy as jnp, lax
+from jax import jit, numpy as jnp, lax, tree_map
 from jax.typing import ArrayLike
 
 from jax_md_mod import custom_quantity
@@ -37,6 +37,7 @@ from chemtrain.ensemble import reweighting, evaluation, sampling
 from chemtrain import util
 
 from chemtrain.typing import TrajFn
+
 
 def init_default_loss_fn(observables: Dict[str, TrajFn],
                          loss_fns: Dict[str, Callable]
@@ -103,7 +104,10 @@ def init_difftre_gradient_and_propagation(
     reweight_fns: Tuple[Callable, Callable, Callable],
     loss_fn,
     quantities: Dict[str, ComputeFn],
-    energy_fn_template: EnergyFnTemplate):
+    energy_fn_template: EnergyFnTemplate,
+    wrapped: bool = False,
+    batched: bool = False,
+    ):
     """Initializes the function to compute the DiffTRe loss and its gradients.
 
     DiffTRe computes gradients of ensemble averages via a perturbation approach,
@@ -119,6 +123,8 @@ def init_difftre_gradient_and_propagation(
             quantities from the simulator states.
         energy_fn_template: Template to initialize the energy function that
             is required to compute the weights.
+        wrapped: Return separate weight, propagation, and gradient functions
+        batched: Computes loss for multiple ensembles.
 
     Returns:
         Returns a function to propagate the current trajectory state,
@@ -132,7 +138,7 @@ def init_difftre_gradient_and_propagation(
         energy_fn_template)
     reweighting.checkpoint_quantities(quantities)
 
-    def difftre_loss(params, traj_state, state_dict, targets):
+    def _difftre_loss(params, traj_state, state_dict, targets):
         """Computes the loss using the DiffTRe formalism and
         additionally returns predictions of the current model.
         """
@@ -152,7 +158,51 @@ def init_difftre_gradient_and_propagation(
 
         return loss, predictions
 
-    loss_grad_fn = jax.value_and_grad(difftre_loss, has_aux=True, argnums=0)
+    # TODO: Maybe separate the functions like for force matching
+
+    def difftre_weights_fn(params, traj_state, reduction="min"):
+        partial_weights = functools.partial(weights_fn, params)
+
+        if not batched:
+            return partial_weights(traj_state, reduction=reduction)
+
+        return jax.vmap(partial_weights)(traj_state)
+
+    def difftre_loss_fn(params, traj_state, state_dict, targets):
+        partial_loss = functools.partial(_difftre_loss, params)
+
+        # print(f"Trajstate shapes are {tree_map(jnp.shape, traj_state)}")
+        # print(f"Statedict shapes are {tree_map(jnp.shape, state_dict)}")
+        # print(f"Target shapes are {tree_map(jnp.shape, targets)}")
+
+
+        if not batched:
+            return partial_loss(traj_state, state_dict, targets)
+
+        batched_loss, batched_predictions = jax.vmap(partial_loss)(
+            traj_state, state_dict, targets)
+
+        return jnp.mean(batched_loss), batched_predictions
+
+    def difftre_propagation(params, traj_state, state_dict):
+        """The main DiffTRe function that recomputes trajectories
+        when needed and computes gradients of the loss wrt. energy function
+        parameters for a single state point.
+        """
+        partial_propagation = functools.partial(
+            propagate_fn, params, recompute=True)
+
+        if not batched:
+            return partial_propagation(traj_state, **state_dict)
+
+        return jax.vmap(partial_propagation)(traj_state, **state_dict)
+
+    if not wrapped:
+        return difftre_loss_fn, difftre_propagation, difftre_weights_fn
+
+    assert not batched, "Batched computation requires 'wrapped=False'."
+
+    loss_grad_fn = jax.value_and_grad(difftre_loss_fn, has_aux=True, argnums=0)
 
     # TODO: There is more opportunity to make this general.
     #       We could extend the propagation and gradient function to take
@@ -168,10 +218,10 @@ def init_difftre_gradient_and_propagation(
         parameters for a single state point.
         """
         traj_state = propagate_fn(params, traj_state, **state_dict)
+
         (loss_val, predictions), loss_grad = loss_grad_fn(
             params, traj_state, state_dict, targets)
         return traj_state, loss_val, loss_grad, predictions
-
 
     return difftre_grad_and_propagation
 

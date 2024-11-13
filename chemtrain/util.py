@@ -157,6 +157,17 @@ def tree_take(tree, indicies, axis=0, on_cpu=True):
     return tree_map(lambda x: numpy.take(x, indicies, axis), tree)
 
 
+def tree_put(tree, indicies, values, axis=0, on_cpu=True):
+    """Tree-wise application of numpy.put_along_axis."""
+    if on_cpu:
+        return tree_map(
+            lambda x, y: onp.put_along_axis(x, indicies, y, axis), values)
+    else:
+        assert axis == 0, 'Only axis=0 is supported for jax.'
+        return tree_map(
+            lambda x, y: x.at[indicies, ...].set(y), tree, values)
+
+
 def tree_delete(tree, indicies, axis=None, on_cpu=True):
     """Returns a tree, where entries at position indicies along axis are
     deleted from the original tree.

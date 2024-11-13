@@ -581,12 +581,16 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
         reweight_properties = sampling.quantity_traj(
             traj_state, reweighting_quantities, params, energy_batch_size)
 
-        beta = 1. / traj_state.dynamic_kwargs['kT']
+        beta = 1. / traj_state.static_kwargs['kT']
+        assert (jnp.isscalar(beta) or beta.shape == ()), (
+            "Reweighting requires a constant temperature."
+        )
 
         # Note: Difference in pot. Energy is difference in total energy
         # as kinetic energy is the same and cancels
-        exponent = -beta * (reweight_properties['energy']
-                            - traj_state.aux['energy'])
+        exponent = reweight_properties['energy'] - traj_state.aux['energy']
+        exponent *= -beta
+        # debug.print("Energy differences are between {} and {}", dU.min(), dU.max())
 
         weights, n_eff = _build_weights(exponent)
 
@@ -600,6 +604,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
                 jnp.exp(exponent - max_exp))
             log_n = jnp.log(exponent.size)
             free_energy_diff = jnp.log(ratio_sum) + max_exp - log_n
+            free_energy_diff *= -1. / beta
 
             if entropy_approximation:
                 raise NotImplementedError("Approximation not implemented.")
@@ -641,7 +646,10 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
         # TODO: Update BAR method to use the correct statepoint.
         #       E.g., change from U to exp, where exp is the generalized
         #       exponent of the ensemble
-        dfe, ds = bennett_free_energy(traj_state, updated_traj, **traj_state.dynamic_kwargs)
+        dfe, ds = bennett_free_energy(
+            traj_state, updated_traj, **traj_state.dynamic_kwargs,
+            **traj_state.static_kwargs
+        )
         updated_traj = updated_traj.replace(
             entropy_diff=traj_state.entropy_diff + ds,
             free_energy_diff=traj_state.free_energy_diff + dfe
@@ -650,7 +658,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
         return updated_traj
 
     @jit
-    def propagation_fn(params, traj_state, **kwargs):
+    def propagation_fn(params, traj_state, recompute=False, **kwargs):
         """Checks if a trajectory can be re-used. If not, a new trajectory
         is generated ensuring trajectories are always valid.
         Takes params and the traj_state as input and returns a
@@ -663,7 +671,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
         _, n_eff = compute_weights(params, traj_state)
         n_snapshots = traj_state.aux['energy'].size
 
-        recompute = n_eff < reweight_ratio * n_snapshots
+        recompute |= n_eff < reweight_ratio * n_snapshots
 
         debug.print(f"[Propagate] Effective sample size: {{}} "
                     f"({reweight_ratio * n_snapshots}) "
@@ -995,15 +1003,18 @@ def init_bar(energy_fn_template: EnergyFnTemplate,
          """
         _kT = kwargs.get('kT', kT)
         beta = 1. / _kT
+        assert (jnp.isscalar(beta) or beta.shape == ()), (
+            "Reweighting requires a constant temperature."
+        )
 
         # Calculate the differences in potential energy for both trajectories
         rew_0, rew_p = _vmap_potential_energy_differences(old_traj, new_traj)
 
         # Get the potential energy from both trajectory
-        V_p = new_traj.aux['energy'] * beta
-        V_0 = old_traj.aux['energy'] * beta
-        rV_p = rew_0['energy'] * beta
-        rV_0 = rew_p['energy'] * beta
+        V_p = new_traj.aux['energy']
+        V_0 = old_traj.aux['energy']
+        rV_p = rew_0['energy']
+        rV_0 = rew_p['energy']
 
         # dV_p is the energy difference between the perturbed and unperturbed
         # potential based on the perturbed ensemble, dV_0 is the same
@@ -1012,13 +1023,13 @@ def init_bar(energy_fn_template: EnergyFnTemplate,
         dV_p = V_p - rV_0
         dV_0 = rV_p - V_0
 
-        init_f, update_f = _init_bisection(dV_p, dV_0, 1.0)
+        init_f, update_f = _init_bisection(dV_p, dV_0, beta)
         (dfe, df2), _ = lax.scan(update_f, init_f, onp.arange(iter_bisection))
 
-        res_a = _bar_residual(dfe, dV_p, dV_0, 1.0)
-        res_b = _bar_residual(df2, dV_p, dV_0, 1.0)
+        res_a = _bar_residual(dfe, dV_p, dV_0, beta)
+        res_b = _bar_residual(df2, dV_p, dV_0, beta)
 
-        ds = _entropy_equation(dfe, V_0, V_p, rV_p, rV_0, 1.0)
+        ds = _entropy_equation(dfe, V_0, V_p, rV_p, rV_0, beta)
 
         return dfe, ds
 

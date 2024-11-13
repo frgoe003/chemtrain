@@ -20,6 +20,7 @@ from .trainers import (
     PropertyPrediction,
     ForceMatching,
     Difftre,
+    DifftreParallel,
     DifftreActive,
     RelativeEntropy,
     SGMCForceMatching,

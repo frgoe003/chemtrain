@@ -24,7 +24,7 @@ from typing import Any, Mapping, Dict, Callable
 
 import jax.tree_util
 import numpy as onp
-from jax import numpy as jnp, tree_util, jit
+from jax import numpy as jnp, tree_util, jit, random
 from jax_sgmc.data import numpy_loader
 from jax_md_mod import custom_quantity
 
@@ -34,7 +34,7 @@ from chemtrain.learn import (
 )
 from chemtrain.quantity import property_prediction
 from chemtrain.trainers import base as tt
-from chemtrain.ensemble import sampling
+from chemtrain.ensemble import sampling, reweighting
 from chemtrain.data import data_loaders
 
 
@@ -211,6 +211,244 @@ class ForceMatching(tt.DataParallelTrainer):
 
         for key, mae_value in maes.items():
             print(f'{key}: MAE = {mae_value:.4f}')
+
+
+class DifftreParallel(tt.MLETrainerTemplate):
+    """Trainer class for parametrizing potentials via the DiffTRe method.
+
+    TODO: Documentation
+
+    """
+
+    def __init__(self,
+                 key: jax.Array,
+                 init_params: Any,
+                 optimizer: GradientTransformationExtraArgs,
+                 energy_fn_template: EnergyFnTemplate,
+                 simulator_template: Callable,
+                 neighbor_fn: NeighborFn,
+                 timings: sampling.TimingClass,
+                 state_kwargs: Dict[str, ArrayLike],
+                 quantities: Dict[str, Dict],
+                 targets: Dict[str, Any],
+                 observables: Dict[str, TrajFn],
+                 initial_trajstates = None,
+                 reweight_ratio: ArrayLike = 0.9,
+                 allowed_reduction: ArrayLike = 0.95,
+                 step_size_scale: float = 1e-4,
+                 interior_points: int = 100,
+                 sim_batch_size: int = 1,
+                 full_checkpoint: bool = False,
+                 target_loss_fns: Dict[str, Callable] = None,
+                 loss_fn=None,
+                 vmap_batch: int = 10,
+                 set_key: str = None,
+                 resample_simstates: bool = False,
+                 convergence_criterion: str = 'window_median',
+                 checkpoint_path: os.PathLike = 'Checkpoints',
+                 log_dir: os.PathLike = None):
+        init_state = util.TrainerState(params=init_params,
+                                       opt_state=optimizer.init(init_params))
+
+        # Optional: Initialized by calling trainer.init_step_size_adaption
+        # after all statepoints to be considered have been set up.
+        self._recompute = False
+
+        gen_init_traj, *reweight_fns = reweighting.init_pot_reweight_propagation_fns(
+            energy_fn_template, simulator_template, neighbor_fn, timings,
+            state_kwargs, reweight_ratio, False,
+            vmap_batch, safe_propagation=False,
+            entropy_approximation=False,
+            resample_simstates=resample_simstates
+        )
+
+        # TODO: Parallelize over multiple devices
+        if target_loss_fns is None:
+            target_loss_fns = {}
+
+        if loss_fn is None:
+            loss_fn = difftre.init_default_loss_fn(observables, target_loss_fns)
+
+        batched_model, batched_propagation, batched_weights = difftre.init_difftre_gradient_and_propagation(
+            reweight_fns, loss_fn, quantities, energy_fn_template,
+            wrapped=False, batched=True
+        )
+
+        self.reweight_ratio = reweight_ratio
+
+        self.key = key
+        self.batch_size = sim_batch_size
+        self.statepoints = state_kwargs
+
+        self.model = jax.jit(jax.value_and_grad(batched_model, argnums=0, has_aux=True))
+        self.propagate = jax.jit(batched_propagation)
+        self.weights = jax.jit(batched_weights)
+
+        self.targets = targets
+        self.traj_states = initial_trajstates
+
+        if allowed_reduction is not None:
+            self._adaptive_step_size = difftre.init_step_size_adaption(
+                lambda *args: (None, jnp.min(batched_weights(*args)[1])),
+                allowed_reduction, step_size_scale=step_size_scale,
+                interior_points=interior_points
+            )
+        else:
+            self._adaptive_step_size = lambda *args: (1.0, None)
+
+        super().__init__(
+            init_state=init_state,
+            optimizer=optimizer,
+            checkpoint_path=checkpoint_path,
+            full_checkpoint=full_checkpoint,
+            log_file=log_dir
+        )
+
+        self.batch_losses = self.checkpoint("batch_losses", [])
+        self.batch_gradient_norms = self.checkpoint("batch_gradient_norms", [])
+        self.epoch_losses = self.checkpoint("epoch_losses", [])
+        self.step_size_history = self.checkpoint("step_size_history", [])
+        self.gradient_norm_history = self.checkpoint("gradient_norm_history", [])
+        self.predictions = self.checkpoint("predictions", {})
+
+        if initial_trajstates is not None:
+            for key in range(self.n_statepoints):
+                self.predictions[key] = {}
+
+        self.early_stop = tt.EarlyStopping(
+            self.params, convergence_criterion)
+
+    def initialize_statepoint(self, reference_state):
+        pass
+
+    @property
+    def params(self):
+        """Current energy parameters."""
+        return self.state.params
+
+    @params.setter
+    def params(self, loaded_params):
+        """Replaces the current energy parameters."""
+        self.state = self.state.replace(params=loaded_params)
+
+    @property
+    def n_statepoints(self):
+        return self.traj_states.trajectory.position.shape[0]
+
+    def _get_batch(self):
+        """Returns the next batch of statepoints to be processed."""
+
+        self.key, split = random.split(self.key)
+        num_statepoints = self.traj_states.trajectory.position.shape[0]
+        batches = random.permutation(split, num_statepoints)
+
+        for i in range(num_statepoints // self.batch_size):
+            yield batches[i * self.batch_size:(i + 1) * self.batch_size]
+
+
+    def _update(self, batch):
+        """Computes gradient averaged over the sim_batch by propagating
+        respective state points. Additionally saves predictions and loss
+        for postprocessing."""
+
+        # Select the relevant trajstates and targets
+
+        trajstates = util.tree_take(self.traj_states, batch, on_cpu=False)
+        targets = util.tree_take(self.targets, batch, on_cpu=False)
+        statepoints = util.tree_take(self.statepoints, batch, on_cpu=False)
+
+        # Compute the effective sample sizes and print
+        _, n_eff = self.weights(self.params, trajstates)
+        min_n_eff = self.traj_states.trajectory.position.shape[1] * self.reweight_ratio
+
+        print(f"[DifftreParallel] Effective sample sizes (limit: {min_n_eff})")
+        for b, eff in zip(batch, n_eff):
+            info = '-> recompute' if eff < min_n_eff else ''
+            print(f"\t[Statepoint {b}] Effective sample size: {eff:.2f} {info}")
+
+
+        if onp.any(n_eff < min_n_eff):
+            print(f"[DifftreParallel] Recomputing trajectories...")
+            start = time.time()
+            trajstates = self.propagate(self.params, trajstates, statepoints)
+            print(f"[DifftreParallel] Recomputed trajectories in {(time.time() - start) / 60.:.2f} min")
+
+            # Save the recomputed trajectories
+            self.traj_states = util.tree_put(self.traj_states, batch, trajstates, on_cpu=False)
+
+        # Compute the loss
+        print(f"[DifftreParallel] Computing loss...")
+        start = time.time()
+        (loss, state_point_predictions), grad = self.model(
+            self.params, trajstates, statepoints, targets
+        )
+        batch_norm = util.tree_norm(grad)
+        self.batch_gradient_norms.append(onp.asarray(batch_norm))
+        print(f"[DifftreParallel] Computed loss {loss} in {(time.time() - start) / 60.:.2f} min")
+
+        proposal = self._optimizer_step(grad)
+        # Perform stepsize optimization
+        start = time.time()
+        alpha, residual = self._adaptive_step_size(self.params, grad, proposal, trajstates)
+        print(
+            f"[Step Size] Found optimal step size for {alpha} with residual "
+            f"{residual} in {(time.time() - start):.1f} s", flush=True)
+
+        self._step_optimizer(grad, alpha=alpha)
+
+        # Save the predictions for the respective batches
+        print(f"[DifftreParallel] Predictions:")
+        for idx, b in enumerate(batch):
+            self.predictions[int(b)][self._epoch] = {
+                key: onp.asarray(val[idx])
+                for key, val in state_point_predictions.items()
+            }
+
+            # Print scalar predictions
+            print(f"\t[Statepoint {b}]")
+            for key, value in state_point_predictions.items():
+                if jnp.shape(value[idx]) == ():
+                    target = ''
+                    if key in targets:
+                        target = f'(target: {targets[key]["target"][idx]})'
+
+                    print(f"\t\t{key} = {value[idx]} {target}")
+
+        # Save the loss and gradient norm
+        self.batch_losses.append(onp.asarray(loss))
+        self.step_size_history.append(onp.asarray(alpha))
+
+
+    def _evaluate_convergence(self, *args, thresh=None, **kwargs):
+        # sim_batch_size = -1 means all statepoints are processed in one batch.
+        batches_per_epoch = self.n_statepoints // self.batch_size
+
+        last_losses = jnp.array(self.batch_losses[-batches_per_epoch:])
+        epoch_loss = jnp.mean(last_losses)
+        duration = self.update_times[self._epoch]
+        self.epoch_losses.append(epoch_loss)
+        self.gradient_norm_history.append(
+            onp.mean(self.batch_gradient_norms[-batches_per_epoch:])
+        )
+
+        print(
+            f'\n[DiffTRe] Epoch {self._epoch}'
+            f'\n\tEpoch loss = {epoch_loss:.5f}'
+            f'\n\tGradient norm: {self.gradient_norm_history[-1]}'
+            f'\n\tElapsed time = {duration:.3f} min')
+
+        self._converged = self.early_stop.early_stopping(
+            epoch_loss, thresh, self.params)
+
+    @property
+    def best_params(self):
+        """Returns the best parameters according to the early stopping criterion."""
+        return self.early_stop.best_params
+
+    def move_to_device(self):
+        """Transforms the trainer states to JAX arrays."""
+        super().move_to_device()
+        self.early_stop.move_to_device()
 
 
 class Difftre(tt.PropagationBase):
@@ -437,7 +675,7 @@ class Difftre(tt.PropagationBase):
 
         if allowed_reduction is not None:
             self._adaptive_step_size[key] = difftre.init_step_size_adaption(
-                self.weights_fn[key], allowed_reduction
+                self.weights_fn[key], allowed_reduction, interior_points=5,
             )
 
         # Reset loss measures if new state point es added since loss values
