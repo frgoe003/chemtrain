@@ -191,8 +191,8 @@ def init_model(nbrs_init: NeighborList,
         batch_size = states.position.shape[0]
 
         predictions = evaluation.quantity_map(
-            states, quantities, nbrs_init, dynamic_kwargs, energy_params,
-            batch_size, feature_extract_fns
+            states, quantities, nbrs_init, dynamic_kwargs, {},
+            energy_params, batch_size, feature_extract_fns
         )
 
         return predictions
