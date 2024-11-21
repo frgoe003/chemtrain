@@ -23,12 +23,9 @@ import numpy as onp
 
 import jax
 from jax import export, numpy as jnp, lax
-from networkx import capacity_scaling
-from numpy.ma.core import product
-from sympy.codegen.cnodes import static
 
 import jax_md_mod
-from jax_md import partition, dataclasses
+from jax_md import partition, dataclasses, smap, space
 
 from typing import NamedTuple
 
@@ -64,7 +61,7 @@ class NeighborList(metaclass=abc.ABCMeta):
         """
 
     @staticmethod
-    def create_from_args(position, species, ghost_mask, valid_mask, *args, half=True):
+    def create_from_args(displacement_fn, r_cutoff, num_mpl, position, species, ghost_mask, valid_mask, *args, half=True):
         """Creates the neighbor list from inputs to the exported function."""
 
 
@@ -75,30 +72,50 @@ class SimpleSparseNeighborList(NeighborList):
     senders: jax.Array
     receivers: jax.Array
 
+    max_neighbors: jax.Array
+
     @staticmethod
     def set_properties(proto: model_proto.Model):
         proto.neighbor_list.type = proto.NeighborListType.SIMPLE_SPARSE
         proto.neighbor_list.half_list = True
 
     @staticmethod
-    @shape_util.define_symbols("max_neighbors")
-    def create_symbolic_input_format(max_neighbors, **kwargs):
+    @shape_util.define_symbols(
+        "max_buffers, max_edges",
+        ["max_edges <= 2 * max_buffers"]
+    )
+    def create_symbolic_input_format(max_buffers, max_edges, **kwargs):
 
-        senders = jax.ShapeDtypeStruct((max_neighbors,), jnp.int32)
-        receivers = jax.ShapeDtypeStruct((max_neighbors,), jnp.int32)
+        senders = jax.ShapeDtypeStruct((max_buffers,), jnp.int32)
+        receivers = jax.ShapeDtypeStruct((max_buffers,), jnp.int32)
+        buffer = jax.ShapeDtypeStruct((max_edges,), jnp.bool_)
 
-        return senders, receivers
+        return senders, receivers, buffer
 
     @staticmethod
-    def create_from_args(position, species, ghost_mask, valid_mask, *args):
+    def create_from_args(r_cutoff, num_mpl, position, species, ghost_mask, valid_mask, *args):
         # Make edges undirected by adding their counterpart
-        s, r = args
+        invalid_idx = species.size
+
+        s, r, m = args
         senders = jnp.concat([s, r], axis=0)
         receivers = jnp.concat([r, s], axis=0)
-        args = (senders, receivers)
+        max_edges = m.size
 
-        graph = SimpleSparseNeighborList(*args)
-        return graph, NeighborListStatistics().tuple
+        # Remove all edges that are longer than the cutoff distance
+        dists = jnp.linalg.norm(position[senders] - position[receivers], axis=-1)
+        valid = (dists <= r_cutoff) & (senders < invalid_idx) & (receivers < invalid_idx)
+
+        senders = jnp.where(valid, senders, invalid_idx)
+        receivers = jnp.where(valid, receivers, invalid_idx)
+
+        # Prune all irrelevant edges
+        graph = SimpleSparseNeighborList(senders, receivers, m)
+        graph, max_neighbors = prune_neighbor_list(graph, ghost_mask, max_edges, num_mpl)
+
+        statistics = NeighborListStatistics(max_neighbors)
+
+        return graph, statistics.tuple
 
     def to_neighborlist(self):
         idx = jnp.stack([self.senders, self.receivers], axis=0)
@@ -166,7 +183,7 @@ class DeviceSparseNeighborList(NeighborList):
         )
 
     @staticmethod
-    def create_from_args(positions, species, ghost_mask, valid_mask, *args):
+    def create_from_args(r_cutoff, num_mpl, positions, species, ghost_mask, valid_mask, *args):
         nargs = DeviceSparseNeighborListArgs(*args)
 
         buffer = jnp.zeros(
@@ -186,7 +203,7 @@ class DeviceSparseNeighborList(NeighborList):
 
         update_fn = functools.partial(
             compute_neighbor_list, positions, buffer, nargs.senders,
-            cutoff=5.0 + 2.0, mask=valid_mask # Hard-coded skin size
+            cutoff=r_cutoff + 2.0, mask=valid_mask # Hard-coded skin size
         )
 
         def reuse_fn():
@@ -221,7 +238,7 @@ class DeviceListStatistics(ListStatistics):
 
 @dataclasses.dataclass
 class NeighborListStatistics(ListStatistics):
-    pass
+    max_neighbors: int
 
 
 @jax.jit
@@ -415,3 +432,44 @@ def compute_neighbor_list(position, id_buffer, senders, cutoff, mask=None, eps=1
         max_neighbors=valid_neighbors, cell_too_small=valid_pruned_neighbors)
 
     return (new_senders[prune_idx], new_receivers[prune_idx]), statistics
+
+
+def prune_neighbor_list(list, local, max_neighbors, num_mpl: int = 0):
+    """Prunes the neighbor list by removing edges irrelevant to local atoms."""
+
+    def _update(reachable, _):
+        # Send reachable messages to neighbors. May should act like a logical
+        # any
+        reachable |= jax.ops.segment_max(
+            reachable[list.senders], list.receivers, reachable.size)
+        # jax.debug.print("Update {} with {} -> {}", list.senders, reachable[list.senders], list.receivers)
+        # jax.debug.print("After update: {}", reachable)
+        return reachable, _
+
+    # Relevant sender atoms are all atoms that are reachable via two times
+    # the message passing interactions from a local atom of the domain.
+    # Note: Receivers can also lie outside this range.
+    reachable, _ = lax.scan(_update, local, jnp.arange(2 * num_mpl))
+
+    mask = reachable[list.senders]
+    senders = jnp.where(mask, list.senders, local.size)
+    receivers = jnp.where(mask, list.receivers, local.size)
+    n_valid = jnp.sum(mask)
+
+    # Reduce the size of the neighbor list
+    mask, select = lax.top_k(mask, k=max_neighbors)
+    senders = senders[select]
+    receivers = receivers[select]
+
+    return SimpleSparseNeighborList(senders, receivers, mask), n_valid
+
+if __name__ == "__main__":
+
+    senders = jnp.asarray([0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 0, 2])
+    receivers = jnp.asarray([1, 0, 2, 1, 3, 2, 4, 3, 5, 4, 2, 0])
+
+    list = SimpleSparseNeighborList(senders, receivers, jnp.ones(senders.size))
+
+    print(prune_neighbor_list(list, jnp.asarray([1, 0, 0, 0, 0, 0], dtype=bool), 10, 1))
+
+

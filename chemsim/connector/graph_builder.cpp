@@ -32,7 +32,7 @@ namespace jcn {
 
         // No reallocation necessary if buffers sufficiently large
         bool reallocate = false;
-        if (!senders_literal || !receivers_literal) {
+        if (!senders_literal || !receivers_literal || !neighbors_literal) {
             reallocate = true;
         }
 
@@ -43,25 +43,33 @@ namespace jcn {
         }
 
         // Check if reallocation is necessary
-        if (current_edges > n_edges) {
+        if (current_edges > edge_buffer_size) {
             logger.log(LogLevel::INFO, "Reallocation necessary, current edges are " + std::to_string(current_edges));
             logger.log(LogLevel::INFO, "Increasing edge count by multiplier " + std::to_string(edge_multiplier));
-            n_edges = static_cast<int>(std::ceil(current_edges * edge_multiplier));
+            edge_buffer_size = static_cast<int>(std::ceil(current_edges * edge_multiplier));
             reallocate = true;
         }
 
+        // Check whether more edges are valid
+        if (neighbors_literal) {
+            reallocate |= n_valid_edges > neighbors_literal->shape().dimensions(0);
+        }
+
         if (reallocate) {
-            logger.log(LogLevel::INFO, "Reallocating to " + std::to_string(n_edges) + " edges");
+            logger.log(LogLevel::INFO, "Reallocating to " + std::to_string(edge_buffer_size) + " edges");
 
             xla::Shape shape = xla::ShapeUtil::MakeShape(
-                xla::S32, absl::Span<const int64_t>{n_edges});
+                xla::S32, absl::Span<const int64_t>{edge_buffer_size});
+            xla::Shape max_nbrs_shape = xla::ShapeUtil::MakeShape(
+                xla::PRED, absl::Span<const int64_t>{n_valid_edges});
 
             senders_literal = std::make_unique<xla::Literal>(xla::Literal::CreateFromShape(shape));
             receivers_literal = std::make_unique<xla::Literal>(xla::Literal::CreateFromShape(shape));
+            neighbors_literal = std::make_unique<xla::Literal>(xla::Literal::CreateFromShape(max_nbrs_shape));
         }
 
-        std::vector<std::vector<int64_t>> graph_shapes = {{n_edges}, {n_edges}};
-        std::vector<xla::PrimitiveType> graph_types = {xla::S32, xla::S32};
+        std::vector<std::vector<int64_t>> graph_shapes = {{edge_buffer_size}, {edge_buffer_size}, {n_valid_edges}};
+        std::vector<xla::PrimitiveType> graph_types = {xla::S32, xla::S32, xla::PRED};
 
         return NeighborListShapes{graph_shapes, graph_types, reallocate};
 
@@ -79,6 +87,7 @@ namespace jcn {
             if (senders_buffer) {
                 senders_buffer->Delete();
                 receivers_buffer->Delete();
+                neighbors_buffer->Delete();
             }
 
             auto start = std::chrono::high_resolution_clock::now();
@@ -104,8 +113,8 @@ namespace jcn {
             }
 
             // Fill in the invalid values
-            std::fill(senders_data + edge_counter, senders_data + n_edges, fill_value);
-            std::fill(receivers_data + edge_counter, receivers_data + n_edges, fill_value);
+            std::fill(senders_data + edge_counter, senders_data + edge_buffer_size, fill_value);
+            std::fill(receivers_data + edge_counter, receivers_data + edge_buffer_size, fill_value);
 
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double> duration = end - start;
@@ -119,16 +128,38 @@ namespace jcn {
             // Create buffers
             senders_buffer = create_buffer(client, device_id, senders_literal.get());
             receivers_buffer = create_buffer(client, device_id, receivers_literal.get());
+            neighbors_buffer = create_buffer(client, device_id, neighbors_literal.get());
         }
 
         // Return pointers to the buffers.
         std::vector<xla::PjRtBuffer*> buffer_ptrs;
         buffer_ptrs.push_back(senders_buffer.get());
         buffer_ptrs.push_back(receivers_buffer.get());
+        buffer_ptrs.push_back(neighbors_buffer.get());
 
         return buffer_ptrs;
 
     };
+
+
+    bool SimpleSparseNeighborList::evaluate_statistics(
+        std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results) {
+
+        bool success = true;
+
+        // Check if more valid edges are necessary
+        absl::StatusOr<std::shared_ptr<xla::Literal>> valid_edges = results[0][2]->ToLiteralSync();
+
+        int req_valid_edges = valid_edges.value()->data<int>().data()[0];
+        if (req_valid_edges > n_valid_edges) {
+            std::cout << "Increasing valid edges from " << n_valid_edges << " to " << req_valid_edges << std::endl;
+            n_valid_edges = static_cast<int>(std::ceil(req_valid_edges * edge_multiplier));
+            success = false;
+        }
+
+        return success;
+
+    }
 
 
     void DeviceSparseNeighborList::initialize(std::vector<float> multipliers) {
