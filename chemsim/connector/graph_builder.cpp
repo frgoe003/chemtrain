@@ -149,11 +149,19 @@ namespace jcn {
 
         // Check if more valid edges are necessary
         absl::StatusOr<std::shared_ptr<xla::Literal>> valid_edges = results[0][2]->ToLiteralSync();
+        absl::StatusOr<std::shared_ptr<xla::Literal>> overlong = results[0][3]->ToLiteralSync();
 
         int req_valid_edges = valid_edges.value()->data<int>().data()[0];
         if (req_valid_edges > n_valid_edges) {
             std::cout << "Increasing valid edges from " << n_valid_edges << " to " << req_valid_edges << std::endl;
             n_valid_edges = static_cast<int>(std::ceil(req_valid_edges * edge_multiplier));
+
+            // Ensure that not greater that maximum possible amount.
+            // Provided edges are from undirected graph
+            if (n_valid_edges > 2 * edge_buffer_size) {
+                n_valid_edges = 2 * edge_buffer_size;
+            }
+
             success = false;
         }
 

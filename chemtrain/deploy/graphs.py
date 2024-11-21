@@ -104,16 +104,16 @@ class SimpleSparseNeighborList(NeighborList):
 
         # Remove all edges that are longer than the cutoff distance
         dists = jnp.linalg.norm(position[senders] - position[receivers], axis=-1)
-        valid = (dists <= r_cutoff) & (senders < invalid_idx) & (receivers < invalid_idx)
+        invalid = dists > r_cutoff
 
-        senders = jnp.where(valid, senders, invalid_idx)
-        receivers = jnp.where(valid, receivers, invalid_idx)
+        vs = jnp.where(invalid, invalid_idx, senders)
+        vr = jnp.where(invalid, invalid_idx, receivers)
 
         # Prune all irrelevant edges
-        graph = SimpleSparseNeighborList(senders, receivers, m)
+        graph = SimpleSparseNeighborList(vs, vr, m)
         graph, max_neighbors = prune_neighbor_list(graph, ghost_mask, max_edges, num_mpl)
 
-        statistics = NeighborListStatistics(max_neighbors)
+        statistics = NeighborListStatistics(max_neighbors, jnp.sum(~invalid))
 
         return graph, statistics.tuple
 
@@ -239,6 +239,7 @@ class DeviceListStatistics(ListStatistics):
 @dataclasses.dataclass
 class NeighborListStatistics(ListStatistics):
     max_neighbors: int
+    overlong: int
 
 
 @jax.jit
