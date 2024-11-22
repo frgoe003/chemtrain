@@ -449,10 +449,11 @@ def prune_neighbor_list(list, local, max_neighbors, num_mpl: int = 0):
 
     # Relevant sender atoms are all atoms that are reachable via two times
     # the message passing interactions from a local atom of the domain.
-    # Note: Receivers can also lie outside this range.
-    reachable, _ = lax.scan(_update, local, jnp.arange(2 * num_mpl))
+    # Additional edges within the cutoff are required to correctly encode
+    # the environment
+    reachable, _ = lax.scan(_update, local, jnp.arange(2 * num_mpl + 1))
 
-    mask = reachable[list.senders]
+    mask = reachable[list.senders] & reachable[list.receivers]
     senders = jnp.where(mask, list.senders, local.size)
     receivers = jnp.where(mask, list.receivers, local.size)
     n_valid = jnp.sum(mask)
