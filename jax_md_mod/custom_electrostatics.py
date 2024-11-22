@@ -59,9 +59,11 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
     else:
         raise ValueError(f"Unknown interaction {interaction}")
 
-    def energy_fn(position, neighbor, radii, chi=None, idmp=None, mask=None, **dynamic_kwargs):
+    def energy_fn(position, neighbor, radii, chi=None, idmp=None, mask=None, total_charge=None, **dynamic_kwargs):
         if mask is None:
             mask = jnp.ones(position.shape[0], dtype=bool)
+        if total_charge is None:
+            total_charge = 0.0
 
         n_particles = mask.size
 
@@ -84,11 +86,33 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
             )
 
             # Charge neutrality constraint (for now)
-            b = jnp.concatenate((-chi, jnp.zeros(1))).reshape((-1, 1))
- 
+            b = jnp.concatenate((-chi, jnp.full((1,), total_charge))).reshape((-1, 1))
+
             # Solve the linear system with lagrange multipliers
             charges = jnp.linalg.solve(A, b)[:-1, 0]
 
+        elif method == "CG":
+
+            def linear_operator(x):
+                charge = x[:-1, 0]
+                mult = x[-1, 0]
+
+                Ax = jnp.concatenate([
+                    jax.grad(total_energy_fn, argnums=2)(
+                        position, neighbor, charge, radii, chi, idmp
+                    ) + mult * mask,
+                    jnp.sum(mask * charge).reshape((1,))
+                ]).reshape((-1, 1))
+                return Ax
+
+            # Initial guess
+            x0 = jnp.zeros(n_particles + 1).reshape((-1, 1))
+            b = jnp.concatenate((-chi, jnp.full((1,), total_charge))).reshape((-1, 1))
+
+            sol, _ = jsp.sparse.linalg.cg(linear_operator, b, x0=x0, tol=1e-8)
+            charges = sol[:-1, 0]
+
+            # raise NotImplementedError("CG method not implemented yet.")
         else:
             raise ValueError(f"Unknown method {method}")
 
