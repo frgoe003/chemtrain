@@ -59,7 +59,7 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
     else:
         raise ValueError(f"Unknown interaction {interaction}")
 
-    def energy_fn(position, neighbor, radii, chi=None, idmp=None, mask=None, total_charge=None, **dynamic_kwargs):
+    def energy_fn(position, neighbor, radii=None, chi=None, idmp=None, mask=None, total_charge=None, charges=None, **dynamic_kwargs):
         if mask is None:
             mask = jnp.ones(position.shape[0], dtype=bool)
         if total_charge is None:
