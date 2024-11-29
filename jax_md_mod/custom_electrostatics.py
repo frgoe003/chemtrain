@@ -64,6 +64,9 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
             mask = jnp.ones(position.shape[0], dtype=bool)
         if total_charge is None:
             total_charge = 0.0
+            print(f"No total charge specified. Total charge will be set to {total_charge}")
+        else:
+            print(f"Total charge specified: {total_charge}")
 
         n_particles = mask.size
 
@@ -116,10 +119,10 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
         else:
             raise ValueError(f"Unknown method {method}")
 
-        qeq_energy = total_energy_fn(position, neighbor, charge=charges, radii=radii, chi=chi, idmp=idmp)
+        # qeq_energy = total_energy_fn(position, neighbor, charge=charges, radii=radii, chi=chi, idmp=idmp)
 
         # Only include electrostatic energy
-        # qeq_energy = total_energy_fn(position, neighbor, charge=charges, radii=radii)
+        qeq_energy = total_energy_fn(position, neighbor, charge=charges, radii=radii)
         return qeq_energy, charges
 
     return energy_fn
