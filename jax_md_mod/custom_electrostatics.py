@@ -119,10 +119,10 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
         else:
             raise ValueError(f"Unknown method {method}")
 
-        # qeq_energy = total_energy_fn(position, neighbor, charge=charges, radii=radii, chi=chi, idmp=idmp)
+        qeq_energy = total_energy_fn(position, neighbor, charge=charges, radii=radii, chi=chi, idmp=idmp)
 
         # Only include electrostatic energy
-        qeq_energy = total_energy_fn(position, neighbor, charge=charges, radii=radii)
+        # qeq_energy = total_energy_fn(position, neighbor, charge=charges, radii=radii)
         return qeq_energy, charges
 
     return energy_fn
