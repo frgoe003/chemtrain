@@ -1,19 +1,36 @@
+import functools
+
 import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
 
-from jax_md import energy, smap, space
+import numpy as onp
+
+from jax_md import energy, smap, space, util as md_util
 
 
+def structure_factor(g, R, q=1):
+    if isinstance(q, jnp.ndarray):
+        q = q[None, :]
+    return md_util.high_precision_sum(
+        q * jnp.exp(1j * jnp.einsum('id,jd->ij', g, R)),
+        axis=1
+    )
 
 
-def shielded_interaction(dr, charge, alpha):
+def shielded_interaction(dr, charge, alpha, alpha_max=None):
     """Gaussian (shielded) charge interaction."""
     # Safety: Avoid division by zero
     mask = dr > 1e-2
     dr = jnp.where(mask, dr, 1e-2)
 
-    return mask * charge * jsp.special.erf(alpha * dr) / dr
+    pot = mask * charge * jsp.special.erf(alpha * dr) / dr
+
+    if alpha_max is not None:
+        print(f"Apply shielding")
+        pot -= mask * charge * jsp.special.erf(alpha_max * dr) / dr
+
+    return pot
 
 
 def shielded_self(charge, radii):
@@ -26,21 +43,86 @@ def core_interaction(charge, chi, idmp):
     return jnp.sum(charge * chi + jnp.square(charge) * idmp / 2)
 
 
-def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff):
+def coulomb_recip_ewald(charge,
+                        side_length,
+                        alpha: float,
+                        n_vectors: int):
+  def energy_fn(position, **kwargs):
+    dim = position.shape[-1]
+    V = side_length**dim
+
+    dg = 2 * onp.pi / side_length
+    # Just to make the sum inclusive.
+    g_max = n_vectors * dg
+    g_range = jnp.arange(0, n_vectors) * dg
+    g_range = jnp.concatenate((-g_range[::-1], g_range[1:]))
+
+    gx, gy, gz = jnp.meshgrid(g_range, g_range, g_range)
+    g = jnp.reshape(jnp.stack((gx, gy, gz), axis=-1), (-1, dim))
+    g2 = jnp.sum(g**2, axis=-1)
+    mask = (g2 < g_max**2) & (g2 > 1e-7)
+    g2 = jnp.where(mask, g2, 1.0)
+
+    Z = (4 * jnp.pi) / V
+
+    S = structure_factor(g, position, charge)
+    S2 = jnp.float32(jnp.conj(S) * S)
+
+    return Z * md_util.high_precision_sum(jnp.exp(-g2 / (4*alpha**2)) / g2 * S2 * mask)
+  return energy_fn
+
+
+def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=None, max_radii=None, method="reciprocal"):
     """Gaussian (shielded) charge interaction."""
 
     def energy_fn(position, neighbor, charge, radii, chi=None, idmp=None, **dynamic_kwargs):
-        _energy_fn = smap.pair_neighbor_list(
-            energy.multiplicative_isotropic_cutoff(
-                shielded_interaction, r_onset, r_cutoff
-            ),
-            space.metric(displacement_fn),
-            charge=(lambda q1, q2: q1 * q2, charge),
-            alpha=(lambda s1, s2: 1 / jnp.sqrt(2 * (s1 ** 2 + s2 ** 2)), radii),
-        )
+        if method == "direct":
+            _energy_fn = smap.pair_neighbor_list(
+                energy.multiplicative_isotropic_cutoff(
+                    shielded_interaction, r_onset, r_cutoff
+                ),
+                space.metric(displacement_fn),
+                charge=(lambda q1, q2: q1 * q2, charge),
+                alpha=(lambda s1, s2: 1 / jnp.sqrt(2 * (s1 ** 2 + s2 ** 2)), radii),
+            )
+            pot = 0.0
+        elif method == "reciprocal":
+            assert "box" in dynamic_kwargs
 
-        pot = shielded_self(charge, radii)
-        pot += _energy_fn(position, neighbor, **dynamic_kwargs)
+            _box = dynamic_kwargs.get("box", box)
+            if jnp.isscalar(_box) or jnp.shape(_box) == ():
+                side_length = _box
+            elif jnp.ndim(_box) == 1:
+                side_length = _box[0]
+            elif jnp.ndim(_box) == 2:
+                side_length = _box[0, 0]
+            else:
+                raise ValueError(f"Unknown box shape {jnp.shape(_box)}")
+
+            alpha_max = 1 / jnp.sqrt(4 * max_radii ** 2)
+            # recip_fn = lambda pos, charge, **kwargs: coulomb_recip_ewald(charge, side_length, alpha_max, onp.int32(15))(pos, **kwargs)
+            recip_fn = lambda pos, charge, **kwargs: energy.coulomb_recip_pme(charge, _box, onp.int32(20), fractional_coordinates=True, alpha=alpha_max)(pos, **kwargs)
+
+            _energy_fn = smap.pair_neighbor_list(
+                energy.multiplicative_isotropic_cutoff(
+                    shielded_interaction, r_onset, r_cutoff
+                ),
+                space.metric(displacement_fn),
+                charge=(lambda q1, q2: q1 * q2, charge),
+                alpha=(lambda s1, s2: 1 / jnp.sqrt(2 * (s1 ** 2 + s2 ** 2)), radii),
+                alpha_max=alpha_max
+            )
+            pot = recip_fn(position, charge, **dynamic_kwargs)
+            # jax.debug.print("Reciprocal energy: {}", pot)
+            # jax.debug.print("Reciprocal gradient: {}", jax.grad(recip_fn, argnums=1)(position, charge, **dynamic_kwargs))
+            # jax.debug.print("Reciprocal hessian: {}", jax.hessian(recip_fn, argnums=1)(position, charge, **dynamic_kwargs))
+
+
+        # jax.debug.print("Real space energy: {}", _energy_fn(position, neighbor))
+        # jax.debug.print("Self-interaction energy: {}", shielded_self(charge, radii))
+
+        pot += shielded_self(charge, radii)
+        pot += _energy_fn(position, neighbor)
 
         # Add electronegativity and hardness terms
         if chi is not None and idmp is not None:
@@ -51,11 +133,11 @@ def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff):
     return energy_fn
 
 
-def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="shielded", method="direct"):
+def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, max_radii=None, interaction="shielded", method="direct"):
     """Charge equilibration energy function."""
 
     if interaction == "shielded":
-        total_energy_fn = shielded_interaction_neighbor_list(displacement, r_onset, r_cutoff)
+        total_energy_fn = shielded_interaction_neighbor_list(displacement, r_onset, r_cutoff, max_radii=max_radii)
     else:
         raise ValueError(f"Unknown interaction {interaction}")
 
@@ -84,9 +166,12 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
             # Set diagonal entries to hessian
             A = A.at[:-1, :-1].set(
                 jax.hessian(total_energy_fn, argnums=2)(
-                    position, neighbor, charge, radii, chi, idmp
+                    position, neighbor, charge, radii, chi, idmp,
+                    **dynamic_kwargs
                 )
             )
+
+            # jax.debug.print("Coulomb matrix: {}", A)
 
             # Charge neutrality constraint (for now)
             b = jnp.concatenate((-chi, jnp.full((1,), total_charge))).reshape((-1, 1))
@@ -102,7 +187,8 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
 
                 Ax = jnp.concatenate([
                     jax.grad(total_energy_fn, argnums=2)(
-                        position, neighbor, charge, radii, chi, idmp
+                        position, neighbor, charge, radii, chi, idmp,
+                        **dynamic_kwargs
                     ) + mult * mask,
                     jnp.sum(mask * charge).reshape((1,))
                 ]).reshape((-1, 1))
@@ -119,7 +205,10 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
         else:
             raise ValueError(f"Unknown method {method}")
 
-        qeq_energy = total_energy_fn(position, neighbor, charge=charges, radii=radii, chi=chi, idmp=idmp)
+        qeq_energy = total_energy_fn(
+            position, neighbor, charge=charges, radii=radii, chi=chi, idmp=idmp,
+            **dynamic_kwargs
+        )
 
         # Only include electrostatic energy
         # qeq_energy = total_energy_fn(position, neighbor, charge=charges, radii=radii)
