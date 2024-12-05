@@ -113,6 +113,8 @@ def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=N
                 alpha_max=alpha_max
             )
             pot = recip_fn(position, charge, **dynamic_kwargs)
+            pot -= shielded_self(charge, max_radii) # Correct for the self-interaction added in reciprocal space
+
             # jax.debug.print("Reciprocal energy: {}", pot)
             # jax.debug.print("Reciprocal gradient: {}", jax.grad(recip_fn, argnums=1)(position, charge, **dynamic_kwargs))
             # jax.debug.print("Reciprocal hessian: {}", jax.hessian(recip_fn, argnums=1)(position, charge, **dynamic_kwargs))
@@ -126,6 +128,7 @@ def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=N
 
         # Add electronegativity and hardness terms
         if chi is not None and idmp is not None:
+            print(f"Add core interaction")
             pot += core_interaction(charge, chi, idmp)
 
         return pot
@@ -204,6 +207,8 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, max_radii=Non
             # raise NotImplementedError("CG method not implemented yet.")
         else:
             raise ValueError(f"Unknown method {method}")
+
+        charges = jnp.where(mask, charges, 0.0)
 
         qeq_energy = total_energy_fn(
             position, neighbor, charge=charges, radii=radii, chi=chi, idmp=idmp,
