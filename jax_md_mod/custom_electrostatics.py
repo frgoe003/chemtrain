@@ -101,7 +101,7 @@ def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=N
 
             # lpha_max = 1 / jnp.sqrt(4 * max_radii ** 2)
             # recip_fn = lambda pos, charge, **kwargs: coulomb_recip_ewald(charge, side_length, alpha, onp.int32(10))(real_pos, **kwargs)
-            recip_fn = lambda pos, charge, **kwargs: energy.coulomb_recip_pme(charge, _box, onp.int32(20), fractional_coordinates=True, alpha=alpha)(pos, **kwargs)
+            recip_fn = lambda pos, charge, **kwargs: energy.coulomb_recip_pme(charge, _box, onp.int32(30), fractional_coordinates=True, alpha=alpha)(pos, **kwargs)
 
             _energy_fn = smap.pair_neighbor_list(
                 energy.multiplicative_isotropic_cutoff(
