@@ -103,7 +103,7 @@ def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=N
                 alpha_max=alpha
             )
             pot = recip_fn(position, charge, **dynamic_kwargs)
-            pot -= shielded_self(charge, alpha / jnp.sqrt(2)) # Correct for the self-interaction added in reciprocal space
+            pot -= shielded_self(charge, 1 / (jnp.sqrt(2) * alpha)) # Correct for the self-interaction added in reciprocal space
 
             # jax.debug.print("Reciprocal energy: {}", pot)
             # jax.debug.print("Reciprocal gradient: {}", jax.grad(recip_fn, argnums=1)(position, charge, **dynamic_kwargs))
