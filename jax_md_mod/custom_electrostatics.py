@@ -72,7 +72,7 @@ def coulomb_recip_ewald(charge,
   return energy_fn
 
 
-def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=None, max_radii=None, method="reciprocal"):
+def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=None, alpha=2.0, method="reciprocal"):
     """Gaussian (shielded) charge interaction."""
 
     def energy_fn(position, neighbor, charge, radii, chi=None, idmp=None, **dynamic_kwargs):
@@ -99,9 +99,9 @@ def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=N
             else:
                 raise ValueError(f"Unknown box shape {jnp.shape(_box)}")
 
-            alpha_max = 1 / jnp.sqrt(4 * max_radii ** 2)
-            # recip_fn = lambda pos, charge, **kwargs: coulomb_recip_ewald(charge, side_length, alpha_max, onp.int32(15))(pos, **kwargs)
-            recip_fn = lambda pos, charge, **kwargs: energy.coulomb_recip_pme(charge, _box, onp.int32(20), fractional_coordinates=True, alpha=alpha_max)(pos, **kwargs)
+            # lpha_max = 1 / jnp.sqrt(4 * max_radii ** 2)
+            # recip_fn = lambda pos, charge, **kwargs: coulomb_recip_ewald(charge, side_length, alpha, onp.int32(10))(real_pos, **kwargs)
+            recip_fn = lambda pos, charge, **kwargs: energy.coulomb_recip_pme(charge, _box, onp.int32(20), fractional_coordinates=True, alpha=alpha)(pos, **kwargs)
 
             _energy_fn = smap.pair_neighbor_list(
                 energy.multiplicative_isotropic_cutoff(
@@ -110,10 +110,10 @@ def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=N
                 space.metric(displacement_fn),
                 charge=(lambda q1, q2: q1 * q2, charge),
                 alpha=(lambda s1, s2: 1 / jnp.sqrt(2 * (s1 ** 2 + s2 ** 2)), radii),
-                alpha_max=alpha_max
+                alpha_max=alpha
             )
             pot = recip_fn(position, charge, **dynamic_kwargs)
-            pot -= shielded_self(charge, max_radii) # Correct for the self-interaction added in reciprocal space
+            pot -= shielded_self(charge, alpha / jnp.sqrt(2)) # Correct for the self-interaction added in reciprocal space
 
             # jax.debug.print("Reciprocal energy: {}", pot)
             # jax.debug.print("Reciprocal gradient: {}", jax.grad(recip_fn, argnums=1)(position, charge, **dynamic_kwargs))
@@ -140,7 +140,7 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, max_radii=Non
     """Charge equilibration energy function."""
 
     if interaction == "shielded":
-        total_energy_fn = shielded_interaction_neighbor_list(displacement, r_onset, r_cutoff, max_radii=max_radii)
+        total_energy_fn = shielded_interaction_neighbor_list(displacement, r_onset, r_cutoff)
     else:
         raise ValueError(f"Unknown interaction {interaction}")
 
@@ -216,7 +216,8 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, max_radii=Non
         )
 
         # Only include electrostatic energy
-        # qeq_energy = total_energy_fn(position, neighbor, charge=charges, radii=radii)
+        # qeq_energy = total_energy_fn(
+        #     position, neighbor, charge=charges, radii=radii, **dynamic_kwargs)
         return qeq_energy, charges
 
     return energy_fn

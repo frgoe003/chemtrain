@@ -146,6 +146,7 @@ class ForceMatching(tt.DataParallelTrainer):
                  energy_fn_template: EnergyFnTemplate,
                  nbrs_init: NeighborList,
                  gammas: Dict[str, float] = None,
+                 error_fns: Dict[str, Callable] = None,
                  weights_keys: Dict[str, str] = None,
                  additional_targets: Dict[str, Dict] = None,
                  feature_extract_fns: Dict[str, Callable] = None,
@@ -187,7 +188,7 @@ class ForceMatching(tt.DataParallelTrainer):
         )
 
         loss_fn = force_matching.init_loss_fn(
-            gammas=gammas, weights_keys=weights_keys)
+            error_fns=error_fns, gammas=gammas, weights_keys=weights_keys)
 
         super().__init__(loss_fn, model, init_params, optimizer,
                          checkpoint_path, batch_per_device, batch_cache,

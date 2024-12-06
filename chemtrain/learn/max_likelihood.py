@@ -439,7 +439,11 @@ def mae_loss(predictions, targets, mask=None, weights=None):
     Returns:
         Mean absolute error value.
     """
-    abs_err = jnp.abs(targets - predictions)
+
+    # Set gradients to zero at singularity
+    safe_mask = (targets - predictions) != 0.0
+    safe_diff = jnp.where(safe_mask, targets - predictions, 1.0)
+    abs_err = jnp.abs(safe_diff) * safe_mask
     return _masked_loss(abs_err, mask, weights)
 
 
