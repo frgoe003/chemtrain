@@ -87,20 +87,10 @@ def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=N
             )
             pot = 0.0
         elif method == "reciprocal":
-            assert "box" in dynamic_kwargs
-
             _box = dynamic_kwargs.get("box", box)
-            if jnp.isscalar(_box) or jnp.shape(_box) == ():
-                side_length = _box
-            elif jnp.ndim(_box) == 1:
-                side_length = _box[0]
-            elif jnp.ndim(_box) == 2:
-                side_length = _box[0, 0]
-            else:
-                raise ValueError(f"Unknown box shape {jnp.shape(_box)}")
 
-            # lpha_max = 1 / jnp.sqrt(4 * max_radii ** 2)
-            # recip_fn = lambda pos, charge, **kwargs: coulomb_recip_ewald(charge, side_length, alpha, onp.int32(10))(real_pos, **kwargs)
+            assert _box is not None, "Box must be provided for reciprocal space calculation."
+
             recip_fn = lambda pos, charge, **kwargs: energy.coulomb_recip_pme(charge, _box, onp.int32(30), fractional_coordinates=True, alpha=alpha)(pos, **kwargs)
 
             _energy_fn = smap.pair_neighbor_list(
@@ -136,11 +126,11 @@ def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=N
     return energy_fn
 
 
-def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, max_radii=None, interaction="shielded", method="direct"):
+def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, max_radii=None, interaction="shielded", method="direct", electrostatics="direct"):
     """Charge equilibration energy function."""
 
     if interaction == "shielded":
-        total_energy_fn = shielded_interaction_neighbor_list(displacement, r_onset, r_cutoff)
+        total_energy_fn = shielded_interaction_neighbor_list(displacement, r_onset, r_cutoff, method=electrostatics)
     else:
         raise ValueError(f"Unknown interaction {interaction}")
 
