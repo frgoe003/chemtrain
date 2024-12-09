@@ -1,4 +1,5 @@
 import functools
+from typing import Union, Iterable
 
 import jax
 import jax.numpy as jnp
@@ -6,14 +7,18 @@ import jax.scipy as jsp
 
 import numpy as onp
 
-from jax_md import energy, smap, space, util as md_util
+from jax_md import energy, smap, space, util as md_util, quantity
+from jax_md_mod import custom_quantity
 
 
-def structure_factor(g, R, q=1):
+def structure_factor(g, R, q=1, mask=None):
+    if mask is None:
+        mask = jnp.ones(R.shape[0], dtype=bool)
+
     if isinstance(q, jnp.ndarray):
         q = q[None, :]
     return md_util.high_precision_sum(
-        q * jnp.exp(1j * jnp.einsum('id,jd->ij', g, R)),
+        q * jnp.exp(1j * jnp.einsum('id,jd->ij', g, R)) * mask,
         axis=1
     )
 
@@ -72,7 +77,56 @@ def coulomb_recip_ewald(charge,
   return energy_fn
 
 
-def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=None, alpha=2.0, method="reciprocal"):
+def custom_coulomb_recip_ewald(charge,
+                               box,
+                               alpha: float,
+                               grid: Union[int, Iterable[int]]):
+  def energy_fn(position, mask=None, **kwargs):
+    n_particles, dim = position.shape
+
+    _box = kwargs.get("box", box)
+    if mask is None:
+        mask = jnp.ones(n_particles, dtype=bool)
+
+    # Create a grid of reciprocal vectors
+    if jnp.isscalar(_box) or jnp.shape(_box) == ():
+      _box = jnp.eye(dim) * _box
+    elif jnp.ndim(box) == 1:
+      _box = jnp.diag(_box)
+    else:
+        assert jnp.shape(_box) == (dim, dim)
+
+    volume = quantity.volume(dim, _box)
+    _invbox = jnp.linalg.inv(_box)
+
+    # Non-homogeneous grid dimension
+    if isinstance(grid, int):
+      _grid = [grid] * dim
+    else:
+      _grid = grid
+
+    # Create a grid with the specified dimensions
+    m = jnp.meshgrid(*(jnp.arange(g) for g in _grid), indexing='ij')
+    g = jnp.stack([m[i].ravel() for i in range(dim)], axis=-1)[1:, :]
+
+    # Include positive and negative vectors but omit the all-zero vector
+    g = jnp.concatenate([jnp.flip(-g, axis=0), g])
+    g = jnp.einsum('ij,nj->ni', _invbox, g) * jnp.pi * 2
+    g2 = jnp.sum(g**2, axis=-1)
+
+    # Compute the structure factors
+    S = structure_factor(g, position, charge, mask=mask)
+    S2 = jnp.real(jnp.conj(S) * S)
+
+    pot = jnp.exp(-g2 / (4 * alpha ** 2)) / g2 * S2
+    pot = 2 * jnp.pi / volume * jnp.sum(pot)
+
+    return pot
+  return energy_fn
+
+
+
+def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=None, alpha=3.5, method="reciprocal"):
     """Gaussian (shielded) charge interaction."""
 
     def energy_fn(position, neighbor, charge, radii, chi=None, idmp=None, **dynamic_kwargs):
@@ -91,7 +145,10 @@ def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=N
 
             assert _box is not None, "Box must be provided for reciprocal space calculation."
 
-            recip_fn = lambda pos, charge, **kwargs: energy.coulomb_recip_pme(charge, _box, onp.int32(30), fractional_coordinates=True, alpha=alpha)(pos, **kwargs)
+            grid = [10, 10, 20]
+
+            # recip_fn = lambda pos, charge, **kwargs: energy.coulomb_recip_pme(charge, _box, onp.int32(30), fractional_coordinates=True, alpha=alpha)(pos, **kwargs)
+            recip_fn = lambda pos, charge, **kwargs: custom_coulomb_recip_ewald(charge, _box, alpha, grid=grid)(pos, **kwargs)
 
             _energy_fn = smap.pair_neighbor_list(
                 energy.multiplicative_isotropic_cutoff(
