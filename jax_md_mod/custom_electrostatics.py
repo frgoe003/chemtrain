@@ -131,10 +131,10 @@ def custom_coulomb_recip_ewald(charge,
 
 
 
-def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=None, alpha=4.5, method="reciprocal"):
+def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=None, alpha=3.5, method="reciprocal"):
     """Gaussian (shielded) charge interaction."""
 
-    def energy_fn(position, neighbor, charge, radii, chi=None, idmp=None, **dynamic_kwargs):
+    def energy_fn(position, neighbor, charge, radii, chi=None, idmp=None, equilibrate=True, **dynamic_kwargs):
         if method == "direct":
             _energy_fn = smap.pair_neighbor_list(
                 energy.multiplicative_isotropic_cutoff(
@@ -181,8 +181,11 @@ def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=N
 
         # Add electronegativity and hardness terms
         if chi is not None and idmp is not None:
-            print(f"Add core interaction")
-            pot += jax.lax.stop_gradient(core_interaction(charge, chi, idmp))
+            if equilibrate:
+                print(f"Add core interaction")
+                pot += core_interaction(charge, chi, idmp)
+            else:
+                pot += core_interaction(charge, chi, idmp)
 
         return pot
 
@@ -229,7 +232,7 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
                 )
             )
 
-            A = A.at[:-1, :-1].set(jnp.diag(~mask) + A[:-1, :-1])
+            # A = A.at[:-1, :-1].set(jnp.diag(~mask) + A[:-1, :-1])
 
             # jax.debug.print("Coulomb matrix: {}", A)
 
@@ -269,7 +272,7 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
 
         qeq_energy = total_energy_fn(
             position, neighbor, charge=charges, radii=radii, chi=chi, idmp=idmp,
-            **dynamic_kwargs
+            equilibrate=False, **dynamic_kwargs
         )
 
         # Only include electrostatic energy
