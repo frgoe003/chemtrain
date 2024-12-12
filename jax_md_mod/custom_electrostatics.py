@@ -131,7 +131,7 @@ def custom_coulomb_recip_ewald(charge,
 
 
 
-def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=None, alpha=3.5, method="reciprocal"):
+def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=None, alpha=4.5, method="reciprocal"):
     """Gaussian (shielded) charge interaction."""
 
     def energy_fn(position, neighbor, charge, radii, chi=None, idmp=None, equilibrate=True, **dynamic_kwargs):
