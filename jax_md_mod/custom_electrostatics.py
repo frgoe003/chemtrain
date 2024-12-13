@@ -200,7 +200,7 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
     else:
         raise ValueError(f"Unknown interaction {interaction}")
 
-    def energy_fn(position, neighbor, radii=None, chi=None, idmp=None, mask=None, total_charge=None, charges=None, **dynamic_kwargs):
+    def energy_fn(position, neighbor, radii=None, chi=None, idmp=None, mask=None, total_charge=None, charge=None, **dynamic_kwargs):
         if mask is None:
             mask = jnp.ones(position.shape[0], dtype=bool)
         if total_charge is None:
@@ -209,8 +209,14 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
         else:
             print(f"Total charge specified: {total_charge}")
 
-        n_particles = mask.size
+        # Evaluate for precomputed charges
+        if charge is not None:
+            return total_energy_fn(
+            position, neighbor, charge=charge, radii=radii, chi=chi, idmp=idmp,
+            equilibrate=False, **dynamic_kwargs
+        )
 
+        n_particles = mask.size
         charge = jnp.ones(n_particles)
         if method == "direct":
             # Count number of particles
