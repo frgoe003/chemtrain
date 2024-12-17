@@ -8,6 +8,7 @@ import jax.scipy as jsp
 import numpy as onp
 
 from jax_md import energy, smap, space, util as md_util, quantity
+from jax_md._energy import electrostatics
 from jax_md_mod import custom_quantity
 
 
@@ -47,35 +48,6 @@ def shielded_self(charge, radii):
 def core_interaction(charge, chi, idmp):
     """Core interaction."""
     return jnp.sum(charge * chi + jnp.square(charge) * idmp / 2)
-
-
-def coulomb_recip_ewald(charge,
-                        side_length,
-                        alpha: float,
-                        n_vectors: int):
-  def energy_fn(position, **kwargs):
-    dim = position.shape[-1]
-    V = side_length**dim
-
-    dg = 2 * onp.pi / side_length
-    # Just to make the sum inclusive.
-    g_max = n_vectors * dg
-    g_range = jnp.arange(0, n_vectors) * dg
-    g_range = jnp.concatenate((-g_range[::-1], g_range[1:]))
-
-    gx, gy, gz = jnp.meshgrid(g_range, g_range, g_range)
-    g = jnp.reshape(jnp.stack((gx, gy, gz), axis=-1), (-1, dim))
-    g2 = jnp.sum(g**2, axis=-1)
-    mask = (g2 < g_max**2) & (g2 > 1e-7)
-    g2 = jnp.where(mask, g2, 1.0)
-
-    Z = (4 * jnp.pi) / V
-
-    S = structure_factor(g, position, charge)
-    S2 = jnp.float32(jnp.conj(S) * S)
-
-    return Z * md_util.high_precision_sum(jnp.exp(-g2 / (4*alpha**2)) / g2 * S2 * mask)
-  return energy_fn
 
 
 def custom_coulomb_recip_ewald(charge,
@@ -130,11 +102,54 @@ def custom_coulomb_recip_ewald(charge,
   return energy_fn
 
 
+def custom_coulomb_recip_pme(charge,
+                             box,
+                             grid,
+                             fractional_coordinates: bool=False,
+                             alpha: float=0.34
+                             ):
+  _ibox = space.inverse(box)
+  _grid = grid
+
+  def energy_fn(R, **kwargs):
+    q = kwargs.pop('charge', charge)
+    _box = kwargs.pop('box', box)
+    ibox = space.inverse(kwargs['box']) if 'box' in kwargs else _ibox
+
+    dim = R.shape[-1]
+    if isinstance(_grid, int):
+        grid_dimensions = [_grid] * dim
+    else:
+        grid_dimensions = _grid
+
+    grid_dimensions = onp.asarray(grid_dimensions)
+
+    grid = electrostatics.map_charges_to_grid(R, q, ibox, grid_dimensions,
+                               fractional_coordinates)
+    Fgrid = jnp.fft.fftn(grid)
+
+    mx, my, mz = jnp.meshgrid(*[jnp.fft.fftfreq(g) for g in grid_dimensions])
+    if jnp.isscalar(_box):
+      m_2 = (mx**2 + my**2 + mz**2) * (grid_dimensions[0] * ibox)**2
+      V = _box**dim
+    else:
+      m = (ibox[None, None, None, 0] * mx[:, :, :, None] * grid_dimensions[0] +
+           ibox[None, None, None, 1] * my[:, :, :, None] * grid_dimensions[1] +
+           ibox[None, None, None, 2] * mz[:, :, :, None] * grid_dimensions[2])
+      m_2 = jnp.sum(m**2, axis=-1)
+      V = jnp.linalg.det(_box)
+    mask = m_2 != 0
+
+    exp_m = 1 / (2 * jnp.pi * V) * jnp.exp(-jnp.pi**2 * m_2 / alpha**2) / m_2
+    return md_util.high_precision_sum(
+        mask * exp_m * electrostatics.B(mx, my, mz) * jnp.abs(Fgrid)**2)
+  return energy_fn
+
 
 def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=None, alpha=4.5, method="reciprocal"):
     """Gaussian (shielded) charge interaction."""
 
-    def energy_fn(position, neighbor, charge, radii, chi=None, idmp=None, equilibrate=True, **dynamic_kwargs):
+    def energy_fn(position, neighbor, charge, radii, chi=None, idmp=None, equilibrate=True, precondition=False, **dynamic_kwargs):
         if method == "direct":
             _energy_fn = smap.pair_neighbor_list(
                 energy.multiplicative_isotropic_cutoff(
@@ -145,16 +160,20 @@ def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=N
                 alpha=(lambda s1, s2: 1 / jnp.sqrt(2 * (s1 ** 2 + s2 ** 2)), radii),
             )
             pot = 0.0
-        elif method == "reciprocal":
+        elif method in ["ewald", "pme"]:
             _box = dynamic_kwargs.get("box", box)
 
             assert _box is not None, "Box must be provided for reciprocal space calculation."
 
-            grid = [15, 15, 45]
             # grid = [10, 10, 60]
 
             # recip_fn = lambda pos, charge, **kwargs: energy.coulomb_recip_pme(charge, _box, onp.int32(30), fractional_coordinates=True, alpha=alpha)(pos, **kwargs)
-            recip_fn = lambda pos, charge, **kwargs: custom_coulomb_recip_ewald(charge, _box, alpha, grid=grid, fractional_coordinates=True)(pos, **kwargs)
+
+            grid = [15, 15, 45]
+            if method == "ewald":
+                recip_fn = lambda pos, charge, **kwargs: custom_coulomb_recip_ewald(charge, _box, alpha, grid=grid, fractional_coordinates=True)(pos, **kwargs)
+            else:
+                recip_fn = lambda pos, charge, **kwargs: custom_coulomb_recip_pme(charge, _box, grid=grid, fractional_coordinates=True, alpha=alpha)(pos, **kwargs)
 
             _energy_fn = smap.pair_neighbor_list(
                 energy.multiplicative_isotropic_cutoff(
@@ -165,8 +184,11 @@ def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=N
                 alpha=(lambda s1, s2: 1 / jnp.sqrt(2 * (s1 ** 2 + s2 ** 2)), radii),
                 alpha_max=alpha
             )
-            pot = recip_fn(position, charge, **dynamic_kwargs)
-            pot -= shielded_self(charge, 1 / (2 * alpha)) # Correct for the self-interaction added in reciprocal space
+
+            pot = 0.0
+            if not precondition:
+                pot += recip_fn(position, charge, **dynamic_kwargs)
+                pot -= shielded_self(charge, 1 / (2 * alpha)) # Correct for the self-interaction added in reciprocal space
 
             # jax.debug.print("Reciprocal energy: {}", pot)
             # jax.debug.print("Reciprocal gradient: {}", jax.grad(recip_fn, argnums=1)(position, charge, **dynamic_kwargs))
@@ -217,7 +239,7 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
         )
 
         n_particles = mask.size
-        charge = jnp.ones(n_particles)
+        charge = jnp.zeros(n_particles)
         if method == "direct":
             # Count number of particles
             A = jnp.zeros((n_particles + 1, n_particles + 1))
@@ -255,10 +277,10 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
                 mult = x[-1, 0]
 
                 Ax = jnp.concatenate([
-                    jax.grad(total_energy_fn, argnums=2)(
+                    (jax.grad(total_energy_fn, argnums=2)(
                         position, neighbor, charge,
                         radii, chi, idmp, **dynamic_kwargs
-                    ) + mult * mask,
+                    ) + mult) * mask + (1 - mask) * charge,
                     jnp.sum(mask * charge).reshape((1,))
                 ]).reshape((-1, 1))
                 return Ax
