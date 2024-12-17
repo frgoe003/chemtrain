@@ -150,7 +150,7 @@ def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=N
 
             assert _box is not None, "Box must be provided for reciprocal space calculation."
 
-            grid = [10, 10, 30]
+            grid = [15, 15, 45]
             # grid = [10, 10, 60]
 
             # recip_fn = lambda pos, charge, **kwargs: energy.coulomb_recip_pme(charge, _box, onp.int32(30), fractional_coordinates=True, alpha=alpha)(pos, **kwargs)
