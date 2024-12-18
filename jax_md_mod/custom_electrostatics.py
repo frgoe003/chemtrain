@@ -7,6 +7,8 @@ import jax.scipy as jsp
 
 import numpy as onp
 
+import lineax
+
 from jax_md import energy, smap, space, util as md_util, quantity
 from jax_md._energy import electrostatics
 from jax_md_mod import custom_quantity
@@ -266,26 +268,64 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
             charges = jnp.linalg.solve(A, b)[:-1, 0]
 
         elif method == "CG":
+            # Count number of particles
+            A = jnp.zeros((n_particles + 1, n_particles + 1))
+
+            # Set last row (charge neutrality) to mask
+            A = A.at[-1, :-1].set(mask)
+
+            # Set row for muliplier to mask
+            A = A.at[:-1, -1].set(mask)
+
+            # Set diagonal entries to hessian. As the charges minimize the
+            # energy, the gradient of the coloumb interactions depend on the
+            # position only explicitly but not through the charges.
+            A = A.at[:-1, :-1].set(
+                jax.hessian(
+                    functools.partial(total_energy_fn, precondition=True),
+                    argnums=2
+                )(
+                    position, neighbor, charge, radii,
+                    chi, idmp, **dynamic_kwargs
+                )
+            )
+
+            # Ideally a sparse approximate inverse
+            lup = jsp.linalg.lu_factor(A)
 
             def linear_operator(x):
                 charge = x[:-1, 0]
                 mult = x[-1, 0]
 
-                Ax = jnp.concatenate([
-                    (jax.grad(total_energy_fn, argnums=2)(
-                        position, neighbor, charge,
-                        radii, chi, idmp, **dynamic_kwargs
-                    ) + mult) * mask + (1 - mask) * charge,
-                    jnp.sum(mask * charge).reshape((1,))
-                ]).reshape((-1, 1))
-                return Ax
+                Jq = jax.grad(total_energy_fn, argnums=2)(
+                    position, neighbor, charge,
+                    radii, chi, idmp, **dynamic_kwargs
+                )
+
+                Ax = (Jq + mult) * mask + (1 - mask) * charge
+                return jnp.append(Ax, jnp.sum(mask * charge)).reshape((-1, 1))
+
+            def preconditioner(x):
+                return jsp.linalg.lu_solve(lup, x)
 
             # Initial guess
             x0 = jnp.zeros(n_particles + 1).reshape((-1, 1))
             b = jnp.concatenate((-chi, jnp.full((1,), total_charge))).reshape((-1, 1))
 
-            sol, _ = jsp.sparse.linalg.cg(linear_operator, b, x0=x0, tol=1e-8)
+            sol, _ = jsp.sparse.linalg.cg(
+                linear_operator, b, x0=x0, tol=1e-8,
+                M=preconditioner
+            )
             charges = sol[:-1, 0]
+
+        elif method == "lineax":
+            operator = lineax.JacobianLinearOperator(
+                lambda x: total_energy_fn(position, neighbor, x[:-1], radii, chi, idmp, **dynamic_kwargs) + x[-1] * jnp.sum(mask * x[:-1]),
+            )
+            solution = lineax.CG().compute(operator, jnp.concatenate((-chi, jnp.full((1,), total_charge))), {})
+            sol, *other = solution
+
+            charges = sol[:-1]
 
             # raise NotImplementedError("CG method not implemented yet.")
         else:
