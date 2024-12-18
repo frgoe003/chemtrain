@@ -146,7 +146,7 @@ def custom_coulomb_recip_pme(charge,
   return energy_fn
 
 
-def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=None, alpha=4.5, method="reciprocal"):
+def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=None, alpha=4.5, grid=None, method="reciprocal"):
     """Gaussian (shielded) charge interaction."""
 
     def energy_fn(position, neighbor, charge, radii, chi=None, idmp=None, equilibrate=True, precondition=False, **dynamic_kwargs):
@@ -165,11 +165,6 @@ def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=N
 
             assert _box is not None, "Box must be provided for reciprocal space calculation."
 
-            # grid = [10, 10, 60]
-
-            # recip_fn = lambda pos, charge, **kwargs: energy.coulomb_recip_pme(charge, _box, onp.int32(30), fractional_coordinates=True, alpha=alpha)(pos, **kwargs)
-
-            grid = [15, 15, 45]
             if method == "ewald":
                 recip_fn = lambda pos, charge, **kwargs: custom_coulomb_recip_ewald(charge, _box, alpha, grid=grid, fractional_coordinates=True)(pos, **kwargs)
             else:
@@ -214,11 +209,11 @@ def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=N
     return energy_fn
 
 # TODO: Add alpha interaction parameter
-def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="shielded", method="direct", electrostatics="direct"):
+def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="shielded", method="direct", electrostatics="direct", grid=None, alpha=4.5):
     """Charge equilibration energy function."""
 
     if interaction == "shielded":
-        total_energy_fn = shielded_interaction_neighbor_list(displacement, r_onset, r_cutoff, method=electrostatics)
+        total_energy_fn = shielded_interaction_neighbor_list(displacement, r_onset, r_cutoff, method=electrostatics, grid=grid, alpha=alpha)
     else:
         raise ValueError(f"Unknown interaction {interaction}")
 
