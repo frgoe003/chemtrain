@@ -15,5 +15,6 @@
 from . import (
     force_matching,
     max_likelihood,
-    probabilistic
+    probabilistic,
+    schedules
 )
