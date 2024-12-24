@@ -265,7 +265,7 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
             b = jnp.concatenate((-chi, jnp.full((1,), total_charge))).reshape((-1, 1))
 
             # Solve the linear system with lagrange multipliers
-            charges = jnp.linalg.solve(A, b)[:-1, 0]
+            charges = jsp.linalg.solve(A, b, assume_a="sym")[:-1, 0]
 
         elif method == "CG":
             # Count number of particles
@@ -292,8 +292,10 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
 
             # Ideally a sparse approximate inverse
             lup = jsp.linalg.lu_factor(A)
+            lup = jax.lax.stop_gradient(lup)
 
             def linear_operator(x):
+                print(f"Shape of x is {x}")
                 charge = x[:-1, 0]
                 mult = x[-1, 0]
 
