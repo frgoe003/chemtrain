@@ -44,12 +44,12 @@ def shielded_interaction(dr, charge, alpha, alpha_max=None):
 
 def shielded_self(charge, radii):
     """Gaussian (shielded) self-interaction."""
-    return jnp.sum(jnp.square(charge) / (2 * radii * jnp.sqrt(jnp.pi)))
+    return jnp.sum(charge * charge / (2 * radii * jnp.sqrt(jnp.pi)))
 
 
 def core_interaction(charge, chi, idmp):
     """Core interaction."""
-    return jnp.sum(charge * chi + jnp.square(charge) * idmp / 2)
+    return jnp.sum((chi + charge * idmp / 2) * charge)
 
 
 def custom_coulomb_recip_ewald(charge,
@@ -211,7 +211,7 @@ def shielded_interaction_neighbor_list(displacement_fn, r_onset, r_cutoff, box=N
     return energy_fn
 
 # TODO: Add alpha interaction parameter
-def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="shielded", method="direct", electrostatics="direct", grid=None, alpha=4.5):
+def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="shielded", method="direct", electrostatics="direct", grid=None, max_local: int = None, alpha=4.5):
     """Charge equilibration energy function."""
 
     if interaction == "shielded":
@@ -236,36 +236,79 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
         )
 
         n_particles = mask.size
-        charge = jnp.zeros(n_particles)
+
+        if max_local is None:
+            charge = jnp.zeros(n_particles)
+        else:
+            charge = jnp.zeros(max_local)
+
         if method == "direct":
-            # Count number of particles
-            A = jnp.zeros((n_particles + 1, n_particles + 1))
+            if max_local is None:
+                # Count number of particles
+                A = jnp.zeros((n_particles + 1, n_particles + 1))
 
-            # Set last row (charge neutrality) to mask
-            A = A.at[-1, :-1].set(mask)
+                # Set last row (charge neutrality) to mask
+                A = A.at[-1, :-1].set(mask)
 
-            # Set row for muliplier to mask
-            A = A.at[:-1, -1].set(mask)
+                # Set row for muliplier to mask
+                A = A.at[:-1, -1].set(mask)
 
-            # Set diagonal entries to hessian. As the charges minimize the
-            # energy, the gradient of the coloumb interactions depend on the
-            # position only explicitly but not through the charges.
-            A = A.at[:-1, :-1].set(
-                jax.hessian(total_energy_fn, argnums=2)(
-                    position, neighbor, charge, radii,
-                    chi, idmp, **dynamic_kwargs
+                # Set diagonal entries to hessian. As the charges minimize the
+                # energy, the gradient of the coloumb interactions depend on the
+                # position only explicitly but not through the charges.
+
+                A = A.at[:-1, :-1].set(
+                    jax.hessian(total_energy_fn, argnums=2)(
+                        position, neighbor, charge, radii,
+                        chi, idmp, **dynamic_kwargs
+                    )
                 )
-            )
 
-            # A = A.at[:-1, :-1].set(jnp.diag(~mask) + A[:-1, :-1])
+                # A = A.at[:-1, :-1].set(jnp.diag(~mask) + A[:-1, :-1])
 
-            # jax.debug.print("Coulomb matrix: {}", A)
+                # jax.debug.print("Coulomb matrix: {}", A)
 
-            # Charge neutrality constraint (for now)
-            b = jnp.concatenate((-chi, jnp.full((1,), total_charge))).reshape((-1, 1))
+                # Charge neutrality constraint (for now)
+                b = jnp.concatenate((-chi, jnp.full((1,), total_charge))).reshape((-1, 1))
 
-            # Solve the linear system with lagrange multipliers
-            charges = jsp.linalg.solve(A, b, assume_a="sym")[:-1, 0]
+                # Solve the linear system with lagrange multipliers
+                charges = jsp.linalg.solve(A, b, assume_a="sym")[:-1, 0]
+
+            else:
+                print(f"Consider only {max_local} local atoms")
+
+                A = jnp.zeros((max_local + 1, max_local + 1))
+
+                n_local = jnp.sum(mask) // dynamic_kwargs["reps"]
+                local_mask = jnp.arange(max_local) < n_local
+
+                A = A.at[-1, :max_local].set(mask[:max_local] & local_mask)
+
+                A = A.at[:max_local, -1].set(mask[:max_local] & local_mask)
+
+                tile_idx = jnp.mod(jnp.arange(n_particles), n_local)
+                def _periodic_hessian(q):
+                    charge = q[tile_idx] * (jnp.arange(mask.size) < (n_local * dynamic_kwargs["reps"]))
+                    return total_energy_fn(position, neighbor, charge, radii, chi, idmp, **dynamic_kwargs)
+
+                A = A.at[:-1, :-1].set(
+                    jax.hessian(_periodic_hessian)(charge)
+                )
+
+                A += jnp.diag(jnp.append(~local_mask, 0))
+
+                # Charge neutrality constraint (for now)
+                b = jnp.concatenate(
+                    (-chi[:max_local] * local_mask * dynamic_kwargs["reps"], jnp.full((1,), total_charge))).reshape((-1, 1))
+
+                # Solve the linear system with lagrange multipliers
+                local_charges = jsp.linalg.solve(A, b, assume_a="sym")[:-1, 0]
+
+                charges = jnp.where(
+                    jnp.arange(mask.size) < n_local * dynamic_kwargs["reps"],
+                    local_charges[tile_idx],
+                    0.0
+                )
 
         elif method == "CG":
             # Count number of particles
@@ -314,9 +357,9 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
             x0 = jnp.zeros(n_particles + 1).reshape((-1, 1))
             b = jnp.concatenate((-chi, jnp.full((1,), total_charge))).reshape((-1, 1))
 
-            sol, _ = jsp.sparse.linalg.cg(
+            sol, _ = jsp.sparse.linalg.bicgstab(
                 linear_operator, b, x0=x0, tol=1e-8,
-                M=preconditioner
+                #M=preconditioner
             )
             charges = sol[:-1, 0]
 
