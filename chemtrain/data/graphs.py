@@ -38,6 +38,7 @@ def allocate_neighborlist(dataset,
                           pairwise_distances: bool = True,
                           box_key: str = None,
                           mask_key: str = None,
+                          reps_key: str = None,
                           batch_size: int = 1000,
                           init_kwargs: dict = None,
                           **static_kwargs) -> Tuple[partition.NeighborList,
@@ -101,7 +102,7 @@ def allocate_neighborlist(dataset,
     @jax.jit
     def find_max_neighbors_and_edges(dataset):
         def number_of_neighbors(input):
-            position, box, mask = input
+            position, box, mask, reps = input
 
             if box is None:
                 metric = space.canonicalize_displacement_or_metric(displacement)
@@ -120,6 +121,13 @@ def allocate_neighborlist(dataset,
             if mask is not None:
                 is_neighbor = jnp.logical_and(is_neighbor, mask[jnp.newaxis, :])
 
+            # Remove all replicated receivers
+            if reps is not None:
+                print(f"Remove replicated senders")
+                max_local = jnp.sum(mask) // reps
+                include = max_local < jnp.arange(is_neighbor.shape[0])
+                is_neighbor = jnp.where(include[:, jnp.newaxis], is_neighbor, False)
+
             neighbors = jnp.sum(is_neighbor, axis=1)
 
             # Sets the number of neighbors to 0 for masked particles
@@ -137,7 +145,12 @@ def allocate_neighborlist(dataset,
         # We find the sample with the maximum number of neighbors or edges
         return util.batch_map(
             number_of_neighbors,
-            (dataset["R"], dataset.get(box_key), dataset.get(mask_key)),
+            (
+                dataset["R"],
+                dataset.get(box_key),
+                dataset.get(mask_key),
+                dataset.get(reps_key)
+            ),
             batch_size=batch_size
         )
 
