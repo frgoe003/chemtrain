@@ -195,9 +195,11 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
                            max_edge_multiplier: float = 1.25,
                            max_edges=None,
                            max_triplets=None,
+                           n_global=1,
+                           n_local=0,
                            **dimenetpp_kwargs
                            ) -> Tuple[nn.InitFn, Callable[[Any, util.Array],
-                                                          util.Array]]:
+                                                          Tuple[util.Array]]]:
     """DimeNet++ energy function for Jax, M.D.
 
     This function provides an interface for the DimeNet++ haiku model to be used
@@ -270,7 +272,7 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
     def model(positions: jnp.ndarray,
               neighbor: partition.NeighborList,
               species: jnp.ndarray = None,
-              **dynamic_kwargs) -> jnp.ndarray:
+              **dynamic_kwargs) -> Tuple[jnp.ndarray]:
         """Evalues the DimeNet++ model and predicts the potential energy.
 
         Args:
@@ -294,13 +296,25 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
         # TODO: return overflow to detect possible overflow
         del overflow
 
-        net = DimeNetPP(r_cutoff, n_species, num_targets=1, **dimenetpp_kwargs)
-        per_atom_energies = net(graph_rep, **dynamic_kwargs)
-        if "mask" in dynamic_kwargs:
-            per_atom_energies *= dynamic_kwargs["mask"]
+        net = DimeNetPP(r_cutoff, n_species, num_targets=n_global + n_local, **dimenetpp_kwargs)
+        features = net(graph_rep, **dynamic_kwargs)
 
-        gnn_energy = util.high_precision_sum(per_atom_energies)
-        return gnn_energy
+        if "mask" in dynamic_kwargs:
+            features *= dynamic_kwargs["mask"][:, jnp.newaxis]
+
+        out = []
+        if n_global > 0:
+            global_features = util.high_precision_sum(
+                features[:, :n_global], axis=0)
+            out.append(global_features)
+        if n_local > 0:
+            out.append(features[:, n_global:])
+
+        # Restores default behaviour
+        if len(out) == 1:
+            return out[0]
+
+        return tuple(out)
 
     return dropout.model_init_apply(model, dimenetpp_kwargs)
 
