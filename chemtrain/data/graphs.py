@@ -24,7 +24,7 @@ from jax_md import partition, space
 
 from chemtrain import util
 
-from typing import Tuple
+from typing import Tuple, Optional
 
 
 def allocate_neighborlist(dataset,
@@ -41,8 +41,9 @@ def allocate_neighborlist(dataset,
                           reps_key: str = None,
                           batch_size: int = 1000,
                           init_kwargs: dict = None,
+                          count_triplets: bool = False,
                           **static_kwargs) -> Tuple[partition.NeighborList,
-                                                   Tuple[int, int, float]]:
+                                                   Tuple[int, int, float, Optional[int]]]:
     """Allocates an optimally sized neighbor list.
 
     Args:
@@ -117,9 +118,10 @@ def allocate_neighborlist(dataset,
             is_neighbor = jnp.logical_and(
                 is_neighbor, ~jnp.eye(is_neighbor.shape[0], dtype=jnp.bool_))
 
-            # Invalid particles cannot receive edges.
+            # Invalid particles cannot receive or send edges.
             if mask is not None:
                 is_neighbor = jnp.logical_and(is_neighbor, mask[jnp.newaxis, :])
+                is_neighbor = jnp.logical_and(is_neighbor, mask[:, jnp.newaxis])
 
             # Remove all replicated receivers
             if reps is not None:
@@ -128,11 +130,28 @@ def allocate_neighborlist(dataset,
                 include = max_local < jnp.arange(is_neighbor.shape[0])
                 is_neighbor = jnp.where(include[:, jnp.newaxis], is_neighbor, False)
 
-            neighbors = jnp.sum(is_neighbor, axis=1)
-
             # Sets the number of neighbors to 0 for masked particles
+            neighbors = jnp.sum(is_neighbor, axis=1)
             if mask is not None:
                 neighbors *= mask
+
+            # Compute the number of triplets.
+            # First, we evaluate whether the pair of nodes are connected by an
+            # edge to the same node.
+            ji, jk = jax.vmap(
+                functools.partial(jnp.meshgrid, indexing="ij")
+            )(is_neighbor, is_neighbor)
+
+            extra_out = []
+            if count_triplets:
+                # We mask out pairs of identical edges.
+                is_triplet = jnp.logical_and(ji, jk)
+                is_triplet = jnp.logical_and(
+                    is_triplet,
+                    ~jnp.eye(is_triplet.shape[0], dtype=jnp.bool_)[jnp.newaxis, ...]
+                )
+
+                extra_out += [jnp.sum(is_triplet)]
 
             avg_neighbors = jnp.mean(neighbors)
             if mask is not None:
@@ -140,7 +159,8 @@ def allocate_neighborlist(dataset,
 
             max_neighbors = jnp.max(neighbors)
             max_edges = jnp.sum(neighbors)
-            return max_neighbors, max_edges, avg_neighbors
+
+            return max_neighbors, max_edges, avg_neighbors, *extra_out
 
         # We find the sample with the maximum number of neighbors or edges
         return util.batch_map(
@@ -154,7 +174,7 @@ def allocate_neighborlist(dataset,
             batch_size=batch_size
         )
 
-    n_neighbors, n_edges, avg_neighbors = find_max_neighbors_and_edges(dataset)
+    n_neighbors, n_edges, avg_neighbors, *extra = find_max_neighbors_and_edges(dataset)
 
     print(
         f"The dataset has max. {jnp.max(n_neighbors)} neighbors per particle "
@@ -168,6 +188,11 @@ def allocate_neighborlist(dataset,
         # The maximum number of edges determine the capacity of the neighbor list.
         sample_idx = jnp.argmax(n_edges)
 
+    extra_out = []
+    if count_triplets:
+        n_triplets, = extra
+        extra_out += [jnp.max(n_triplets)]
+
     if init_kwargs is None:
         init_kwargs = {}
     if box_key is not None:
@@ -178,4 +203,4 @@ def allocate_neighborlist(dataset,
     nbrs_init = neighbor_fn.allocate(
         jnp.asarray(dataset["R"][sample_idx]), **init_kwargs)
 
-    return nbrs_init, (n_neighbors.max(), n_edges.max(), avg_neighbors.mean())
+    return nbrs_init, (n_neighbors.max(), n_edges.max(), avg_neighbors.mean(), *extra_out)

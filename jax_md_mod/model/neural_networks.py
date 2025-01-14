@@ -296,6 +296,9 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
 
         net = DimeNetPP(r_cutoff, n_species, num_targets=1, **dimenetpp_kwargs)
         per_atom_energies = net(graph_rep, **dynamic_kwargs)
+        if "mask" in dynamic_kwargs:
+            per_atom_energies *= dynamic_kwargs["mask"]
+
         gnn_energy = util.high_precision_sum(per_atom_energies)
         return gnn_energy
 
