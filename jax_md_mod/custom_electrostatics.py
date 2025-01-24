@@ -240,8 +240,6 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
         else:
             charge = jnp.zeros(max_local)
 
-        method = "CG"
-
         if method == "direct":
             if max_local is None:
                 # Count number of particles
