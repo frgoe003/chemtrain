@@ -330,8 +330,8 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
             @functools.partial(jax.jit, static_argnames="precond")
             def linear_operator(charge, precond=False):
                 Jq = jax.grad(total_energy_fn, argnums=2)(
-                    position, neighbor, charge, radii, precond=precond,
-                    **dynamic_kwargs
+                    position, neighbor, charge, radii,
+                    None, None, precond=precond, **dynamic_kwargs
                 )
 
                 Jq += charge * idmp
@@ -344,7 +344,7 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
                     functools.partial(linear_operator, precond=True),
                     -jnp.asarray(mask * x, dtype=jnp.dtype(x)), tol=1e-8
                 )
-                return res
+                return res * mask
 
             x0 = mask * jnp.full_like(chi, total_charge) / jnp.sum(mask)
             charges, _ = jsp.sparse.linalg.cg(
@@ -357,7 +357,7 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
             mult = jnp.sum(mask * charges) - jnp.array(total_charge)
             mult /= jnp.sum(mask * corr)
 
-            charges -= mult * corr * mask
+            charges = mask * (charges - mult * corr)
 
         else:
             raise ValueError(f"Unknown method {method}")
