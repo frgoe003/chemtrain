@@ -1162,17 +1162,16 @@ def init_rigid_body_alignment(displacement_fn, reference_position, weights=None,
 
     if weights is None:
         weights = jnp.ones(n_particles)
-    weights /= jnp.mean(weights)
 
     def align_fn(position, **kwargs):
 
         # Compute the centers of both point sets
-        q = vmap(ref_displacement_fn, in_axes=(None, 0))(
-            reference_position[0, :], reference_position)
-        q_bar = jnp.mean(weights[:, jnp.newaxis] * q, axis=0)
-        p = vmap(displacement_fn, in_axes=(None, 0))(
-            position[0, :], position)
-        p_bar = jnp.mean(weights[:, jnp.newaxis] * p, axis=0)
+        q = vmap(ref_displacement_fn, in_axes=(0, None))(
+            reference_position, reference_position[0, :])
+        q_bar = jnp.mean(weights[:, jnp.newaxis] * q, axis=0) / jnp.mean(weights)
+        p = vmap(displacement_fn, in_axes=(0, None))(
+            position, position[0, :])
+        p_bar = jnp.mean(weights[:, jnp.newaxis] * p, axis=0) / jnp.mean(weights)
 
         # Recenter the points
         p -= p_bar[jnp.newaxis, :]
@@ -1185,7 +1184,7 @@ def init_rigid_body_alignment(displacement_fn, reference_position, weights=None,
 
         U, _, Vh = jnp.linalg.svd(cov, full_matrices=True, compute_uv=True)
 
-        det = -jnp.linalg.det(jnp.dot(U, Vh.T).T)
+        det = jnp.linalg.det(jnp.dot(Vh.T, U.T))
         sig = jnp.append(jnp.ones(p.shape[1] - 1), det)
         rotation = jnp.einsum('ji,j,kj->ik', Vh, sig, U)
         translation = q_bar - jnp.dot(rotation, p_bar)
