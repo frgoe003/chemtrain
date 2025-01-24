@@ -240,6 +240,8 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
         else:
             charge = jnp.zeros(max_local)
 
+        method = "CG"
+
         if method == "direct":
             if max_local is None:
                 # Count number of particles
@@ -346,13 +348,12 @@ def charge_eq_energy_neighborlist(displacement, r_onset, r_cutoff, interaction="
                 )
                 return res * mask
 
-            x0 = mask * jnp.full_like(chi, total_charge) / jnp.sum(mask)
             charges, _ = jsp.sparse.linalg.cg(
                 linear_operator, -jnp.asarray(mask * chi, dtype=jnp.dtype(chi)),
-                x0=x0, tol=1e-8, M=pred_linear_operator)
+                tol=1e-8, M=pred_linear_operator)
             corr, _ = jsp.sparse.linalg.cg(
                 linear_operator, -jnp.asarray(mask * 1.0, dtype=jnp.dtype(chi)),
-                x0=x0, tol=1e-8, M=pred_linear_operator)
+                tol=1e-8, M=pred_linear_operator)
 
             mult = jnp.sum(mask * charges) - jnp.array(total_charge)
             mult /= jnp.sum(mask * corr)
