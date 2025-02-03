@@ -40,7 +40,7 @@ from jax_sgmc import data
 import chemtrain.data.data_loaders
 from chemtrain import util
 from chemtrain.data import data_loaders
-from chemtrain.learn import max_likelihood
+from chemtrain.learn import max_likelihood, difftre
 from jax_md_mod.model import dropout
 from chemtrain.ensemble.reweighting import init_pot_reweight_propagation_fns
 from chemtrain.ensemble import sampling
@@ -576,6 +576,9 @@ class PropagationBase(MLETrainerTemplate):
         self.n_statepoints = 0
         self.shuffle_key = random.PRNGKey(0)
 
+        self.weight_fn = {}
+        self._adaptive_step_size = {}
+
     def _init_statepoint(self, reference_state, energy_fn_template,
                          simulator_template, neighbor_fn, timings, state_kwargs,
                          set_key=None, energy_batch_size=10,
@@ -735,6 +738,33 @@ class PropagationBase(MLETrainerTemplate):
         and logging of auxiliary results. Takes batch of simulation indices
         as input.
         """
+
+    def init_step_size_adaption(self,
+                                allowed_reduction: float = 0.5,
+                                interior_points: int = 10,
+                                step_size_scale: float = 1e-7
+                                ) -> None:
+        """Initializes a line search to tune the step size in each iteration.
+
+        The line search optimizes step size to limit the decrease in the
+        effective sample size (ESS) via the algorithm
+        :func:`chemtrain.learn.difftre.init_step_size_adaption`.
+
+        Args:
+            allowed_reduction: Target reduction of the effective sample size
+            interior_points: Number of interiour points
+            step_size_scale: Accuracy of the found optimal interpolation
+                coefficient
+
+        Returns:
+            Returns the interpolation coefficient :math:`\\alpha`.
+
+        """
+
+        for key, weight_fn in self.weight_fn.items():
+            self._adaptive_step_size[key] = difftre.init_step_size_adaption(
+                weight_fn, allowed_reduction, interior_points, step_size_scale
+            )
 
 
 class DataParallelTrainer(MLETrainerTemplate):

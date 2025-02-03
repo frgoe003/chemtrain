@@ -23,9 +23,9 @@ import chex
 
 from jax import lax, jit, vmap, numpy as jnp, random, tree_util
 
+from jax_md_mod import custom_quantity
 from jax_md import util as jax_md_util
 from jax_md.partition import NeighborList
-from jax_md_mod import custom_quantity
 
 from chemtrain import util
 from chemtrain.ensemble import evaluation

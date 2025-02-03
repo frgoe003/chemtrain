@@ -105,7 +105,7 @@ def init_difftre_gradient_and_propagation(
     loss_fn,
     quantities: Dict[str, ComputeFn],
     energy_fn_template: EnergyFnTemplate,
-    wrapped: bool = False,
+    wrapped: bool = True,
     batched: bool = False,
     ):
     """Initializes the function to compute the DiffTRe loss and its gradients.
@@ -282,15 +282,14 @@ def init_rel_entropy_loss_fn(energy_fn_template, compute_weights, kbt, vmap_batc
 
         # Compute the potential predictions on the reference data
         ref_states = evaluation.SimpleState(position=reference_batch['R'])
-        state_kwargs = {"kT": jnp.repeat(kbt, reference_batch['R'].shape[0])}
 
         nbrs = traj_state.sim_state.nbrs
         if nbrs.reference_position.ndim > 2:
             nbrs = util.tree_get_single(traj_state.sim_state.nbrs)
 
         ref_energies = evaluation.quantity_map(
-            ref_states, ref_quantities, nbrs, state_kwargs, params,
-            vmap_batch_size,
+            ref_states, ref_quantities, nbrs, {},
+            {"kT": kbt}, params, vmap_batch_size,
         )["ref_energy"]
 
         return (jnp.mean(ref_energies) - free_energy) / kbt

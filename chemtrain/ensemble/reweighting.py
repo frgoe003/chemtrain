@@ -35,12 +35,12 @@ import jax_sgmc.util
 from jax import (checkpoint, lax, random, tree_util, vmap, numpy as jnp, jit,
                  debug)
 
+from jax_md_mod import custom_quantity
 import jax_md.util
 from jax_md import util as jax_md_util, simulate
 
 from chemtrain import util
 from chemtrain.ensemble import sampling
-from jax_md_mod import custom_quantity
 from chemtrain.quantity import constants, observables
 
 from typing import Dict, Any, Union, Callable, Tuple, Protocol

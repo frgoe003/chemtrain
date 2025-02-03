@@ -489,7 +489,7 @@ class Difftre(tt.PropagationBase):
         checkpoint_folder: Name of folders to store ckeckpoints in.
 
     Attributes:
-        weights_fn: Dictionary containing the reweighting functions for each
+        weight_fn: Dictionary containing the reweighting functions for each
             statepoint.
         batch_losses: List of losses for each batch in each epoch.
         epoch_losses: List of losses for each epoch.
@@ -534,12 +534,10 @@ class Difftre(tt.PropagationBase):
 
         # Optional: Initialized by calling trainer.init_step_size_adaption
         # after all statepoints to be considered have been set up.
-        self._adaptive_step_size = {}
-        self._adaptive_step_size_threshold = adaptive_step_size_threshold
         self._recompute = False
 
         self.state_dicts = {}
-        self.weights_fn = {}
+        self.weight_fn = {}
         self.targets = {}
         super().__init__(
             init_trainer_state=init_state, optimizer=optimizer,
@@ -571,9 +569,10 @@ class Difftre(tt.PropagationBase):
                        vmap_batch: int = 10,
                        initialize_traj: bool = True,
                        set_key: str = None,
-                       entropy_approximation: bool = False,
                        resample_simstates: bool = False,
-                       allowed_reduction: ArrayLike = None):
+                       allowed_reduction: ArrayLike = None,
+                       adaption_kwargs: Dict = None
+                       ):
         """
         Adds a state point to the pool of simulations with respective targets.
 
@@ -627,8 +626,12 @@ class Difftre(tt.PropagationBase):
                 instead of simulating independent chains.
             allowed_reduction: Allowed reduction of the effective sample size
                 for the given statepoint.
+            adaption_kwargs: Additional keyword arguments for the step size
+                line search. For a description, see
+                :func:`chemtrain.learn.difftre.init_step_size_adaption`.
 
         """
+
         # init simulation, reweighting functions and initial trajectory
         (key, *reweight_fns) = self._init_statepoint(
             reference_state,
@@ -641,7 +644,7 @@ class Difftre(tt.PropagationBase):
             vmap_batch,
             initialize_traj,
             safe_propagation=False,
-            entropy_approximation=entropy_approximation,
+            entropy_approximation=False,
             resample_simstates=resample_simstates
         )
 
@@ -674,13 +677,16 @@ class Difftre(tt.PropagationBase):
 
         self.grad_fns[key] = difftre_grad_and_propagation
         self.predictions[key] = {}  # init saving predictions for this point
-        self.weights_fn[key] = jax.jit(reweight_fns[0])
+        self.weight_fn[key] = jax.jit(reweight_fns[0])
         self.state_dicts[key] = state_kwargs
         self.targets[key] = targets
 
         if allowed_reduction is not None:
+            if adaption_kwargs is None:
+                adaption_kwargs = {}
+
             self._adaptive_step_size[key] = difftre.init_step_size_adaption(
-                self.weights_fn[key], allowed_reduction, interior_points=5,
+                self.weight_fn[key], allowed_reduction, **adaption_kwargs
             )
 
         # Reset loss measures if new state point es added since loss values
@@ -783,37 +789,8 @@ class Difftre(tt.PropagationBase):
 
         batch_norm = util.tree_norm(batch_grad)
         self.gradient_norm_history.append(onp.asarray(batch_norm))
-        self.step_size_history.append(onp.asarray(alpha))
+        self.step_size_history.append(onp.asarray(step_size))
 
-    def init_step_size_adaption(self,
-                                allowed_reduction: ArrayLike = 0.5,
-                                interior_points: int = 10,
-                                step_size_scale: float = 1e-5,
-                                recompute_threshold: float = 1e-4
-                                ) -> None:
-        """Initializes a line search to tune the step size in each iteration.
-
-        The line search optimizes step size to limit the decrease in the
-        effective sample size (ESS) via the algorithm
-        :func:`chemtrain.learn.difftre.init_step_size_adaption`.
-
-        Args:
-            allowed_reduction: Target reduction of the effective sample size
-            interior_points: Number of interiour points
-            step_size_scale: Accuracy of the found optimal interpolation
-                coefficient
-            recompute_threshold: Recompute the trajectory if found step size
-                scale is below the threshold
-
-        Returns:
-            Returns the interpolation coefficient :math:`\\alpha`.
-
-        """
-
-        self._adaptive_step_size_threshold = recompute_threshold
-        self._adaptive_step_size = difftre.init_step_size_adaption(
-            self.weights_fn, allowed_reduction, interior_points, step_size_scale
-        )
 
     def _evaluate_convergence(self, *args, thresh=None, **kwargs):
         # sim_batch_size = -1 means all statepoints are processed in one batch.
@@ -958,10 +935,7 @@ class RelativeEntropy(tt.PropagationBase):
         self.step_size_history = self.checkpoint("step_size_history", [])
         self.gradient_norm_history = self.checkpoint("gradient_norm_history", [])
 
-        self.weight_fn = {}
         self.early_stop = tt.EarlyStopping(self.params, convergence_criterion)
-
-        self._adaptive_step_size = None
 
     def _set_dataset(self, key, reference_data, reference_batch_size,
                      batch_cache=1):
@@ -989,7 +963,9 @@ class RelativeEntropy(tt.PropagationBase):
                        initialize_traj: bool = True,
                        set_key: str = None,
                        vmap_batch: int = 10,
-                       resample_simstates: bool = False):
+                       resample_simstates: bool = False,
+                       allowed_reduction: float = None,
+                       adaption_kwargs: Dict = None):
         """
         Adds a state point to the pool of simulations.
 
@@ -1031,6 +1007,11 @@ class RelativeEntropy(tt.PropagationBase):
                 simulation during training.
             vmap_batch: Batch size of vmapping of per-snapshot energy and
                 gradient calculation.
+            allowed_reduction: Allowed reduction of the effective sample size
+                for the given statepoint.
+            adaption_kwargs: Additional keyword arguments for the step size
+                line search. For a description, see
+                :func:`chemtrain.learn.difftre.init_step_size_adaption`.
         """
         if reference_batch_size is None:
             print('No reference batch size provided. Using number of generated '
@@ -1069,31 +1050,13 @@ class RelativeEntropy(tt.PropagationBase):
         self.delta_re[key] = []
         self.weight_fn[key] = jax.jit(reweight_fns[0])
 
-    def init_step_size_adaption(self,
-                                allowed_reduction: ArrayLike = 0.5,
-                                interior_points: int = 10,
-                                step_size_scale: float = 1e-7
-                                ) -> None:
-        """Initializes a line search to tune the step size in each iteration.
+        if allowed_reduction is not None:
+            if adaption_kwargs is None:
+                adaption_kwargs = {}
 
-        The line search optimizes step size to limit the decrease in the
-        effective sample size (ESS) via the algorithm
-        :func:`chemtrain.learn.difftre.init_step_size_adaption`.
-
-        Args:
-            allowed_reduction: Target reduction of the effective sample size
-            interior_points: Number of interiour points
-            step_size_scale: Accuracy of the found optimal interpolation
-                coefficient
-
-        Returns:
-            Returns the interpolation coefficient :math:`\\alpha`.
-
-        """
-
-        self._adaptive_step_size = difftre.init_step_size_adaption(
-            self.weight_fn, allowed_reduction, interior_points, step_size_scale
-        )
+            self._adaptive_step_size[key] = difftre.init_step_size_adaption(
+                self.weights_fn[key], allowed_reduction, **adaption_kwargs
+            )
 
     def _update(self, batch):
         """Updates the potential using the gradient from relative entropy."""
@@ -1111,20 +1074,27 @@ class RelativeEntropy(tt.PropagationBase):
 
         batch_grad = util.tree_mean(grads)
 
-        if self._adaptive_step_size is not None:
-            proposal = self._optimizer_step(batch_grad)
-            alpha, residual = self._adaptive_step_size(
-                self.params, batch_grad, proposal, self.trajectory_states)
-            print(f"[Step Size] Found optimal step size {alpha} with residual "
-                  f"{residual}", flush=True)
-        else:
-            alpha = 1.0
+        step_size = 1.0
+        proposal = self._optimizer_step(batch_grad)
+        for sim_key in batch:
+            if sim_key not in self._adaptive_step_size: continue
 
-        self._step_optimizer(batch_grad, alpha=alpha)
+            alpha, residual = self._adaptive_step_size[sim_key](
+                self.params, batch_grad, proposal,
+                self.trajectory_states[sim_key]
+            )
+
+            if alpha < step_size:
+                step_size = alpha
+
+        print(f"[Step Size] Found optimal step size {step_size} with residual "
+              f"{residual}", flush=True)
+
+        self._step_optimizer(batch_grad, alpha=step_size)
 
         batch_norm = util.tree_norm(batch_grad)
         self.gradient_norm_history.append(onp.asarray(batch_norm))
-        self.step_size_history.append(onp.asarray(alpha))
+        self.step_size_history.append(onp.asarray(step_size))
 
 
     def _evaluate_convergence(self, *args, thresh=None, **kwargs):

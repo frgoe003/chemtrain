@@ -17,10 +17,10 @@ from typing import Any, Dict, Callable, NamedTuple
 import numpy as onp
 from jax import tree_util, numpy as jnp, vmap, lax, Array
 from jax._src.basearray import ArrayLike
-from jax_md import simulate
 
-from jax_md.partition import NeighborList
 from jax_md_mod import custom_partition
+from jax_md import simulate
+from jax_md.partition import NeighborList
 
 from chemtrain import util
 from chemtrain.typing import QuantityDict

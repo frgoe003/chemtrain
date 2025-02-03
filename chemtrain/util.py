@@ -21,11 +21,11 @@ import cloudpickle as pickle
 # import h5py
 import jax
 from jax import tree_map, tree_util, device_count, numpy as jnp, tree_unflatten, lax
-from jax_md import simulate
+
+import jax_md_mod
+from jax_md import simulate, partition
 import numpy as onp
 
-
-from jax_md import partition
 
 # freezing seems to give slight performance improvement
 @partial(chex.dataclass, frozen=True)
