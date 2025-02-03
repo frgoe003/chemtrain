@@ -112,8 +112,6 @@ def init_batch_functions(data_loader: core.HostDataLoader,
             state=jax.random.PRNGKey(rng_seed) if rng_seed is not None else None,
         )
 
-        print(f"Initialized cache state to {inital_cache_state.state}")
-
         return inital_cache_state
 
     def _new_cache_fn(state: core.CacheState,

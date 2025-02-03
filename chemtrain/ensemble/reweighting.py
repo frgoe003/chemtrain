@@ -58,7 +58,6 @@ def dynamic_statepoint(default_kwargs: dict, **kwargs) -> dict:
     """Overwrites default statepoint with dynamically defined values."""
     statepoint = default_kwargs.copy()
     statepoint.update(kwargs)
-    print(f"Update static statepoint arguments {list(kwargs.keys())}")
 
     return statepoint
 
