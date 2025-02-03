@@ -107,16 +107,23 @@ namespace jcn {
                 xla::PjRtClient* client, int device_id, int inum, int *ilist,
                 int *numneigh, int **firstneigh, bool update) override;
 
+            bool evaluate_statistics(
+                std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results
+            ) override;
+
         private:
             float edge_multiplier;
 
             std::unique_ptr<xla::Literal> senders_literal;
             std::unique_ptr<xla::Literal> receivers_literal;
+            std::unique_ptr<xla::Literal> neighbors_literal;
 
             std::unique_ptr<xla::PjRtBuffer> senders_buffer;
             std::unique_ptr<xla::PjRtBuffer> receivers_buffer;
+            std::unique_ptr<xla::PjRtBuffer> neighbors_buffer;
 
-            int n_edges = 0;
+            int edge_buffer_size = 0;
+            int n_valid_edges = 1; // At least one edge should be present
             int fill_value = 0;
 
     };

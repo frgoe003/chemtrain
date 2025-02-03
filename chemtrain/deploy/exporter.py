@@ -24,7 +24,7 @@ from jax import numpy as jnp, export, lax
 from typing import Dict, NamedTuple, Any, List, Tuple, Callable
 
 import jax_md_mod
-from jax_md import util as md_util
+from jax_md import util as md_util, space
 
 from . import graphs, shape_util
 from ._protobuf import model_pb2 as model_proto
@@ -73,6 +73,7 @@ class Exporter(metaclass=abc.ABCMeta):
     graph_type: graphs.NeighborList = graphs.SimpleSparseNeighborList
 
     num_mpl: int = 0
+    r_cutoff: float
 
     mask: bool = False
 
@@ -136,7 +137,8 @@ class Exporter(metaclass=abc.ABCMeta):
         ghost_mask = jnp.arange(position.shape[0]) < n_local
 
         graph, build_statistics = self.graph_type.create_from_args(
-            position, species, ghost_mask, valid_mask, *graph_args)
+            self.r_cutoff, self.num_mpl, position, species,
+            ghost_mask,valid_mask, *graph_args)
         graph = lax.stop_gradient(graph)
 
         @functools.partial(jax.grad, has_aux=True)
@@ -170,7 +172,7 @@ class Exporter(metaclass=abc.ABCMeta):
         proto = model_proto.Model()
 
         # Hard-coded for now
-        proto.neighbor_list.cutoff = 5.0
+        proto.neighbor_list.cutoff = self.r_cutoff
         proto.neighbor_list.num_mpl = self.num_mpl
 
         self.graph_type.set_properties(proto)

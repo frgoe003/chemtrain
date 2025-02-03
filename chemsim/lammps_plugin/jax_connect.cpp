@@ -29,6 +29,7 @@
 #include <fstream>
 #include <chrono>
 #include <stdlib.h>
+#include <sstream>
 
 using namespace LAMMPS_NS;
 
@@ -179,17 +180,41 @@ void JaxConnect::coeff(int narg, char **arg)
 
     jcn::ConnectorConfig config;
 
-    const char* nl_rank = getenv("OMPI_COMM_WORLD_LOCAL_RANK");
-
     config.model = exported_model;
     config.neighbor_list_multipliers = neighbor_list_multipliers;
     config.atom_multiplier = atom_multiplier;
     config.backend = backend;
     config.device = 0; // std::stoi(nl_rank);
 
-    std::cout << "Running on device: " << config.device << std::endl;
+    // TODO: Find a better way to specifiy the device assignment. In this
+    //       approach, list of devices passed via the environemnt variable
+    //       LMP_DEVICE_ASSIGNMENT is mapped to the local rank of the MPI
+    //       process.
+
+    const char* nl_rank = getenv("OMPI_COMM_WORLD_LOCAL_RANK");
+    const char* device_assignment = getenv("LMP_DEVICE_ASSIGNMENT");
 
     if (nl_rank != nullptr) setenv("CUDA_VISIBLE_DEVICES", nl_rank, 1);
+
+    if (device_assignment != nullptr && nl_rank != nullptr) {
+        std::string ipt = std::string(device_assignment);
+        std::vector<int> assignment_array;
+        std::stringstream ss(ipt);
+        std::string item;
+
+        while (std::getline(ss, item, ',')) {
+            // Remove leading and trailing spaces
+            item.erase(0, item.find_first_not_of(' '));
+            item.erase(item.find_last_not_of(' ') + 1);
+
+            // Convert to integer and add to the vector
+            assignment_array.push_back(std::stoi(item));
+        }
+
+        // Assign the device based on the local rank
+        int assigned_device = assignment_array[std::stoi(nl_rank)];
+        setenv("CUDA_VISIBLE_DEVICES", std::to_string(assigned_device).c_str(), 1);
+    }
 
     // Set the flags to mark initialization of all pair coefficients
     int ilo, ihi, jlo, jhi;

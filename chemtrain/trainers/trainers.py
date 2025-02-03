@@ -361,6 +361,8 @@ class DifftreParallel(tt.MLETrainerTemplate):
         _, n_eff = self.weights(self.params, trajstates)
         min_n_eff = self.traj_states.trajectory.position.shape[1] * self.reweight_ratio
 
+        ## Determine if recompute is necessary #################################
+
         print(f"[DifftreParallel] Effective sample sizes (limit: {min_n_eff})")
         for b, eff in zip(batch, n_eff):
             info = '-> recompute' if eff < min_n_eff else ''
@@ -376,7 +378,8 @@ class DifftreParallel(tt.MLETrainerTemplate):
             # Save the recomputed trajectories
             self.traj_states = util.tree_put(self.traj_states, batch, trajstates, on_cpu=False)
 
-        # Compute the loss
+        ## Compute the loss ####################################################
+
         print(f"[DifftreParallel] Computing loss...")
         start = time.time()
         (loss, state_point_predictions), grad = self.model(
@@ -385,6 +388,8 @@ class DifftreParallel(tt.MLETrainerTemplate):
         batch_norm = util.tree_norm(grad)
         self.batch_gradient_norms.append(onp.asarray(batch_norm))
         print(f"[DifftreParallel] Computed loss {loss} in {(time.time() - start) / 60.:.2f} min")
+
+        ## Optimize the step size ##############################################
 
         proposal = self._optimizer_step(grad)
         # Perform stepsize optimization
@@ -396,7 +401,7 @@ class DifftreParallel(tt.MLETrainerTemplate):
 
         self._step_optimizer(grad, alpha=alpha)
 
-        # Save the predictions for the respective batches
+        ## Save the predictions for the respective batches #####################
         print(f"[DifftreParallel] Predictions:")
         for idx, b in enumerate(batch):
             self.predictions[int(b)][self._epoch] = {
