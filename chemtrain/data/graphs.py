@@ -42,8 +42,9 @@ def allocate_neighborlist(dataset,
                           batch_size: int = 1000,
                           init_kwargs: dict = None,
                           count_triplets: bool = False,
-                          **static_kwargs) -> Tuple[partition.NeighborList,
-                                                   Tuple[int, int, float, Optional[int]]]:
+                          **static_kwargs
+                          ) -> Tuple[partition.NeighborList,
+                                     Tuple[int, int, float, Optional[int]]]:
     """Allocates an optimally sized neighbor list.
 
     Args:
@@ -52,22 +53,25 @@ def allocate_neighborlist(dataset,
         displacement: A function `d(R_a, R_b)` that computes the displacement
             between pairs of points.
         box: Either a float specifying the size of the box, an array of
-            shape `[spatial_dim]` specifying the box size for a cubic box in each
-            spatial dimension, or a matrix of shape `[spatial_dim, spatial_dim]` that
-            is _upper triangular_ and specifies the lattice vectors of the box.
+            shape `[spatial_dim]` specifying the box size for a cubic box in
+            each spatial dimension, or a matrix of shape
+            `[spatial_dim, spatial_dim]` that is _upper triangular_ and
+            specifies the lattice vectors of the box.
         r_cutoff: A scalar specifying the neighborhood radius.
         capacity_multiplier: A floating point scalar specifying the fractional
-            increase in maximum neighborhood occupancy we allocate compared with the
-            maximum in the example positions.
-        disable_cell_list: An optional boolean. If set to `True` then the neighbor
-            list is constructed using only distances. This can be useful for
-            debugging but should generally be left as `False`.
+            increase in maximum neighborhood occupancy we allocate compared with
+            the maximum in the example positions.
+        disable_cell_list: An optional boolean. If set to `True` then the
+            neighbor list is constructed using only distances. This can be
+            useful for debugging but should generally be left as `False`.
         fractional_coordinates: An optional boolean. Specifies whether positions
-            will be supplied in fractional coordinates in the unit cube, :math:`[0, 1]^d`.
-            If this is set to True then the `box_size` will be set to `1.0` and the
-            cell size used in the cell list will be set to `cutoff / box_size`.
-        format: The format of the neighbor list; see the :meth:`NeighborListFormat` enum
-            for details about the different choices for formats. Defaults to `Dense`.
+            will be supplied in fractional coordinates in the unit cube,
+            :math:`[0, 1]^d`. If this is set to True then the `box_size` will be
+            set to `1.0` and the cell size used in the cell list will be set to
+            `cutoff / box_size`.
+        format: The format of the neighbor list; see the
+            :meth:`NeighborListFormat` enum for details about the different
+            choices for formats. Defaults to `Dense`.
         pairwise_distances: Computes pairwise distances between every particles
             for every sample.
         box_key: The key in the dataset dictionary that contains the box. If
@@ -133,7 +137,8 @@ def allocate_neighborlist(dataset,
             if reps is not None:
                 max_local = jnp.sum(mask) // reps
                 include = max_local < jnp.arange(is_neighbor.shape[0])
-                is_neighbor = jnp.where(include[:, jnp.newaxis], is_neighbor, False)
+                is_neighbor = jnp.where(
+                    include[:, jnp.newaxis], is_neighbor, False)
 
             # Sets the number of neighbors to 0 for masked particles
             neighbors = jnp.sum(is_neighbor, axis=1)
@@ -153,7 +158,10 @@ def allocate_neighborlist(dataset,
                 is_triplet = jnp.logical_and(ji, jk)
                 is_triplet = jnp.logical_and(
                     is_triplet,
-                    ~jnp.eye(is_triplet.shape[0], dtype=jnp.bool_)[jnp.newaxis, ...]
+                    ~jnp.eye(
+                        is_triplet.shape[0],
+                        dtype=jnp.bool_
+                    )[jnp.newaxis, ...]
                 )
 
                 extra_out += [jnp.sum(is_triplet)]
@@ -179,7 +187,8 @@ def allocate_neighborlist(dataset,
             batch_size=batch_size
         )
 
-    n_neighbors, n_edges, avg_neighbors, *extra = find_max_neighbors_and_edges(dataset)
+    n_neighbors, n_edges, avg_neighbors, *extra = find_max_neighbors_and_edges(
+        dataset)
 
     print(
         f"The dataset has max. {jnp.max(n_neighbors)} neighbors per particle "
@@ -192,6 +201,8 @@ def allocate_neighborlist(dataset,
     elif format == partition.Sparse:
         # The maximum number of edges determine the capacity of the neighbor list.
         sample_idx = jnp.argmax(n_edges)
+    else:
+        raise ValueError(f"Unsupported neighbor list format: {format}")
 
     extra_out = []
     if count_triplets:

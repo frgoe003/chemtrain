@@ -21,7 +21,6 @@ from .trainers import (
     ForceMatching,
     Difftre,
     DifftreParallel,
-    DifftreActive,
     RelativeEntropy,
     SGMCForceMatching,
     EnsembleOfModels,

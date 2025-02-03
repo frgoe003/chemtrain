@@ -51,13 +51,13 @@ class PropertyPrediction(tt.DataParallelTrainer):
     def __init__(self, error_fn, prediction_model, init_params, optimizer,
                  graph_dataset, targets, batch_per_device=1, batch_cache=10,
                  train_ratio=0.7, val_ratio=0.1, test_error_fn=None,
-                 shuffle=False, convergence_criterion='window_median',
-                 checkpoint_folder='Checkpoints'):
+                 shuffle=False, convergence_criterion="window_median",
+                 checkpoint_folder="Checkpoints"):
         # TODO documentation
 
         # TODO build graph on-the-fly as memory moving might be bottleneck here
         model = property_prediction.init_model(prediction_model)
-        checkpoint_path = 'output/property_prediction/' + str(checkpoint_folder)
+        checkpoint_path = "output/property_prediction/" + str(checkpoint_folder)
         loss_fn = property_prediction.init_loss_fn(error_fn)
 
         super().__init__(
@@ -88,10 +88,10 @@ class PropertyPrediction(tt.DataParallelTrainer):
 
     def evaluate_testset_error(self, best_params=True):
         assert "testing" in self._batch_states.keys(), (
-            'No test set available. Check train and val ratios.'
+            "No test set available. Check train and val ratios."
         )
         assert self._test_fn is not None, (
-            '"test_error_fn" is necessary during initialization.'
+            "`test_error_fn` is necessary during initialization."
         )
 
         params = (self.best_inference_params_replicated
@@ -99,7 +99,7 @@ class PropertyPrediction(tt.DataParallelTrainer):
 
         error = self.evaluate("testing", self._test_fn, params=params)
 
-        print(f'Error on test set: {error}')
+        print(f"Error on test set: {error}")
         return error
 
 
@@ -155,9 +155,9 @@ class ForceMatching(tt.DataParallelTrainer):
                  full_checkpoint: bool = False,
                  disable_shmap: bool = False,
                  penalty_fn: Callable = None,
-                 convergence_criterion: str = 'window_median',
-                 log_file: str = 'force_matching.log',
-                 checkpoint_path: PathLike = 'checkpoints'):
+                 convergence_criterion: str = "window_median",
+                 log_file: str = "force_matching.log",
+                 checkpoint_path: PathLike = "checkpoints"):
         # Add additional trainable targets
         if gammas is None:
             gammas = {}
@@ -210,7 +210,7 @@ class ForceMatching(tt.DataParallelTrainer):
         )
 
         for key, mae_value in maes.items():
-            print(f'{key}: MAE = {mae_value:.4f}')
+            print(f"{key}: MAE = {mae_value:.4f}")
 
 
 class DifftreParallel(tt.MLETrainerTemplate):
@@ -244,8 +244,8 @@ class DifftreParallel(tt.MLETrainerTemplate):
                  vmap_batch: int = 10,
                  set_key: str = None,
                  resample_simstates: bool = False,
-                 convergence_criterion: str = 'window_median',
-                 checkpoint_path: os.PathLike = 'Checkpoints',
+                 convergence_criterion: str = "window_median",
+                 checkpoint_path: os.PathLike = "Checkpoints",
                  log_dir: os.PathLike = None):
         init_state = util.TrainerState(params=init_params,
                                        opt_state=optimizer.init(init_params))
@@ -365,7 +365,7 @@ class DifftreParallel(tt.MLETrainerTemplate):
 
         print(f"[DifftreParallel] Effective sample sizes (limit: {min_n_eff})")
         for b, eff in zip(batch, n_eff):
-            info = '-> recompute' if eff < min_n_eff else ''
+            info = "-> recompute" if eff < min_n_eff else ""
             print(f"\t[Statepoint {b}] Effective sample size: {eff:.2f} {info}")
 
 
@@ -413,9 +413,9 @@ class DifftreParallel(tt.MLETrainerTemplate):
             print(f"\t[Statepoint {b}]")
             for key, value in state_point_predictions.items():
                 if jnp.shape(value[idx]) == ():
-                    target = ''
+                    target = ""
                     if key in targets:
-                        target = f'(target: {targets[key]["target"][idx]})'
+                        target = f"(target: {targets[key]['target'][idx]})"
 
                     print(f"\t\t{key} = {value[idx]} {target}")
 
@@ -437,10 +437,10 @@ class DifftreParallel(tt.MLETrainerTemplate):
         )
 
         print(
-            f'\n[DiffTRe] Epoch {self._epoch}'
-            f'\n\tEpoch loss = {epoch_loss:.5f}'
-            f'\n\tGradient norm: {self.gradient_norm_history[-1]}'
-            f'\n\tElapsed time = {duration:.3f} min')
+            f"\n[DiffTRe] Epoch {self._epoch}"
+            f"\n\tEpoch loss = {epoch_loss:.5f}"
+            f"\n\tGradient norm: {self.gradient_norm_history[-1]}"
+            f"\n\tElapsed time = {duration:.3f} min")
 
         self._converged = self.early_stop.early_stopping(
             epoch_loss, thresh, self.params)
@@ -526,8 +526,8 @@ class Difftre(tt.PropagationBase):
                  sim_batch_size: int = 1,
                  energy_fn_template: EnergyFnTemplate = None,
                  full_checkpoint: bool = False,
-                 convergence_criterion: str = 'window_median',
-                 checkpoint_path: os.PathLike = 'Checkpoints',
+                 convergence_criterion: str = "window_median",
+                 checkpoint_path: os.PathLike = "Checkpoints",
                  log_dir: os.PathLike = None):
         init_state = util.TrainerState(params=init_params,
                                        opt_state=optimizer.init(init_params))
@@ -651,25 +651,25 @@ class Difftre(tt.PropagationBase):
         # For backwards compatibility and ease of use for a single statepoint
         if observables is None:
             observables = {
-                key: target['traj_fn'] for key, target in targets.items()
+                key: target["traj_fn"] for key, target in targets.items()
             }
         if target_loss_fns is None:
             target_loss_fns = {
-                key: target['loss_fn'] for key, target in targets.items()
-                if 'loss_fn' in target
+                key: target["loss_fn"] for key, target in targets.items()
+                if "loss_fn" in target
             }
 
         # Enables a greater flexibility by sorting out data from frunctions
         targets = {
-            key: {k: v for k, v in target.items() if k in ['gamma', 'target']}
-            for key, target in targets.items() if target.get('target') is not None
+            key: {k: v for k, v in target.items() if k in ["gamma", "target"]}
+            for key, target in targets.items() if target.get("target") is not None
         }
 
         # build loss function for current state point
         if loss_fn is None:
             loss_fn = difftre.init_default_loss_fn(observables, target_loss_fns)
         else:
-            print('Using custom loss function. Ignoring "target" dict.')
+            print("Using custom loss function. Ignoring 'target' dict.")
 
         difftre_grad_and_propagation = difftre.init_difftre_gradient_and_propagation(
             reweight_fns, loss_fn, quantities, energy_fn_template
@@ -750,16 +750,16 @@ class Difftre(tt.PropagationBase):
             for quantity, value in last_predictions.items():
                 if value.ndim == 0:
                     if quantity in self.targets[sim_key]:
-                        target = f'({self.targets[sim_key][quantity]["target"]})'
+                        target = f"({self.targets[sim_key][quantity]['target']})"
                     else:
-                        target = ''
-                    print(f'\tPredicted {quantity}: {value} {target}')
+                        target = ""
+                    print(f"\tPredicted {quantity}: {value} {target}")
 
             if jnp.isnan(loss_val):
-                warnings.warn(f'Loss of state point {sim_key} in epoch '
-                              f'{self._epoch} is NaN. This was likely caused by'
-                              f' divergence of the optimization or a bad model '
-                              f'setup causing a NaN trajectory.')
+                warnings.warn(f"Loss of state point {sim_key} in epoch "
+                              f"{self._epoch} is NaN. This was likely caused by"
+                              f" divergence of the optimization or a bad model "
+                              f"setup causing a NaN trajectory.")
                 self._diverged = True  # ends training
                 break
 
@@ -805,10 +805,10 @@ class Difftre(tt.PropagationBase):
         self.epoch_losses.append(epoch_loss)
 
         print(
-            f'\n[DiffTRe] Epoch {self._epoch}'
-            f'\n\tEpoch loss = {epoch_loss:.5f}'
-            f'\n\tGradient norm: {self.gradient_norm_history[-1]}'
-            f'\n\tElapsed time = {duration:.3f} min')
+            f"\n[DiffTRe] Epoch {self._epoch}"
+            f"\n\tEpoch loss = {epoch_loss:.5f}"
+            f"\n\tGradient norm: {self.gradient_norm_history[-1]}"
+            f"\n\tElapsed time = {duration:.3f} min")
 
         self._converged = self.early_stop.early_stopping(
             epoch_loss, thresh, self.params)
@@ -822,55 +822,6 @@ class Difftre(tt.PropagationBase):
         """Transforms the trainer states to JAX arrays."""
         super().move_to_device()
         self.early_stop.move_to_device()
-
-
-class DifftreActive(tt.TrainerInterface):
-    """Active learning of state-transferable potentials from experimental data
-    via DiffTRe.
-
-    The input trainer can be pre-trained or freshly initialized. Pre-training
-    usually comes with the advantage that the initial training from random
-    parameters is usually the most unstable one. Hence, special care can be
-    taken such as training on NVT initially to fix the pressure and swapping
-    to NPT afterwards. This active learning trainer then takes care of learning
-    statepoint transferability.
-    """
-    def __init__(self, trainer, checkpoint_folder='Checkpoints',
-                 energy_fn_template=None):
-        checkpoint_path = 'output/difftre_active/' + str(checkpoint_folder)
-        super().__init__(checkpoint_path, energy_fn_template)
-        self.trainer = trainer
-        # other inits
-
-    def add_statepoint(self, *args, **kwargs):
-        """Add another statepoint to the target state points.
-
-        Predominantly used to add statepoints with more / different targets
-        not covered in  the on-the-fly tepoint addition, e.g. for an extensive
-        initial statepoint. Please refer to :obj:'Difftre.add_statepoint
-        <chemtrain.trainers.Difftre.add_statepoint>' for the full documentation.
-        """
-        self.trainer.add_statepoint(*args, **kwargs)
-
-    def train(self, max_new_statepoints=100):
-        for added_statepoints in range(max_new_statepoints):
-            accuracy_met = False
-            if accuracy_met:
-                print('Visited state space covered with accuracy target met.')
-                break
-
-            # checkpoint: call checkpoint of trainer
-        else:
-            warnings.warn('Maximum number of added statepoints added without '
-                          'reaching target accuracy over visited state space.')
-
-    @property
-    def params(self):
-        return self.trainer.params
-
-    @params.setter
-    def params(self, loaded_params):
-        self.trainer.params = loaded_params
 
 
 class RelativeEntropy(tt.PropagationBase):
@@ -919,8 +870,8 @@ class RelativeEntropy(tt.PropagationBase):
                  reweight_ratio: float = 0.9,
                  sim_batch_size: int = 1,
                  energy_fn_template: EnergyFnTemplate = None,
-                 convergence_criterion: str = 'window_median',
-                 checkpoint_path: os.PathLike = 'Checkpoints',
+                 convergence_criterion: str = "window_median",
+                 checkpoint_path: os.PathLike = "Checkpoints",
                  full_checkpoint: bool = False):
         init_trainer_state = util.TrainerState(
             params=init_params, opt_state=optimizer.init(init_params))
@@ -1014,8 +965,8 @@ class RelativeEntropy(tt.PropagationBase):
                 :func:`chemtrain.learn.difftre.init_step_size_adaption`.
         """
         if reference_batch_size is None:
-            print('No reference batch size provided. Using number of generated '
-                  'CG snapshots by default.')
+            print("No reference batch size provided. Using number of generated "
+                  "CG snapshots by default.")
             states_per_traj = jnp.size(timings.t_production_start)
             if reference_state.sim_state.position.ndim > 2:
                 n_trajectories = reference_state.sim_state.position.shape[0]
@@ -1043,7 +994,7 @@ class RelativeEntropy(tt.PropagationBase):
 
         propagation_and_grad = difftre.init_rel_entropy_gradient_and_propagation(
             reference_dataloader, reweight_fns, energy_fn_template,
-            state_kwargs['kT'], vmap_batch
+            state_kwargs["kT"], vmap_batch
         )
 
         self.grad_fns[key] = propagation_and_grad
@@ -1106,10 +1057,10 @@ class RelativeEntropy(tt.PropagationBase):
         duration = self.update_times[self._epoch]
 
         print(
-            f'\n[RE] Epoch {self._epoch}'
-            f'\n\tMean Delta RE loss = {mean_delta_re:.5f}'
-            f'\n\tGradient norm: {curr_grad_norm}'
-            f'\n\tElapsed time = {duration:.3f} min')
+            f"\n[RE] Epoch {self._epoch}"
+            f"\n\tMean Delta RE loss = {mean_delta_re:.5f}"
+            f"\n\tGradient norm: {curr_grad_norm}"
+            f"\n\tElapsed time = {duration:.3f} min")
 
         self._print_measured_statepoint()
 
@@ -1128,7 +1079,7 @@ class SGMCForceMatching(tt.ProbabilisticFMTrainerTemplate):
                  energy_fn_template=None):
         # TODO: Where does alias.py get checkpoint_path info?
         super().__init__(None, energy_fn_template)
-        self._params = [init_sample['params'] for init_sample in init_samples]
+        self._params = [init_sample["params"] for init_sample in init_samples]
         self.sgmcmc_run_fn = sgmc_solver
         self.init_samples = init_samples
 
@@ -1146,18 +1097,18 @@ class SGMCForceMatching(tt.ProbabilisticFMTrainerTemplate):
     def params(self):
         """Get the sampled parameters from all chains."""
         if len(self.results) == 1:  # single chain
-            return self.results[0]['samples']['variables']['params']
+            return self.results[0]["samples"]["variables"]["params"]
         else:
             params = []
             for chain in self.results:
-                params.append(chain['samples']['variables']['params'])
+                params.append(chain["samples"]["variables"]["params"])
             stacked_params = util.tree_stack(params)
             return util.tree_combine(stacked_params)
 
     @params.setter
     def params(self, loaded_params):
-        raise NotImplementedError('Setting params seems not meaningful in'
-                                  ' the case of SG-MCMC samplers.')
+        raise NotImplementedError("Setting params seems not meaningful in"
+                                  " the case of SG-MCMC samplers.")
 
     @property
     def list_of_params(self):
@@ -1166,8 +1117,8 @@ class SGMCForceMatching(tt.ProbabilisticFMTrainerTemplate):
 
     def save_trainer(self, save_path):
         """Save the trainer to a file."""
-        raise NotImplementedError('Saving the trainer currently does not work'
-                                  ' for SGMCMC.')
+        raise NotImplementedError("Saving the trainer currently does not work"
+                                  " for SGMCMC.")
 
 
 class EnsembleOfModels(tt.ProbabilisticFMTrainerTemplate):
@@ -1193,9 +1144,9 @@ class EnsembleOfModels(tt.ProbabilisticFMTrainerTemplate):
 
     def train(self, *args, **kwargs):
         for i, trainer in enumerate(self.trainers):
-            print(f'---------Starting trainer {i}-----------')
+            print(f"---------Starting trainer {i}-----------")
             trainer.train(*args, **kwargs)
-        print('Finished training all models.')
+        print("Finished training all models.")
 
     @property
     def params(self):
@@ -1210,7 +1161,7 @@ class EnsembleOfModels(tt.ProbabilisticFMTrainerTemplate):
     def list_of_params(self):
         params = []
         for trainer in self.trainers:
-            if hasattr(trainer, 'best_params'):
+            if hasattr(trainer, "best_params"):
                 params.append(trainer.best_params)
             else:
                 params.append(trainer.params)
@@ -1262,7 +1213,7 @@ class InterleaveTrainers(tt.TrainerInterface):
 
     def __init__(self,
                  sequential = True,
-                 checkpoint_base_path = 'checkpoints',
+                 checkpoint_base_path = "checkpoints",
                  reference_energy_fn_template=None,
                  full_checkpoint=False):
         super().__init__(checkpoint_base_path, reference_energy_fn_template,
@@ -1290,26 +1241,26 @@ class InterleaveTrainers(tt.TrainerInterface):
 
         """
         self._trainers.append(
-            {'trainer': trainer, 'num_updates': num_updates, 'name': name,
-             'kwargs': trainer_kwargs, 'weight': weight}
+            {"trainer": trainer, "num_updates": num_updates, "name": name,
+             "kwargs": trainer_kwargs, "weight": weight}
         )
 
     @property
     def params(self):
-        return self._trainers[-1]['trainer'].params
+        return self._trainers[-1]["trainer"].params
 
     @params.setter
     def params(self, params):
         for trainer in self._trainers:
-            trainer['trainer'].params = params
+            trainer["trainer"].params = params
 
     @property
     def _all_params(self):
-        return [t['trainer'].params for t in self._trainers]
+        return [t["trainer"].params for t in self._trainers]
 
     @property
     def _all_weights(self):
-        return [t['weight'] for t in self._trainers]
+        return [t["weight"] for t in self._trainers]
 
     def _init_interpolated_update(self):
         weights = jnp.asarray(self._all_weights)
@@ -1340,14 +1291,14 @@ class InterleaveTrainers(tt.TrainerInterface):
         for e in range(start_epoch, end_epoch):
             start = time.time()
             for t, trainer in enumerate(self._trainers):
-                print(f'---------Starting trainer {trainer["name"]} for {trainer["num_updates"]} updates -----------')
-                trainer['trainer'].train(trainer['num_updates'], **trainer['kwargs'])
+                print(f"---------Starting trainer {trainer['name']} for {trainer['num_updates']} updates -----------")
+                trainer["trainer"].train(trainer["num_updates"], **trainer["kwargs"])
 
                 next = (t + 1) % len(self._trainers)
 
                 if self.sequential:
                     # Pass updated parameters to the next trainer
-                    self._trainers[next]['trainer'].params = trainer['trainer'].params
+                    self._trainers[next]["trainer"].params = trainer["trainer"].params
             if not self.sequential:
                 # Update the parameters of all trainers with a weighted sum of
                 # the individual parameters
@@ -1355,22 +1306,22 @@ class InterleaveTrainers(tt.TrainerInterface):
 
             duration = (time.time() - start) / 60.
             self._epoch += 1
-            print(f'Finished epoch {e} for all trainers in {duration : .2f} minutes.')
+            print(f"Finished epoch {e} for all trainers in {duration : .2f} minutes.")
             self._dump_checkpoint_occasionally(frequency=checkpoint_frequency)
 
     def move_to_device(self):
         for trainer in self._trainers:
-            trainer['trainer'].move_to_device()
+            trainer["trainer"].move_to_device()
 
-    def save_trainer(self, save_path, format='.pkl'):
+    def save_trainer(self, save_path, format=".pkl"):
         data = {}
         for t, trainer in enumerate(self._trainers):
-            number = str(t + 1).rjust(3, '0')
-            key = 'trainer_{0}_{1}'.format(trainer['name'], number)
-            data[key] = trainer['trainer'].save_trainer(None, format='none')
+            number = str(t + 1).rjust(3, "0")
+            key = "trainer_{0}_{1}".format(trainer["name"], number)
+            data[key] = trainer["trainer"].save_trainer(None, format="none")
 
-        if format == '.pkl':
-            with open(save_path, 'wb') as pickle_file:
+        if format == ".pkl":
+            with open(save_path, "wb") as pickle_file:
                 pickle.dump(data, pickle_file)
-        elif format == 'none':
+        elif format == "none":
             return data
