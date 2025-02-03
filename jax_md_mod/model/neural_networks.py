@@ -16,7 +16,7 @@
 prediction.
  """
 from functools import partial
-from typing import Callable, Dict, Any, Tuple
+from typing import Callable, Dict, Any, Tuple, Union
 
 import haiku as hk
 from jax import numpy as jnp, nn as jax_nn
@@ -239,6 +239,8 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
             triplets.
         max_edges: Expected maximum of valid edges.
         max_triplets: Expected maximum of valid triplets.
+        n_global: Number of global graph properties, e.g., potential energy.
+        n_local: Number of node properties, e.g., partial charges.
         dimenetpp_kwargs: Kwargs to change the default structure of DimeNet++.
             For definition of the kwargs, see DimeNetPP.
 
@@ -272,7 +274,7 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
     def model(positions: jnp.ndarray,
               neighbor: partition.NeighborList,
               species: jnp.ndarray = None,
-              **dynamic_kwargs) -> Tuple[jnp.ndarray]:
+              **dynamic_kwargs) -> Union[jnp.ndarray, Tuple[jnp.ndarray]]:
         """Evalues the DimeNet++ model and predicts the potential energy.
 
         Args:
@@ -284,7 +286,11 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
             **dynamic_kwargs: Dynamic kwargs, such as 'box' or 'kT'.
 
         Returns:
-            Potential energy value of state
+            If ``n_global = 1`` and ``n_local = 0`` (default), returns the
+            potential energy.
+            If ``n_global > 0`` xor ``n_local > 0``, returns a vector of
+            global, respectively local, features.
+            Otherwise, returns the tuple ``(global_feats, local_feats)``.
         """
         # dynamic box necessary for pressure computation
         dynamic_displacement = partial(displacement, **dynamic_kwargs)

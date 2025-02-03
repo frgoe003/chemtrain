@@ -52,7 +52,7 @@ def init_fractional_coordinates(box: Box) -> Tuple[Box, Callable]:
 
     return box, scale_fn
 
-
+# TODO: This not necessary given space.free() is in jax_md
 def nonperiodic_general(box: Box = None,
                         fractional_coordinates: bool = True,
                         wrapped: bool = True) -> space.Space:

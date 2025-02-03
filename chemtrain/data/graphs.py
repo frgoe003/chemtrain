@@ -74,9 +74,15 @@ def allocate_neighborlist(dataset,
             not provided, uses the box argument.
         mask_key: The key in the dataset dictionary that contains the mask. If
             not provided, all particles are considered valid.
+        reps_key: The key in the dataset dictionary that contains the number of
+            replicas a supercell. If set, the neighborlist will only contain
+            edge senders from the first appearing replica.
         batch_size: Evaluate multiple samples in parallel.
         init_kwargs: Keyword arguments passed to the neighbor list allocation,
             e.g., to specify a capacity multiplier.
+        count_triplets: An optional boolean. If set to `True`, the function will
+            return the maximum number of triplets, similar to the maximum
+            number of edges.
         **static_kwargs: kwargs that get threaded through the calculation of
             example positions.
 
@@ -125,7 +131,6 @@ def allocate_neighborlist(dataset,
 
             # Remove all replicated receivers
             if reps is not None:
-                print(f"Remove replicated senders")
                 max_local = jnp.sum(mask) // reps
                 include = max_local < jnp.arange(is_neighbor.shape[0])
                 is_neighbor = jnp.where(include[:, jnp.newaxis], is_neighbor, False)

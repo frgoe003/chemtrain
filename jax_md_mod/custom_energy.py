@@ -16,10 +16,8 @@
 from functools import partial
 from typing import Callable, Any
 
-import jax
 from jax import vmap
 import jax.numpy as jnp
-import jax.scipy as jscp
 from jax_md import space, partition, util, energy, smap
 
 from jax_md_mod import custom_interpolate, custom_quantity
@@ -37,46 +35,6 @@ DisplacementOrMetricFn = space.DisplacementOrMetricFn
 
 NeighborFn = partition.NeighborFn
 NeighborList = partition.NeighborList
-
-
-def coulomb_direct(dr: Array, charge_sq: Array, alpha: float) -> Array:
-    """Direct coulomb interaction between two point charges separated by dr."""
-    return charge_sq * jscp.special.erfc(alpha * dr) / dr
-
-
-def coulomb_direct_pair_masked(
-        displacement_fn: DisplacementOrMetricFn,
-        alpha: float=0.35,
-        per_particle: bool=False
-    ) -> Callable[[Array], Array]:
-    """Direct coulomb interaction with differentiable charges."""
-
-    def energy_fn(position, charges=None, mask=None, **kwargs):
-        del kwargs
-
-        metric = space.canonicalize_displacement_or_metric(displacement_fn)
-        dr = jax.vmap(jax.vmap(metric, in_axes=(0, None)), in_axes=(None, 0))(position, position)
-        charge_sq = charges[:, jnp.newaxis] * charges[jnp.newaxis, :]
-
-        # Mask invalid particles and self
-        mask = mask[:, jnp.newaxis] * mask[jnp.newaxis, :]
-        mask *= ~jnp.eye(mask.shape[0], dtype=bool)
-
-        # Mask invalid distances and avoid numerical errors if dr is close to
-        # zero
-        dr = jnp.where(mask, dr, 1.0)
-        dr = jnp.where(dr < 1e-5, 1e-5, dr)
-
-        charge_sq = jnp.where(mask, charge_sq, 0.0)
-        all_energies = util.high_precision_sum(
-            coulomb_direct(dr, charge_sq, alpha), axis=0
-        )
-
-        if per_particle:
-            return all_energies
-        else:
-            return util.high_precision_sum(all_energies)
-    return energy_fn
 
 
 def stillinger_weber_energy(dr,

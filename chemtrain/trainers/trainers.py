@@ -113,7 +113,6 @@ class ForceMatching(tt.DataParallelTrainer):
         nbrs_init: Initial neighbor list. The neighbor list must be large enough
             to not overflow for any sample of the dataset.
         optimizer: Optimizer from optax.
-        position_data: Position data of the system.
         gammas: Coefficients for the individual targets in the weighted loss.
         weights_keys: Dictionary to entries of the dataset that contain a
             per-sample weight for the total loss.
