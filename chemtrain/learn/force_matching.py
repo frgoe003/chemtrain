@@ -19,7 +19,7 @@ pressure.
 
 """
 import collections
-from typing import Callable, TypedDict, Tuple, List, Dict, DefaultDict
+from typing import Callable, TypedDict, Tuple, List, Dict, DefaultDict, Union
 from typing_extensions import Required
 
 from jax import vmap, value_and_grad, numpy as jnp
@@ -200,7 +200,7 @@ def init_model(nbrs_init: NeighborList,
     return fm_model
 
 
-def init_loss_fn(error_fns: dict[str, ErrorFn] = None,
+def init_loss_fn(error_fns: Union[ErrorFn, dict[str, ErrorFn]] = None,
                  individual: bool = True,
                  gammas: dict[str, float] = None,
                  weights_keys: Dict[str, str] = None):
@@ -227,8 +227,13 @@ def init_loss_fn(error_fns: dict[str, ErrorFn] = None,
     if weights_keys is None:
         weights_keys = {}
 
-    _error_fns = collections.defaultdict(lambda: max_likelihood.mse_loss)
-    if error_fns is not None:
+    # Preserve old behaviour if error_fns is a single function.
+    if isinstance(error_fns, collections.abc.Callable):
+        _error_fns = collections.defaultdict(lambda: error_fns)
+    else:
+        _error_fns = collections.defaultdict(lambda: max_likelihood.mse_loss)
+
+    if isinstance(error_fns, dict):
         _error_fns.update(error_fns)
 
     def loss_fn(predictions, targets):
