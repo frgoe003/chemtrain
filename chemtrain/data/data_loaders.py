@@ -154,7 +154,7 @@ def init_batch_functions(data_loader: core.HostDataLoader,
         internal_state = data_state.state
         if 'rng' in internal_state.keys():
             key, split = random.split(internal_state['rng'])
-            mini_batch['rng'] = random.split(split, mb_information.observation_count)
+            mini_batch['rng'] = random.split(split, mb_information.batch_size)
             internal_state['rng'] = key
 
         current_line = current_line + 1
