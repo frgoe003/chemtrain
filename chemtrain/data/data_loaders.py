@@ -11,9 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import functools
 
-import jax.numpy as jnp
-import jax.random
+import jax
+from jax import numpy as jnp, random
+
 from jax_sgmc.data import numpy_loader, core
 
 from chemtrain.data.preprocessing import train_val_test_split
@@ -64,7 +66,6 @@ def init_dataloaders(dataset, train_ratio=0.7, val_ratio=0.1, shuffle=False):
 def init_batch_functions(data_loader: core.HostDataLoader,
                          mb_size: int,
                          cache_size: int = 1,
-                         rng_seed: int = None,
                          ) -> core.RandomBatch:
     """Initializes reference data access outside jit-compiled functions.
 
@@ -87,7 +88,7 @@ def init_batch_functions(data_loader: core.HostDataLoader,
         cache_size, mb_size=mb_size)
     mask_shape = (cache_size, mb_size)
 
-    def init_fn(random: bool = True, **kwargs) -> core.CacheState:
+    def init_fn(random: bool = True, rng_seed=None, **kwargs) -> core.CacheState:
 
         if random:
             chain_id = data_loader.register_random_pipeline(
@@ -103,13 +104,17 @@ def init_batch_functions(data_loader: core.HostDataLoader,
         if initial_mask is None:
             initial_mask = jnp.ones((cache_size, mb_size), dtype=jnp.bool_)
 
+        initial_internal_state = {}
+        if rng_seed is not None:
+            initial_internal_state['rng'] = jax.random.PRNGKey(rng_seed)
+
         inital_cache_state = core.CacheState(
             cached_batches=initial_state,
             cached_batches_count=jnp.array(cache_size),
             current_line=jnp.array(0),
             chain_id=jnp.array(chain_id),
             valid=initial_mask,
-            state=jax.random.PRNGKey(rng_seed) if rng_seed is not None else None,
+            state=initial_internal_state,
         )
 
         return inital_cache_state
@@ -122,13 +127,6 @@ def init_batch_functions(data_loader: core.HostDataLoader,
             # Assume all samples to be valid.
             masks = jnp.ones(mask_shape, dtype=jnp.bool_)
 
-        internal_state = state.state
-        if internal_state is not None:
-            internal_state, *splits = jax.random.split(
-                internal_state, cache_size * mb_size + 1)
-            splits = jnp.asarray(splits).reshape((cache_size, mb_size, -1))
-            new_data['rng'] = splits
-
         new_state = core.CacheState(
             cached_batches_count=state.cached_batches_count,
             cached_batches=new_data,
@@ -136,10 +134,45 @@ def init_batch_functions(data_loader: core.HostDataLoader,
             chain_id=state.chain_id,
             valid=masks,
             callback_uuid=state.callback_uuid,
-            state=internal_state
+            state=state.state
         )
 
         return new_state
+        
+    @jax.jit
+    def _split_batch(data_state: core.CacheState):
+        current_line = jnp.mod(
+            data_state.current_line, data_state.cached_batches_count)
+
+        # Read the current line from the cache and add the mask containing
+        # information about the validity of the individual samples
+        mini_batch = util.tree_get_single(data_state.cached_batches, current_line)
+        mask = data_state.valid[current_line, :]
+
+        # Add a random key if required
+        internal_state = data_state.state
+        if 'rng' in internal_state.keys():
+            key, split = random.split(internal_state['rng'])
+            mini_batch['rng'] = random.split(split, mb_information.observation_count)
+            internal_state['rng'] = key
+
+        current_line = current_line + 1
+
+        new_state = core.CacheState(
+            cached_batches=data_state.cached_batches,
+            cached_batches_count=data_state.cached_batches_count,
+            current_line=current_line,
+            chain_id=data_state.chain_id,
+            valid=data_state.valid,
+            state=internal_state
+        )
+        
+        info = core.MiniBatchInformation(
+            observation_count = mb_information.observation_count,
+            batch_size = mb_information.batch_size,
+            mask = mask)
+            
+        return new_state, mini_batch, info
 
     def batch_fn(data_state: core.CacheState,
                  information: bool = False,
@@ -160,29 +193,7 @@ def init_batch_functions(data_loader: core.HostDataLoader,
         if data_state.current_line == data_state.cached_batches_count:
             data_state = _new_cache_fn(data_state)
 
-        current_line = jnp.mod(
-            data_state.current_line, data_state.cached_batches_count)
-
-        # Read the current line from the cache and add the mask containing
-        # information about the validity of the individual samples
-        mini_batch = util.tree_get_single(data_state.cached_batches, current_line)
-        mask = data_state.valid[current_line, :]
-
-        current_line = current_line + 1
-
-        new_state = core.CacheState(
-            cached_batches=data_state.cached_batches,
-            cached_batches_count=data_state.cached_batches_count,
-            current_line=current_line,
-            chain_id=data_state.chain_id,
-            valid=data_state.valid,
-            state=data_state.state
-        )
-
-        info = core.MiniBatchInformation(
-            observation_count = mb_information.observation_count,
-            batch_size = mb_information.batch_size,
-            mask = mask)
+        new_state, mini_batch, info = _split_batch(data_state)
 
         if information:
             return new_state, (mini_batch, info)

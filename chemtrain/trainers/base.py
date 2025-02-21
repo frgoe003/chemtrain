@@ -964,12 +964,11 @@ class DataParallelTrainer(MLETrainerTemplate):
         # Initialize the access functions
         batch_fns = data_loaders.init_batch_functions(
             data_loader, mb_size=batch_size, cache_size=self.batch_cache,
-            rng_seed=rng_seed,
         )
         init_train_state, get_train_batch, release = batch_fns
 
         train_batch_state = init_train_state(
-            shuffle=True, in_epochs=include_all, **kwargs
+            shuffle=True, in_epochs=include_all, rng_seed=rng_seed, **kwargs
         )
 
         self._get_batch_fns[stage] = get_train_batch
