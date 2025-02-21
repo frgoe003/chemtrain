@@ -70,13 +70,14 @@ def init_batch_functions(data_loader: core.HostDataLoader,
     """Initializes reference data access outside jit-compiled functions.
 
     Randomly draw batches from a given dataset on the host or the device.
+    If ``rng_seed=<seed>`` is passed to the ``init_fn``, a ``jax.random.PRNGKey``,
+    will be added to the batch.
 
     Args:
         data_loader: Reads data from storage.
         cache_size: Number of batches in the cache. A larger number is
             faster, but requires more memory.
         mb_size: Size of the data batch.
-        rng_seed: Seed to add PRNGKeys to the batches to simplify randomness.
 
     Returns:
       Returns a tuple of functions to initialize a new reference data state, get
