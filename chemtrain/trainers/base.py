@@ -120,15 +120,15 @@ class TrainerInterface(metaclass=abc.ABCMeta):
                              "initialization.")
         return self.reference_energy_fn_template(self.params)
 
-    def _dump_checkpoint_occasionally(self, *args, frequency=None, **kwargs):
+    def _dump_checkpoint_occasionally(self, *args, checkpoint_frequency=None, **kwargs):
         """Dumps a checkpoint during training, from which training can
         be resumed.
         """
         assert self.checkpoint_path is not None
-        if frequency is not None:
+        if checkpoint_frequency is not None:
             pathlib.Path(self.checkpoint_path).mkdir(parents=True,
                                                      exist_ok=True)
-            if self._epoch % frequency == 0:  # checkpoint model
+            if self._epoch % checkpoint_frequency == 0:  # checkpoint model
                 epoch = str(self._epoch).rjust(5, "0")
                 file_path = (
                     pathlib.Path(self.checkpoint_path) / f"epoch{epoch}.pkl")
@@ -474,7 +474,7 @@ class MLETrainerTemplate(TrainerInterface):
                         self._update(batch)
                         self._execute_tasks("post_batch", batch)
                     self._execute_tasks("post_epoch",
-                                        checkpoint_freq=checkpoint_freq,
+                                        checkpoint_frequency=checkpoint_freq,
                                         convergence_thresh=thresh)
                     self._epoch += 1
                 except RuntimeError as err:
