@@ -53,7 +53,8 @@ dynamic = ["version"]
     "mdtraj",
     "matplotlib",
     'tomli',
-    'tomli-w'
+    'tomli-w',
+    "scikit-learn",
 ]
 "test" = [
     "pylint",

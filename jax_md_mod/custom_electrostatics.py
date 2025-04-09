@@ -371,7 +371,7 @@ def charge_eq_energy_neighborlist(displacement: space.DisplacementFn,
 
     total_energy_fn = shielded_interaction_neighbor_list(
         displacement, r_onset, r_cutoff, method=method, grid=grid,
-        alpha=alpha
+        alpha=alpha, fractional_coordinates=fractional_coordinates, box=box
     )
 
     def energy_fn(position, neighbor, radii=None, chi=None, idmp=None, mask=None, total_charge=None, charge=None, **dynamic_kwargs):
@@ -420,39 +420,6 @@ def charge_eq_energy_neighborlist(displacement: space.DisplacementFn,
 
             # Solve the linear system with lagrange multipliers
             charges = jsp.linalg.solve(A, b, assume_a="sym")[:-1, 0]
-
-        elif solver == "CG":
-            @functools.partial(jax.jit, static_argnames="precond")
-            def linear_operator(charge, precond=False):
-                Jq = jax.grad(total_energy_fn, argnums=2)(
-                    position, neighbor, charge, radii,
-                    None, None, precond=precond, **dynamic_kwargs
-                )
-
-                Jq += charge * idmp
-
-                return Jq
-
-            @jax.jit
-            def pred_linear_operator(x):
-                res, _ = jsp.sparse.linalg.cg(
-                    functools.partial(linear_operator, precond=True),
-                    -jnp.asarray(mask * x, dtype=jnp.dtype(x)), tol=1e-8
-                )
-                return res * mask
-
-            charges, _ = jsp.sparse.linalg.cg(
-                linear_operator, -jnp.asarray(mask * chi, dtype=jnp.dtype(chi)),
-                tol=1e-8, M=pred_linear_operator)
-            corr, _ = jsp.sparse.linalg.cg(
-                linear_operator, -jnp.asarray(mask * 1.0, dtype=jnp.dtype(chi)),
-                tol=1e-8, M=pred_linear_operator)
-
-            mult = jnp.sum(mask * charges) - jnp.array(total_charge)
-            mult /= jnp.sum(mask * corr)
-
-            charges = mask * (charges - mult * corr)
-
         else:
             raise ValueError(f"Unknown method {solver} to equilibrate charges.")
 
