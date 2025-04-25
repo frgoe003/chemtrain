@@ -1,4 +1,5 @@
 # Copyright 2023 Multiscale Modeling of Fluid Materials, TU Munich
+# Copyright 2022 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -60,7 +61,6 @@ def shielded_interaction(dr, charge, alpha, alpha_max=None):
     dr = jnp.where(mask, dr, 1e-7)
 
     if alpha_max is not None:
-        print(f"Apply shielding")
         erfdiff = jsp.special.erf(alpha * dr) - jsp.special.erf(alpha_max * dr)
         pot = mask * charge * erfdiff / dr
     else:
@@ -183,7 +183,10 @@ def core_interaction(charge, chi, idmp):
 
 
 def structure_factor(g, R, q=1, mask=None):
-    """Computes the complex structure factor."""
+    """Computes the complex structure factor.
+
+    Adapted from: https://github.com/jax-md/jax-md/blob/main/jax_md/_energy/electrostatics.py
+    """
     if mask is None:
         mask = jnp.ones(R.shape[0], dtype=bool)
 
@@ -205,6 +208,7 @@ def custom_coulomb_recip_ewald(charge: jnp.ndarray,
 
     Modified implementation of :func:`jax_md.energy.coulomb_recip_ewald`
     to specify wavevectors via grid dimensions.
+    Adapted from https://github.com/jax-md/jax-md/blob/main/jax_md/_energy/electrostatics.py.
 
     Args:
         charge: Charges of the particles.
@@ -275,6 +279,8 @@ def custom_coulomb_recip_pme(charge: jnp.ndarray,
                              alpha: float = 0.34
                              ) -> Callable[[jnp.ndarray, Optional[jnp.ndarray]], jnp.ndarray]:
     """Particle Mesh Ewald method for Coulomb interactions.
+
+    Adapted implementation from https://github.com/jax-md/jax-md/blob/main/jax_md/_energy/electrostatics.py.
 
     Args:
         charge: Charges of the particles.
@@ -420,38 +426,6 @@ def charge_eq_energy_neighborlist(displacement: space.DisplacementFn,
 
             # Solve the linear system with lagrange multipliers
             charges = jsp.linalg.solve(A, b, assume_a="sym")[:-1, 0]
-
-        elif solver == "CG":
-            @functools.partial(jax.jit, static_argnames="precond")
-            def linear_operator(charge, precond=False):
-                Jq = jax.grad(total_energy_fn, argnums=2)(
-                    position, neighbor, charge, radii,
-                    None, None, precond=precond, **dynamic_kwargs
-                )
-
-                Jq += charge * idmp
-
-                return Jq
-
-            @jax.jit
-            def pred_linear_operator(x):
-                res, _ = jsp.sparse.linalg.cg(
-                    functools.partial(linear_operator, precond=True),
-                    -jnp.asarray(mask * x, dtype=jnp.dtype(x)), tol=1e-8
-                )
-                return res * mask
-
-            charges, _ = jsp.sparse.linalg.cg(
-                linear_operator, -jnp.asarray(mask * chi, dtype=jnp.dtype(chi)),
-                tol=1e-8, M=pred_linear_operator)
-            corr, _ = jsp.sparse.linalg.cg(
-                linear_operator, -jnp.asarray(mask * 1.0, dtype=jnp.dtype(chi)),
-                tol=1e-8, M=pred_linear_operator)
-
-            mult = jnp.sum(mask * charges) - jnp.array(total_charge)
-            mult /= jnp.sum(mask * corr)
-
-            charges = mask * (charges - mult * corr)
 
         else:
             raise ValueError(f"Unknown method {solver} to equilibrate charges.")

@@ -11,57 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Callable, TypeVar, Union, Tuple
+from typing import Callable
 
 from jax_md import simulate
-from jax import random, numpy as jnp, jit, debug
-from jax_md import quantity, util, space, dataclasses
-
-
+from jax import random, numpy as jnp, jit
+from jax_md import quantity, util
+from jax_md.simulate import Array, ShiftFn, Simulator
 
 static_cast = util.static_cast
-
-
-# Types
-Array = util.Array
-f32 = util.f32
-f64 = util.f64
-
-ShiftFn = space.ShiftFn
-
-T = TypeVar('T')
-InitFn = Callable[..., T]
-ApplyFn = Callable[[T], T]
-Simulator = Tuple[InitFn, ApplyFn]
-
-Schedule = Union[Callable[..., float], float]
-
-
-@dataclasses.dataclass
-class NVTLangevinState:
-  """A struct containing state information for the Langevin thermostat.
-
-  Attributes:
-    position: The current position of the particles. An ndarray of floats with
-      shape `[n, spatial_dimension]`.
-    momentum: The momentum of particles. An ndarray of floats with shape
-      `[n, spatial_dimension]`.
-    force: The (non-stochastic) force on particles. An ndarray of floats with
-      shape `[n, spatial_dimension]`.
-    mass: The mass of particles. Will either be a float or an ndarray of floats
-      with shape `[n]`.
-    rng: The current state of the random number generator.
-    rng_old: Previous state of the random number generator to reverse the
-      stochastic update.
-  """
-  position: Array
-  momentum: Array
-  mass: Array
-  rng: Array
-
-  @property
-  def velocity(self):
-    return jnp.where(self.mass > 0, self.momentum / self.mass, 0.0)
 
 
 def nvt_langevin_gsd(energy_or_force_fn: Callable[..., Array],
@@ -69,9 +26,7 @@ def nvt_langevin_gsd(energy_or_force_fn: Callable[..., Array],
                      dt: float,
                      kT: float,
                      gamma: float=0.1,
-                     center_velocity: bool=True,
-                     zero_velocity: bool=False,
-                     **sim_kwargs) -> Simulator:
+                     zero_velocity: bool=False) -> Simulator:
   """Simulation in the NVT ensemble using the GSD/BAOB Langevin thermostat.
 
   Our implementation follows [#kieninger2022]
@@ -103,10 +58,10 @@ def nvt_langevin_gsd(energy_or_force_fn: Callable[..., Array],
   force_fn = quantity.canonicalize_force(energy_or_force_fn)
 
   @jit
-  def init_fn(key, R, mass=f32(1.0), mask=None, **kwargs):
+  def init_fn(key, R, mass=1.0, mask=None, **kwargs):
     _kT = kwargs.pop('kT', kT)
     key, split = random.split(key)
-    state = NVTLangevinState(R, None, mass, key)
+    state = simulate.NVTLangevinState(R, None, None, mass, key)
     state = simulate.canonicalize_mass(state)
     if mask is None:
         mask = jnp.ones_like(R[:, 0], dtype=bool)
@@ -116,13 +71,11 @@ def nvt_langevin_gsd(energy_or_force_fn: Callable[..., Array],
     momentum -= jnp.mean(mask[:, jnp.newaxis] * momentum) / jnp.mean(mask) * mask[:, jnp.newaxis]
     if zero_velocity:
         state = state.set(momentum=jnp.zeros_like(state.momentum))
-        print(f"Initialize no momentum.")
 
     return state.set(momentum=momentum)
 
   @jit
   def step_fn(state, mask=None, **kwargs):
-    print(f"Simulate with the custom SD integrator")
     _dt = kwargs.get('dt', dt)
     _kT = kwargs.get('kT', kT)
     _gamma = kwargs.get('gamma', gamma)
@@ -132,13 +85,9 @@ def nvt_langevin_gsd(energy_or_force_fn: Callable[..., Array],
 
     masked_mass = jnp.where(mask[:, jnp.newaxis], state.mass, 1.0)
 
-    print(f"Running custom simulator with arguments {dt} ({_dt}), {kT} ({_kT}), {gamma} ({_gamma})")
-
     # Friction coefficients
     c1 = jnp.exp(-_gamma * _dt)
     c2 = jnp.sqrt((1 - jnp.square(c1)) * masked_mass * _kT)
-
-    print(f"[Simulator] Call the force function with dynamic kwargs {list(kwargs.keys())} and mask {mask}")
 
     force = force_fn(state.position, mask=mask, **kwargs)
     state = state.set(momentum=state.momentum + _dt * force)
@@ -151,14 +100,9 @@ def nvt_langevin_gsd(energy_or_force_fn: Callable[..., Array],
     dp = (1 - c1) * state.momentum + c2 * random.normal(split, state.momentum.shape)
 
     # Perform the position update with half-updated momentum
-
     dq = jnp.where(
       mask[:, jnp.newaxis],
       state.momentum / masked_mass - 0.5 * dp / masked_mass, 0.0)
-
-    # debug.print("Momentum {}", state.momentum)
-    # Update the positio
-    # debug.print("Updated average displacement: {}", jnp.sum(jnp.linalg.norm(dq * _dt, axis=-1) * mask) / jnp.sum(mask))
 
     state = state.set(position=shift_fn(state.position, dq * _dt))
 
