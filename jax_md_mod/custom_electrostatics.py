@@ -377,7 +377,7 @@ def charge_eq_energy_neighborlist(displacement: space.DisplacementFn,
 
     total_energy_fn = shielded_interaction_neighbor_list(
         displacement, r_onset, r_cutoff, method=method, grid=grid,
-        alpha=alpha
+        alpha=alpha, fractional_coordinates=fractional_coordinates, box=box
     )
 
     def energy_fn(position, neighbor, radii=None, chi=None, idmp=None, mask=None, total_charge=None, charge=None, **dynamic_kwargs):
@@ -426,7 +426,6 @@ def charge_eq_energy_neighborlist(displacement: space.DisplacementFn,
 
             # Solve the linear system with lagrange multipliers
             charges = jsp.linalg.solve(A, b, assume_a="sym")[:-1, 0]
-
         else:
             raise ValueError(f"Unknown method {solver} to equilibrate charges.")
 
