@@ -1,6 +1,18 @@
-//
-// Created by Paul Fuchs on 24.09.24.
-//
+/*
+Copyright 2025 Multiscale Modeling of Fluid Materials, TU Munich
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==============================================================================*/
 
 #include "connector/compiler.h"
 #include "connector/graph_builder.h"
@@ -35,17 +47,22 @@ namespace jcn {
 
     class Runner {
     public:
-        Runner(ConnectorConfig config);
+        Runner(ConnectorConfig config, bool initialize);
         ~Runner() = default;
 
-        // Computes the forces and writes them directly to the force array
-        double compute_forces(
-            int inum, int gnum, double **x, double** f, int *type, int *ilist,
-            int *numneigh, int **firstneigh, bool list_changed);
+        ModelProperties load_model(ModelConfig config);
 
-        ModelProperties get_model_properties();
+        // Computes the forces and writes them directly to the force array
+        Results compute_forces(
+            int lnum, int gnum, double **x, double** f, int *type, int inum,
+            int *ilist, int *numneigh, int **firstneigh, bool list_changed,
+            bool allow_recompile);
+
+        static void initialize();
 
     private:
+        ModelProperties get_model_properties();
+
         std::unique_ptr<chemsim::Model> model;
 
         std::unique_ptr<xla::PjRtClient> client;
@@ -59,6 +76,16 @@ namespace jcn {
         xla::CompileOptions compile_options;
 
         ConnectorConfig config;
+
+        /*
+         * Saves the recompilation request until the exectuable is actually
+         * recompiled.
+         */
+        bool recompilation_required = false;
+
+        float flops_;
+
+        bool newton;
 
     };
 

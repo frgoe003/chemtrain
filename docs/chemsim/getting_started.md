@@ -1,57 +1,16 @@
 # Getting Started
 
-This document will walk through the steps to export a simple model from
-JAX to LAMMPS.
+## Example Setup
 
+Using an exported model in ``chemsim`` requires a correct
+[installation](#chemsim_installation) of ``LAMMPS`` with the ``JCN`` plugin.
+Additionally, exporting a model requires a working installation of ``chemtrain``.
 
-## Export Model
+The following LAMMPS script describes how to use an exported model in a
+simulation. A simple example on how to export a model can be found in the
+documentation of {class}`chemtrain.deploy.exporter.Exporter`.
 
-For this example, we define a simple binary Lennard Jones potential.
-
-```python
-from jax import numpy as jnp
-
-from chemtrain.deploy import exporter, utils, graphs
-
-from jax_md_mod import custom_energy, custom_space
-from jax_md import partition
-
-class LennardJonesExport(exporter.Exporter):
-
-    # We use the neighborlist from LAMMPS to define the graph
-    graph_type = graphs.SimpleSparseNeighborList
-
-    # The force function will be derived automatically from the energy function
-    def energy_fn(self, pos, species, graph):
-
-        # LAMMPS deals with periodic boundary conditions via ghost atoms
-        displacement_fn, _ = custom_space.nonperiodic_general(
-            0.0, fractional_coordinates=False)
-        
-        neighbors = partition.NeighborList(
-            jnp.stack((graph.senders, graph.receivers)),
-            pos, None, None, graph.senders.size, partition.Sparse,
-            None, None, None
-        )
-        
-        # We expect inputs to have the units A and kcal/mol. The species are
-        # zero-based indices.
-        apply_fn = custom_energy.customn_lennard_jones_neighbor_list(
-            displacement_fn, 0.0, species, sigma=[3.156, 3.5], epsilon=[0.6, 0.8])
-
-        return apply_fn(pos, neighbors)
-
-model = LennardJonesExport()
-    
-# Compile the model to StableHLO and save the serialized protobuffer
-model.export()
-model.save("model.ptb")
-```
-
-## Run Simulation
-
-The following LAMMPS script will run a simulation with the exported model.
-
+``input.lmp``:
 ```text
 # Note: Plugins are loaded automatically if the paths in the environment
 #       variables are set correctly
@@ -66,27 +25,25 @@ boundary p p p
 neighbor 	2.0 bin
 neigh_modify 	every 1 delay 0 check yes once no
 
-# Might be necessary if message-passing NN is used
-# comm_modify cutoff 1.0
+# Must be adjusted model-dependent
+comm_modify cutoff 7.0
 
 # 2) Create random positions
-region simulation_box block -50 50 -50 50 -50 50
+region simulation_box block -25 25 -25 25 -25 25
 
 create_box 1 simulation_box
 
-create_atoms 1 random 15000 341341 simulation_box
-create_atoms 2 random 15000 341342 simulation_box
+create_atoms 1 random 4170 341341 simulation_box
 
 # 3) Simulation settings
 mass 1 18
-mass 2 20
 
-# Loads the previously exported model. Numbers after the backend ("cuda12") are
+# Loads the previously exported model. Numbers after the backend ("cpu") are
 # multipliers to adjust the buffers. The first number corresponds to the extra
 # capacity for ghost atoms and the second number corresponds to the extra
-# capacity for edges
-pair_style jaxnn
-pair_coeff * * model.ptb cuda12 1.1 1.1
+# capacity for edges in the neighbor list
+pair_style chemtrain_deploy cpu 0.95 # <pjrt_device or cpu> <memory_fraction>
+pair_coeff * * model.ptb 1.1 1.1 # <path_to_model> <buffer_multiplier> <buffer_multiplier>
 
 # 4) Visualization
 thermo 10
@@ -112,3 +69,13 @@ fix         2 all langevin 300.0 300.0 $(100. * dt) 1530917
 timestep 1
 run 10000
 ```
+
+Similar to JAX, visible devices can be set using the environment variable
+``CUDA_VISIBLE_DEVICES``. The plugin will automatically use the first visible
+device. Therefore, the command
+
+```bash
+mpirun -n 8 lmp -in input.lmp
+```
+
+will run the simulation on the first visible device.

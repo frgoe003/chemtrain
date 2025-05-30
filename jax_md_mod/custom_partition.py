@@ -88,7 +88,7 @@ def masked_neighbor_list(displacement_or_metric,
     # Ensure that the neighbor list calls the correct (modified) update function
     def init_neighbor_fn(position, extra_capacity: int = 0, mask=None, **kwargs):
         if mask is not None:
-            position = jnp.where(mask[:, jnp.newaxis], position, jnp.inf)
+            position = jnp.where(mask[:, jnp.newaxis], position, 0.0)
 
         nbrs = custom_neighbor_list_fn(mask).allocate(position, extra_capacity=extra_capacity, **kwargs)
         # Explicitely set the update function that modifies the mask function
@@ -97,7 +97,7 @@ def masked_neighbor_list(displacement_or_metric,
     @jax.jit
     def update_neighbor_fn(position, nbrs, mask=None, **kwargs):
         if mask is not None:
-            position = jnp.where(mask[:, jnp.newaxis], position, jnp.inf)
+            position = jnp.where(mask[:, jnp.newaxis], position, 0.0)
 
         nbrs = custom_neighbor_list_fn(mask).update(position, neighbors=nbrs, **kwargs)
         return nbrs.set(update_fn=update_neighbor_fn)

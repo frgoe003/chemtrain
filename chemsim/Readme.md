@@ -3,54 +3,90 @@
 The connector compiles the JAX model to HLO using python and provides an interface to
 evaluate the model in C++ via a shared library.
 
+## Docker Container
 
-## Building Connector
+**Note**: Using chemtrain-deploy within a docker container requires the 
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 
-### Prepare Docker Container (Optional)
-
-It is best to use an official docker container for building, e.g., from TensorFlow.
-We use the TensorFlow docker container and install some additional dependencies.
-To build the container, use:
-
-```bash
-docker build -t jaxconnector . 
-```
-
-To enable GPU support, we first install the [NVIDIA docker support](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
-Additionally, ensure that you are part of the docker group.
-
-To download and run the container:
+Before compiling the connector, we have to determine the compute capabilities
+of the GPUs. Therefore, we can run the following command
 
 ```bash
-docker run --name xla --gpus all -it -w /connector/connector -it -d --rm -v $PWD:/connector -e HOST_PERMS="$(id -u):$(id -g)" jaxconnector bash
+nvidia-smi --query-gpu=compute_cap --format=csv,noheader
 ```
 
-### Build Connector
-
-The connector relies on the PJRT plugin to for GPU support.
-To build the plugin for an NVIDIA gpu:
-
-
-Next, the connector can be built using the following command:
-
-## Building Lammps Plugin
+We then set the compute capabilities as environment variable and build the
+docker container.
 
 ```bash
-cmake -D LAMMPS_HEADER_DIR=../../../lammps/src ../lammps_plugin
-make
+CUDA_COMPUTE_CAPABILITIES="8.6,8.0"
+
+docker build -t chemtrain-deploy \
+    --build-arg CUDA_COMPUTE_CAPABILITIES=${CUDA_COMPUTE_CAPABILITIES} \
+    -f Dockerfile .
 ```
 
-Note: When changing the connector, you need to recompile the connector and the plugin using:
+Afterward, simulations can be run inside the container:
+
+```bash
+docker run --gpus all -it --rm -v /home/ga27pej/myjaxmd/examples/spice:/workspace chemtrain-deploy
+```
+
+## Build Connector
+The connector interfaces XLA and PJRT with MD applications such as LAMMPS,
+which might use a different building system and MPI.
+
+To build the connector, create an environment with python 3.11 and install JAX for GPU:
+```bash
+pip install "jax[cuda12]==0.4.37"
+```
+
+The connector can be built using the following command:
+
+```bash
+python build.py
+```
+
+Additionally, the PjRt plugin for CUDA enabled GPUs can be built using
+
+```bash
+python build.py --build_gpu_pjrt_plugin --enable_cuda --cuda_version 12.6.0
+```
+
+Alternatively, a prebuilt PjRt plugin can be fetched from JAX.
+Therefore, a JAX version compatible to the installed CUDA version and 
+compatible to the XLA library must be installed.
+Then, the plugin can be fetched via
+
+```bash
+python build.py --load_gpu_pjrt_plugin
+```
+
+
+## Building LAMMPS Plugin
+
+In the connector directory create and cd into a build directory and compile
+the plugin with the following commands:
+
+```bash
+mkdir build && cd build
+cmake -D LAMMPS_HEADER_DIR=<path/to/lammps/src> ../lammps_plugin
+cmake --build .
+```
+
+**Note:** When the plugin is changed, it must be recompiled via
 
 ```bash
 cmake --build . --clean-first
 ```
 
+## Building LAMMPS with Plugin Support
+
 To build lammps with plugin support, run:
 
 ```bash
 cmake -D PKG_PLUGIN=yes ../cmake
-make
+cmake --build . -j <number_of_cores>
 ```
 
 ## "Installing" LAMMPS and the plugin
@@ -62,12 +98,10 @@ __activate:__
 ```bash
 #! /bin/bash
 
-export PATH=/home/paul/nn_prior/external/lammps/build:$PATH
-export LAMMPS_PLUGIN_PATH=/home/paul/nn_prior/external/chemtrain/chemsim/build
-export JCN_PJRT_PATH=/home/paul/nn_prior/external/chemtrain/chemsim/lib
+export PATH=<path/to/lammps/build>:$PATH
+export LAMMPS_PLUGIN_PATH=<path/to/chemsim/build>
+export JCN_PJRT_PATH=<path/to/chemsim/lib>
 ```
 
 Calling the script with ``source ./activate`` will set all necessary variables
 to discover the LAMMPS executable, the plugin, and the PJRT library.
-
-

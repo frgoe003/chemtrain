@@ -46,9 +46,8 @@ Examples:
     We split the dataset into a training, validation and testing set:
 
     >>> train, val, test = train_val_test_split(position_data, train_ratio=0.8, shuffle=False)
-    >>> # Print the coordinates of the Calpha atom
-    >>> print(test[0, 4, :])
-    [0.01607744 0.5087251  0.21884884]
+    >>> bool(jnp.all(train[0, 4, :] == position_data[0, 4, :]))
+    True
 
     Alternatively, we can directly instanciate ``jax_sgmc`` data-loaders based
     on the split datasets by using:

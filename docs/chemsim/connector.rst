@@ -1,6 +1,25 @@
 API: Connector
 ===============
 
+Interface
+----------
+
+.. doxygenstruct:: jcn::ModelProperties
+   :members:
+
+.. doxygenstruct:: jcn::ConnectorConfig
+   :members:
+
+.. doxygenstruct:: jcn::Statistics
+   :members:
+
+.. doxygenstruct:: jcn::Results
+   :members:
+
+.. doxygenclass:: jcn::Connector
+   :members:
+
+
 Data Transfer
 --------------
 
@@ -23,6 +42,9 @@ _______________
 .. doxygenclass:: jcn::SimpleSparseNeighborList
    :members:
 
+.. doxygenclass:: jcn::SimpleDenseNeighborList
+   :members:
+
 .. doxygenclass:: jcn::DeviceSparseNeighborList
    :members:
 
@@ -30,14 +52,7 @@ _______________
    :members:
 
 
-Interface
-----------
 
-.. doxygenstruct:: jcn::ModelProperties
-   :members:
-
-.. doxygenstruct:: jcn::ConnectorConfig
-   :members:
 
 
 

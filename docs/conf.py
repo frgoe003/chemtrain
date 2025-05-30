@@ -52,6 +52,7 @@ extensions = [
     'sphinx.ext.viewcode',
     'sphinx_autodoc_typehints',
     'sphinx_remove_toctrees',
+    'sphinxcontrib.mermaid',
     'myst_nb',
     'breathe',
 ]

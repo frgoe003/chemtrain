@@ -74,32 +74,32 @@ endif()
 # building the plugins
 
 include_directories(${INCLUDE_DIR})
-add_library(jaxconnector MODULE
-        ${SOURCE_DIR}/jaxplugin.cpp
-        ${SOURCE_DIR}/jax_connect.cpp
+add_library(chemtrain_deploy MODULE
+        ${SOURCE_DIR}/chemtrain_deploy.cpp
+        ${SOURCE_DIR}/pair_chemtrain_deploy.cpp
         ${INCLUDE_DIR}/libconnector.h)
 target_link_libraries(
-        jaxconnector PRIVATE lammps ${LIB_DIR}/libconnector.so
+        chemtrain_deploy PRIVATE lammps ${LIB_DIR}/libconnector.so
 )
-set_target_properties(jaxconnector PROPERTIES PREFIX "" SUFFIX "plugin.so" LINKER_LANGUAGE CXX CXX_STANDARD 17)
+set_target_properties(chemtrain_deploy PROPERTIES PREFIX "" SUFFIX "plugin.so" LINKER_LANGUAGE CXX CXX_STANDARD 17)
 
 
 # MacOS seems to need this
 if(CMAKE_SYSTEM_NAME STREQUAL Darwin)
-  set_target_properties(jaxconnector
+  set_target_properties(chemtrain_deploy
     PROPERTIES LINK_FLAGS "-Wl,-undefined,dynamic_lookup")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
 # tell CMake to export all symbols to a .dll on Windows with special case for MinGW cross-compilers
-  set_target_properties(jaxconnector
+  set_target_properties(chemtrain_deploy
     PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS TRUE)
   if(CMAKE_CROSSCOMPILING)
-    set_target_properties(jaxconnector
+    set_target_properties(chemtrain_deploy
       PROPERTIES LINK_FLAGS "-Wl,--export-all-symbols")
   endif()
 else()
-  set_target_properties(jaxconnector PROPERTIES
+  set_target_properties(chemtrain_deploy PROPERTIES
     LINK_FLAGS "-rdynamic")
 endif()
 
 add_custom_target(plugins ALL ${CMAKE_COMMAND} -E echo "Building Plugins"
-  DEPENDS jaxconnector)
+  DEPENDS chemtrain_deploy)

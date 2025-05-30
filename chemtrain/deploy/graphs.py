@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Neighbor lists for exporting potential and force models."""
+"""Graphs for exporting potential and force models."""
 
 import abc
 import functools
@@ -27,9 +27,9 @@ from jax import export, numpy as jnp, lax
 import jax_md_mod
 from jax_md import partition, dataclasses, smap, space
 
-from typing import NamedTuple
+from typing import NamedTuple, Tuple
 
-from . import shape_util
+from . import util
 from ._protobuf import model_pb2 as model_proto
 
 @dataclasses.dataclass
@@ -43,7 +43,7 @@ class NeighborList(metaclass=abc.ABCMeta):
         pass
 
     @staticmethod
-    @shape_util.define_symbols("")
+    @util.define_symbols("")
     @abc.abstractmethod
     def create_symbolic_input_format(*args, **kwargs):
         """Creates a symbolic representation of the graph.
@@ -61,18 +61,46 @@ class NeighborList(metaclass=abc.ABCMeta):
         """
 
     @staticmethod
-    def create_from_args(displacement_fn, r_cutoff, num_mpl, position, species, ghost_mask, valid_mask, *args, half=True):
+    def create_from_args(displacement_fn,
+                         r_cutoff,
+                         num_mpl,
+                         position,
+                         species,
+                         ghost_mask,
+                         valid_mask,
+                         newton,
+                         *args,
+                         half=True):
         """Creates the neighbor list from inputs to the exported function."""
 
 
 @dataclasses.dataclass
 class SimpleSparseNeighborList(NeighborList):
-    """Simple neighbor list representation using precomputed neighbor list."""
+    """Simple neighbor list representation using precomputed neighbor list.
+
+    This neighbor list is a sparse representation of a graph.
+    It does not infer the neighbor list from the positions but acts as an
+    interface between the precomputed neighbor list, e.g., from LAMMPS, and
+    the exported model.
+
+    Nevertheless, this class increases the efficiency of the exported model
+    while reducing necessary data transfer by pruning the neighbor list.
+    Therefore, the class filters out all edges that are longer than the
+    specified model cutoff distance. Moreover, it prunes all edges between
+    ghost atoms (atoms not in the local domain) that are not relevant for
+    a correct force computation.
+
+    Attributes:
+        senders: The sender indices of the edges.
+        receivers: The receiver indices of the edges.
+        max_edges: The maximum number of relevant edges in the neighbor list.
+
+    """
 
     senders: jax.Array
     receivers: jax.Array
 
-    max_neighbors: jax.Array
+    max_edges: jax.Array
 
     @staticmethod
     def set_properties(proto: model_proto.Model):
@@ -80,7 +108,7 @@ class SimpleSparseNeighborList(NeighborList):
         proto.neighbor_list.half_list = True
 
     @staticmethod
-    @shape_util.define_symbols(
+    @util.define_symbols(
         "max_buffers, max_edges",
         ["max_edges <= 2 * max_buffers"]
     )
@@ -93,13 +121,22 @@ class SimpleSparseNeighborList(NeighborList):
         return senders, receivers, buffer
 
     @staticmethod
-    def create_from_args(r_cutoff, num_mpl, position, species, ghost_mask, valid_mask, *args):
+    def create_from_args(r_cutoff,
+                         nbr_order,
+                         position,
+                         species,
+                         ghost_mask,
+                         valid_mask,
+                         newton,
+                         *args) -> Tuple["SimpleSparseNeighborList",
+                                         "NeighborListStatistics"]:
         # Make edges undirected by adding their counterpart
         invalid_idx = species.size
 
-        s, r, m = args
-        senders = jnp.concat([s, r], axis=0)
-        receivers = jnp.concat([r, s], axis=0)
+        # If newton is true, the transferred neighbor list is a full list.
+        # Therefore, we need to set half of the edges to invalid to avoid
+        # double counting.
+        senders, receivers, m = args
         max_edges = m.size
 
         # Remove all edges that are longer than the cutoff distance
@@ -109,9 +146,15 @@ class SimpleSparseNeighborList(NeighborList):
         vs = jnp.where(invalid, invalid_idx, senders)
         vr = jnp.where(invalid, invalid_idx, receivers)
 
-        # Prune all irrelevant edges
+        # Prune all irrelevant edges. In the newton setting, the provided
+        # neighbor list is a full list.
         graph = SimpleSparseNeighborList(vs, vr, m)
-        graph, max_neighbors = prune_neighbor_list(graph, ghost_mask, max_edges, num_mpl)
+        graph, max_neighbors = lax.cond(
+            newton,
+            functools.partial(prune_neighbor_list, max_edges=max_edges, nbr_order=nbr_order[0], half_list=False),
+            functools.partial(prune_neighbor_list, max_edges=max_edges, nbr_order=nbr_order[1], half_list=True),
+            graph, ghost_mask
+        )
 
         statistics = NeighborListStatistics(max_neighbors, jnp.sum(~invalid))
 
@@ -122,6 +165,106 @@ class SimpleSparseNeighborList(NeighborList):
         nbrs = partition.NeighborList(
             idx, None, None, None, None, partition.Sparse, None, None, None)
         return nbrs
+
+
+@dataclasses.dataclass
+class SimpleDenseNeighborList(NeighborList):
+    """Simple dense neighbor list representation using precomputed neighbor list.
+
+    This neighbor list is a semi-sparse representation of a graph.
+    It does not infer the neighbor list from the positions but acts as an
+    interface between the precomputed neighbor list, e.g., from LAMMPS, and
+    the exported model.
+
+    This class increases the efficiency of the exported model
+    while reducing necessary data transfer by pruning the neighbor list.
+    Therefore, the class filters out all edges that are longer than the
+    specified model cutoff distance. Moreover, it prunes all edges between
+    ghost atoms (atoms not in the local domain) that are not relevant for
+    a correct force computation.
+
+    Attributes:
+        senders: The sender indices of the edges.
+        receivers: The receiver indices of the edges.
+        max_edges: The maximum number of relevant edges in the neighbor list.
+
+    """
+
+    nbrs: jax.Array
+
+    max_edges: jax.Array
+    max_triplets: jax.Array
+
+    @staticmethod
+    def set_properties(proto: model_proto.Model):
+        proto.neighbor_list.type = proto.NeighborListType.SIMPLE_DENSE
+        proto.neighbor_list.half_list = False
+
+    @staticmethod
+    @util.define_symbols(
+        "max_nbrs, max_edges, max_triplets",
+        [
+            "max_nbrs <= n_atoms",
+            "max_edges <= n_atoms * max_nbrs",
+            "max_triplets <= max_edges * max_nbrs"
+        ]
+    )
+    def create_symbolic_input_format(max_nbrs, max_edges, max_triplets, **kwargs):
+
+        nbrs = jax.ShapeDtypeStruct((kwargs["n_atoms"], max_nbrs), jnp.int32)
+        max_edges = jax.ShapeDtypeStruct((max_edges,), jnp.bool_)
+        max_triplets = jax.ShapeDtypeStruct((max_triplets,), jnp.bool_)
+
+        return nbrs, max_edges, max_triplets
+
+    @staticmethod
+    def create_from_args(r_cutoff,
+                         nbr_order,
+                         position,
+                         species,
+                         ghost_mask,
+                         valid_mask,
+                         newton,
+                         *args) -> Tuple["SimpleSparseNeighborList",
+                                         "NeighborListStatistics"]:
+        # Make edges undirected by adding their counterpart
+        invalid_idx = species.size
+
+        # If newton is true, the transferred neighbor list is a full list.
+        # Therefore, we need to set half of the edges to invalid to avoid
+        # double counting.
+        nbrs, max_edges, max_triplets = args
+
+        # Remove all edges that are longer than the cutoff distance
+        dists = jax.vmap(
+            jax.vmap(
+                lambda i, j: jnp.linalg.norm(position[i] - position[j]),
+                in_axes=(None, 0)
+            ), in_axes=(0, 0)
+        )(jnp.arange(nbrs.shape[0]), nbrs)
+        invalid = dists > r_cutoff
+
+        nbrs = jnp.where(invalid, invalid_idx, nbrs)
+
+        # Prune all irrelevant edges. In the newton setting, the provided
+        # neighbor list is a full list.
+        graph = SimpleDenseNeighborList(nbrs, max_edges, max_triplets)
+        graph, (max_edges, max_triplets) = lax.cond(
+            newton,
+            functools.partial(prune_neighbor_list_dense, nbr_order=nbr_order[0]),
+            functools.partial(prune_neighbor_list_dense, nbr_order=nbr_order[1]),
+            graph, ghost_mask
+        )
+
+        statistics = NeighborListStatistics(max_edges, max_triplets)
+
+        return graph, statistics.tuple
+
+    def to_neighborlist(self):
+        nbrs = partition.NeighborList(
+            self.nbrs, None, None, None, None, partition.Dense, None, None, None)
+        return nbrs
+
 
 
 class DeviceSparseNeighborListArgs(NamedTuple):
@@ -143,14 +286,18 @@ class DeviceSparseNeighborListArgs(NamedTuple):
 
 @dataclasses.dataclass
 class DeviceSparseNeighborList(NeighborList):
-    """Creates the neighbor list graph on the device using a cell list."""
+    """Creates the neighbor list graph on the device using a cell list.
+
+    Warning: This implementation is experimental and work in progress.
+
+    """
 
     @staticmethod
     def set_properties(proto: model_proto.Model):
         proto.neighbor_list.type = proto.NeighborListType.DEVICE_SPARSE
 
     @staticmethod
-    @shape_util.define_symbols(
+    @util.define_symbols(
         "max_neighbors, nx, ny, nz, c",
         ["c <= n_atoms", "27*c^2*nx*ny*nz >= max_neighbors"]
     )
@@ -223,6 +370,13 @@ class DeviceSparseNeighborList(NeighborList):
 
 @dataclasses.dataclass
 class ListStatistics:
+    """Statistics of the neighbor list construction.
+
+    Each neighbor list can return statistics to optimally adapt it to the
+    system. For example, the class:`SimpleSparseNeighborList` returns the
+    maximum number of relevant edges. This number is relevant to efficiently
+    size the neighbor list buffer, which has to be set statically in JAX.
+    """
 
     @property
     def tuple(self):
@@ -231,6 +385,7 @@ class ListStatistics:
 
 @dataclasses.dataclass
 class DeviceListStatistics(ListStatistics):
+    """Statistics for the :class:`DeviceSparseNeighborList`."""
     min_cell_capacity: int
     cell_too_small: int
     max_neighbors: int
@@ -238,6 +393,7 @@ class DeviceListStatistics(ListStatistics):
 
 @dataclasses.dataclass
 class NeighborListStatistics(ListStatistics):
+    """Statistics for the :class:`SimpleSparseNeighborList`."""
     max_neighbors: int
     overlong: int
 
@@ -435,8 +591,41 @@ def compute_neighbor_list(position, id_buffer, senders, cutoff, mask=None, eps=1
     return (new_senders[prune_idx], new_receivers[prune_idx]), statistics
 
 
-def prune_neighbor_list(list, local, max_neighbors, num_mpl: int = 0):
-    """Prunes the neighbor list by removing edges irrelevant to local atoms."""
+def prune_neighbor_list(list, local, max_edges, nbr_order: int, half_list: bool = False):
+    """Prunes the neighbor list by removing edges irrelevant to local atoms.
+
+    For simplicity, a neighbor list might be built for all atoms within a, e.g.,
+    rectangular domain. However, this list can contain atoms that are not
+    relevant for the force computation of local atoms.
+    Therefore, this function prunes the neighbor list by removing all edges
+    that are not relevant for the local atoms. For example, given a simple
+    lennard-jones potential, the neighbor list should only contain atoms that
+    are first-order neighbors to any local atoms.
+
+    Args:
+        list: Sparse neighbor list to prune.
+        local: Mask specifying the local atoms.
+        max_edges: Maximum number of edges in the pruned list.
+        nbr_order: Maximum order of neighbors required for the force computation.
+        half_list: If True, the neighbor list is a half list. This means that
+            an edge from i to j implies an edge from j to i.
+
+    Returns:
+        Returns the pruned neighbor list and the number of valid edges.
+
+    """
+
+    if half_list:
+        # Make a full list from the half list
+        senders = jnp.concat([list.senders, list.receivers], axis=0)
+        receivers = jnp.concat([list.receivers, list.senders], axis=0)
+    else:
+        # Fill up the list with invalid indices. Required to ensure consistency
+        # with half list setting
+        invalid_fill = jnp.full_like(list.senders, local.size)
+        senders = jnp.concat([list.senders, invalid_fill], axis=0)
+        receivers = jnp.concat([list.receivers, invalid_fill], axis=0)
+    list = list.set(senders=senders, receivers=receivers)
 
     def _update(reachable, _):
         # Send reachable messages to neighbors. May should act like a logical
@@ -447,11 +636,13 @@ def prune_neighbor_list(list, local, max_neighbors, num_mpl: int = 0):
         # jax.debug.print("After update: {}", reachable)
         return reachable, _
 
+    # Non-newton case:
     # Relevant sender atoms are all atoms that are reachable via two times
     # the message passing interactions from a local atom of the domain.
     # Additional edges within the cutoff are required to correctly encode
-    # the environment
-    reachable, _ = lax.scan(_update, local, jnp.arange(2 * num_mpl + 1))
+    # the environment. We need the correct energy even for some ghost atoms
+    # to compute forces without communication between domains.
+    reachable, _ = lax.scan(_update, local, jnp.arange(nbr_order))
 
     mask = reachable[list.senders] & reachable[list.receivers]
     senders = jnp.where(mask, list.senders, local.size)
@@ -459,11 +650,52 @@ def prune_neighbor_list(list, local, max_neighbors, num_mpl: int = 0):
     n_valid = jnp.sum(mask)
 
     # Reduce the size of the neighbor list
-    mask, select = lax.top_k(mask, k=max_neighbors)
+    mask, select = lax.top_k(mask, k=max_edges)
     senders = senders[select]
     receivers = receivers[select]
 
     return SimpleSparseNeighborList(senders, receivers, mask), n_valid
+
+
+def prune_neighbor_list_dense(list, local, nbr_order: int):
+    """Prunes a dense neighbor list.
+
+    Args:
+        list: Sparse neighbor list to prune.
+        local: Mask specifying the local atoms.
+        nbr_order: Maximum order of neighbors required for the force computation.
+
+    Returns:
+        Returns the pruned neighbor list, the number of valid edges, and the
+        number of triplets from the valid edges.
+
+    """
+
+    def _update(reachable, _):
+        # Send reachable messages to neighbors. Any connection to a reachable
+        # node makes the node itself reachable
+        print(f"Shape of reachable: {reachable[list.nbrs].shape}")
+        reachable = jnp.any(
+            reachable[list.nbrs] & list.nbrs < local.size,
+            axis=1, keepdims=False)
+        print(f"Shape of reachable (later): {reachable.shape}")
+        print(f"Shape due to {(reachable[list.nbrs] & list.nbrs < reachable.size).shape}")
+        return reachable, _
+
+    reachable, _ = lax.scan(_update, local, jnp.arange(nbr_order))
+
+    # Every node unreachable does not send out edges (row will be zero).
+    # Every node unreachable does not receive edges (check indices).
+    nbrs = jnp.where(reachable[:, None], list.nbrs, local.size)
+    nbrs = jnp.where(reachable[nbrs], nbrs, local.size)
+
+    nbrs_per_atom = jnp.sum(nbrs < reachable.size, axis=1)
+    max_edges = jnp.sum(nbrs_per_atom)
+    max_triplets = jnp.sum(nbrs_per_atom * (nbrs_per_atom - 1))
+
+    return list.set(nbrs=nbrs), (max_edges, max_triplets)
+
+
 
 if __name__ == "__main__":
 

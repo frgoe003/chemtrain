@@ -14,33 +14,25 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-syntax = "proto2";
+#include "xla/literal.h"
+#include "xla/literal_util.h"
+#include "xla/pjrt/pjrt_api.h"
+#include "xla/pjrt/pjrt_client.h"
+#include "xla/pjrt/pjrt_c_api_client.h"
+#include "xla/pjrt/pjrt_executable.h"
+#include "xla/pjrt/pjrt_stream_executor_client.h"
+#include "xla/pjrt/tfrt_cpu_pjrt_client.h"
 
-package chemsim;
+#ifndef PJRT_H
+#define PJRT_H
 
-message Model {
+namespace jcn {
 
-  required string mlir_module = 1;
+    std::unique_ptr<xla::PjRtBuffer> create_buffer(
+        xla::PjRtClient* client, int device_id, xla::Literal* literal);
 
-  enum NeighborListType {
-    SIMPLE_SPARSE = 0;
-    SIMPLE_DENSE = 2;
-    DEVICE_SPARSE = 1;
-  }
+} // namespace jcn
 
-  message NeighborList {
-    required NeighborListType type = 1;
-    required float cutoff = 2;
 
-    // To which order neighbors are required for the newton and the
-    // non-newton setting
-    repeated int32 nbr_order = 3;
 
-    optional bool half_list = 4; // Expect only a half neighbor list
-  }
-
-  required NeighborList neighbor_list=4;
-
-  optional string unit_style = 5; // LAMMPS unit style definition
-
-}
+#endif //PJRT_H
