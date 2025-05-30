@@ -11,7 +11,12 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-==============================================================================*/
+===============================================================================
+
+Reproduced from https://github.com/tensorflow/tensorflow
+
+*/
+
 
 #ifndef XLA_CALL_MODULE_LOADER_H_
 #define XLA_CALL_MODULE_LOADER_H_

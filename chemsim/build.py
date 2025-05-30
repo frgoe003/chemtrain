@@ -1,5 +1,6 @@
 #!/usr/bin/python
 #
+# Copyright 2025 Multiscale Modeling of Fluid Materials, TU Munich
 # Copyright 2018 The JAX Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,7 +15,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Helper script for building JAX's libjax easily.
+# Helper script for building chemtrain-deploy connector.
+# Adapted from https://github.com/jax-ml/jax
+
+__BAZELRC = """
+# Load the JAX bazelrc
+import %workspace%/jax.bazelrc
+"""
 
 import argparse
 import collections
@@ -33,6 +40,7 @@ import urllib.request
 
 import pkgutil
 import importlib
+from typing import Optional
 
 try:
     import jax_plugins
@@ -98,8 +106,9 @@ def load_pjrt_plugin_libraries(out) -> None:
 
         if plugin_module:
             try:
+                name = plugin_module_name.replace("jax_plugins", "pjrt_plugin")
                 so_path = plugin_module._get_library_path()
-                out_path = (out / f"{plugin_module_name}.so")
+                out_path = (out / f"{name}.so")
 
                 out_path.write_bytes(pathlib.Path(so_path).read_bytes())
             except:
@@ -286,65 +295,74 @@ def get_clang_major_version(clang_path):
   return major_version
 
 
-def write_bazelrc(*, remote_build,
-                  cuda_version, cudnn_version, rocm_toolkit_path,
-                  cpu, cuda_compute_capabilities,
-                  rocm_amdgpu_targets,
-                  wheel_cpu, enable_mkl_dnn, use_clang, clang_path,
-                  clang_major_version, enable_cuda, enable_nccl, enable_rocm,
-                  python_version):
-
-  with open("config.bazelrc", "w") as f:
-    if not remote_build:
-      f.write(textwrap.dedent("""\
-        build --strategy=Genrule=standalone
-        """))
-
-    if use_clang:
-      f.write(f'build --action_env CLANG_COMPILER_PATH="{clang_path}"\n')
-      f.write(f'build --repo_env CC="{clang_path}"\n')
-      f.write(f'build --repo_env BAZEL_COMPILER="{clang_path}"\n')
-      f.write('build --copt=-Wno-error=unused-command-line-argument\n')
-      if clang_major_version in (16, 17, 18):
-        # Necessary due to XLA's old version of upb. See:
-        # https://github.com/openxla/xla/blob/c4277a076e249f5b97c8e45c8cb9d1f554089d76/.bazelrc#L505
-        f.write("build --copt=-Wno-gnu-offsetof-extensions\n")
-
-    if rocm_toolkit_path:
-      f.write("build --action_env ROCM_PATH=\"{rocm_toolkit_path}\"\n"
-              .format(rocm_toolkit_path=rocm_toolkit_path))
-    if rocm_amdgpu_targets:
-      f.write(
-        f'build:rocm --action_env TF_ROCM_AMDGPU_TARGETS="{rocm_amdgpu_targets}"\n')
-    if cpu is not None:
-      f.write(f"build --cpu={cpu}\n")
+def _find_executable(executable: str) -> Optional[str]:
+  logging.info("Trying to find path to %s...", executable)
+  # Resolving the symlink is necessary for finding system headers.
+  if unresolved_path := shutil.which(executable):
+    return str(pathlib.Path(unresolved_path).resolve())
+  return None
 
 
-    if enable_cuda:
-      f.write("build --config=cuda\n")
-      if not enable_nccl:
-        f.write("build --config=nonccl\n")
-      if use_clang:
-        f.write("build --config=nvcc_clang\n")
-        f.write(f"build --action_env=CLANG_CUDA_COMPILER_PATH={clang_path}\n")
-      if cuda_version:
-        f.write("build --repo_env HERMETIC_CUDA_VERSION=\"{cuda_version}\"\n"
-                .format(cuda_version=cuda_version))
-      if cudnn_version:
-        f.write("build --repo_env HERMETIC_CUDNN_VERSION=\"{cudnn_version}\"\n"
-                .format(cudnn_version=cudnn_version))
-      if cuda_compute_capabilities:
-        f.write(
-          f'build:cuda --repo_env HERMETIC_CUDA_COMPUTE_CAPABILITIES="{cuda_compute_capabilities}"\n')
-    if enable_rocm:
-      f.write("build --config=rocm\n")
-      if not enable_nccl:
-        f.write("build --config=nonccl\n")
-    if python_version:
-      f.write(
-        "build --repo_env HERMETIC_PYTHON_VERSION=\"{python_version}\"".format(
-            python_version=python_version))
-BANNER = r"""
+def _find_executable_or_die(
+    executable_name: str, executable_path: Optional[str] = None
+) -> str:
+  """Finds executable and resolves symlinks or raises RuntimeError.
+
+  Resolving symlinks is sometimes necessary for finding system headers.
+
+  Args:
+    executable_name: The name of the executable that we want to find.
+    executable_path: If not None, the path to the executable.
+
+  Returns:
+    The path to the executable we are looking for, after symlinks are resolved.
+  Raises:
+    RuntimeError: if path to the executable cannot be found.
+  """
+  if executable_path:
+    return str(pathlib.Path(executable_path).resolve(strict=True))
+  resolved_path_to_exe = _find_executable(executable_name)
+  if resolved_path_to_exe is None:
+    raise RuntimeError(
+        f"Could not find executable `{executable_name}`! "
+        "Please change your $PATH or pass the path directly like"
+        f"`--{executable_name}_path=path/to/executable."
+    )
+  logging.info("Found path to %s at %s", executable_name, resolved_path_to_exe)
+
+  return resolved_path_to_exe
+
+
+def _get_cuda_compute_capabilities_or_die() -> list[str]:
+  """Finds compute capabilities via nvidia-smi or rasies exception.
+
+  Returns:
+    list of unique, sorted strings representing compute capabilities:
+  Raises:
+    RuntimeError: if path to nvidia-smi couldn't be found.
+    subprocess.CalledProcessError: if nvidia-smi process failed.
+  """
+  try:
+    nvidia_smi = _find_executable_or_die("nvidia-smi")
+    nvidia_smi_proc = subprocess.run(
+        [nvidia_smi, "--query-gpu=compute_cap", "--format=csv,noheader"],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    # Command above returns a newline separated list of compute capabilities
+    # with possible repeats. So we should unique them and sort the final result.
+    capabilities = sorted(set(nvidia_smi_proc.stdout.strip().split("\n")))
+    logging.info("Found CUDA compute capabilities: %s", capabilities)
+    return capabilities
+  except (RuntimeError, subprocess.CalledProcessError) as e:
+    logging.info(
+        "Could not find nvidia-smi, or nvidia-smi command failed. Please pass"
+        " capabilities directly using --cuda_compute_capabilities."
+    )
+    raise e
+
+cBANNER = r"""
 CHEMSIM
 """
 
@@ -410,57 +428,49 @@ def main():
   )
   add_boolean_argument(
       parser,
-      "enable_mkl_dnn",
-      default=True,
-      help_str="Should we build with MKL-DNN enabled?",
-  )
-  add_boolean_argument(
-      parser,
       "enable_cuda",
       help_str="Should we build with CUDA enabled? Requires CUDA and CuDNN."
-  )
-  add_boolean_argument(
-      parser,
-      "build_gpu_plugin",
-      default=False,
-      help_str=(
-          "Are we building the gpu plugin in addition to jaxlib? The GPU "
-          "plugin is still experimental and is not ready for use yet."
-      ),
   )
   add_boolean_argument(
       parser,
       "build_gpu_pjrt_plugin",
       default=False,
       help_str=(
-          "Are we building the cuda/rocm pjrt plugin?"
+          "Are we building the cuda pjrt plugin?"
       ),
   )
-  parser.add_argument(
-      "--gpu_plugin_cuda_version",
-      choices=["12"],
-      default="12",
-      help="Which CUDA major version the gpu plugin is for.")
-  parser.add_argument(
-      "--gpu_plugin_rocm_version",
-      choices=["60"],
-      default="60",
-      help="Which ROCM major version the gpu plugin is for.")
   add_boolean_argument(
       parser,
-      "enable_rocm",
-      help_str="Should we build with ROCm enabled?")
+      "build_cpu_pjrt_plugin",
+      default=False,
+      help_str=(
+          "Are we building the cpu pjrt plugin?"
+      ),
+  )
+  add_boolean_argument(
+      parser,
+      "load_gpu_pjrt_plugin",
+      default=False,
+      help_str=(
+          "Load the GPU PJRT plugin from the jax wheels."
+      ),
+  )
+  add_boolean_argument(
+      parser,
+      "use_cuda_nvcc",
+      default=True,
+      help_str=(
+          "Should we build CUDA code using NVCC compiler driver? The default value "
+          "is true. If --nouse_cuda_nvcc flag is used then CUDA code is built "
+          "by clang compiler."
+      ),
+  )
   add_boolean_argument(
       parser,
       "enable_nccl",
       default=True,
       help_str="Should we build with NCCL enabled? Has no effect for non-CUDA "
                "builds.")
-  add_boolean_argument(
-      parser,
-      "remote_build",
-      default=False,
-      help_str="Should we build with RBE (Remote Build Environment)?")
   parser.add_argument(
       "--cuda_version",
       default=None,
@@ -469,47 +479,65 @@ def main():
       "--cudnn_version",
       default=None,
       help="CUDNN version, e.g., 8.9.7.29")
+  parser.add_argument(
+      "--build_cuda_with_clang",
+      action="store_true",
+      help="""
+          Should CUDA code be compiled using Clang? The default behavior is to
+          compile CUDA with NVCC.
+          """,
+  )
+
+
   # Caution: if changing the default list of CUDA capabilities, you should also
   # update the list in .bazelrc, which is used for wheel builds.
   parser.add_argument(
       "--cuda_compute_capabilities",
       default=None,
       help="A comma-separated list of CUDA compute capabilities to support.")
-  parser.add_argument(
-      "--rocm_amdgpu_targets",
-      default="gfx900,gfx906,gfx908,gfx90a,gfx1030",
-      help="A comma-separated list of ROCm amdgpu targets to support.")
-  parser.add_argument(
-      "--rocm_path",
-      default=None,
-      help="Path to the ROCm toolkit.")
+
   parser.add_argument(
       "--bazel_startup_options",
       action="append", default=[],
       help="Additional startup options to pass to bazel.")
   parser.add_argument(
       "--bazel_options",
-      action="append", default=[
-          "--experimental_repo_remote_exec",
-          '--cxxopt=-std=c++17',
-          '--host_cxxopt=-std=c++17',
-      ],
+      action="append", default=[],
       help="Additional options to pass to the main Bazel command to be "
            "executed, e.g. `run`.")
+
   parser.add_argument(
       "--output_path",
       default=os.path.join(cwd, "out"),
-      help="Directory to which the jaxlib wheel should be written")
+      help="Directory to which the compilation outputs should be written")
+
   parser.add_argument(
       "--target_cpu",
       default=None,
       help="CPU platform to target. Default is the same as the host machine. "
            "Currently supported values are 'darwin_arm64' and 'darwin_x86_64'.")
-  add_boolean_argument(
-      parser,
-      "configure_only",
-      default=False,
-      help_str="If true, writes a .bazelrc file but does not build.")
+  parser.add_argument(
+      "--target_cpu_features",
+      choices=["release", "native", "default"],
+      default="native",
+      help="""
+        What CPU features should we target? Release enables CPU features that
+        should be enabled for a release build, which on x86-64 architectures
+        enables AVX. Native enables -march=native, which generates code targeted
+        to use all features of the current machine. Default means don't opt-in
+        to any architectural features and use whatever the C compiler generates
+        by default.
+        """,
+  )
+
+  parser.add_argument(
+    "--configure_only",
+    action="store_true",
+    help="""
+      If true, writes the Bazel options to the .jax_configure.bazelrc file but
+      does not build the artifacts.
+      """,
+  )
 
   args = parser.parse_args()
 
@@ -517,14 +545,20 @@ def main():
   if args.verbose:
     logger.setLevel(logging.DEBUG)
 
-  if args.enable_cuda and args.enable_rocm:
-    parser.error("--enable_cuda and --enable_rocm cannot be enabled at the same time.")
+  arch = platform.machine()
+  os_name = platform.system().lower()
 
-  print(BANNER)
+  cpus = {
+      "darwin_arm64": "arm64",
+      "darwin_x86_64": "x86_64",
+      # "ppc": "ppc64le",
+      # "aarch64": "aarch64",
+  }
 
-  host_cpu = platform.machine()
+  build_options = args.bazel_options
 
   output_path = os.path.abspath(args.output_path)
+  config_path = os.path.abspath("config.bazelrc")
   os.chdir(os.path.dirname(__file__ or args.prog) or '.')
 
   # Find a working Bazel.
@@ -533,59 +567,97 @@ def main():
   print(f"Bazel version: {bazel_version}")
 
 
-  python_bin_path = get_python_bin_path(None)
-  print(f"Python binary path: {python_bin_path}")
-  python_version = get_python_version(python_bin_path)
-  print("Python version: {}".format(".".join(map(str, python_version))))
-  check_python_version(python_version)
-  python_version = ".".join(map(str, python_version))
-
-  clang_path = args.clang_path
-  clang_major_version = None
-  if args.use_clang:
-    if not clang_path:
-      clang_path = get_clang_path_or_exit()
-    print(f"clang path: {clang_path}")
-    clang_major_version = get_clang_major_version(clang_path)
-
-  print("MKL-DNN enabled: {}".format("yes" if args.enable_mkl_dnn else "no"))
-  print(f"Target CPU: {host_cpu}")
-
-  rocm_toolkit_path = args.rocm_path
-  print("CUDA enabled: {}".format("yes" if args.enable_cuda else "no"))
-  if args.enable_cuda:
-    if args.cuda_compute_capabilities is not None:
-      print(f"CUDA compute capabilities: {args.cuda_compute_capabilities}")
-    if args.cuda_version:
-      print(f"CUDA version: {args.cuda_version}")
-    if args.cudnn_version:
-      print(f"CUDNN version: {args.cudnn_version}")
-    print("NCCL enabled: {}".format("yes" if args.enable_nccl else "no"))
-
-  print("ROCm enabled: {}".format("yes" if args.enable_rocm else "no"))
-  if args.enable_rocm:
-    if rocm_toolkit_path:
-      print(f"ROCm toolkit path: {rocm_toolkit_path}")
-    print(f"ROCm amdgpu targets: {args.rocm_amdgpu_targets}")
-
-  write_bazelrc(
-      remote_build=args.remote_build,
-      cuda_version=args.cuda_version,
-      cudnn_version=args.cudnn_version,
-      rocm_toolkit_path=rocm_toolkit_path,
-      cpu=args.target_cpu,
-      cuda_compute_capabilities=args.cuda_compute_capabilities,
-      rocm_amdgpu_targets=args.rocm_amdgpu_targets,
-      wheel_cpu=host_cpu,
-      enable_mkl_dnn=args.enable_mkl_dnn,
-      use_clang=args.use_clang,
-      clang_path=clang_path,
-      clang_major_version=clang_major_version,
-      enable_cuda=args.enable_cuda,
-      enable_nccl=args.enable_nccl,
-      enable_rocm=args.enable_rocm,
-      python_version=python_version,
+  # Enable cross-compilation
+  target_cpu = (
+      cpus[args.target_cpu] if args.target_cpu is not None else arch
   )
+
+  clang_path = ""
+  if args.use_clang:
+      clang_path = args.clang_path or get_clang_path_or_exit()
+      clang_major_version = get_clang_major_version(clang_path)
+      logging.debug(
+          "Using Clang as the compiler, clang path: %s, clang version: %s",
+          clang_path,
+          clang_major_version,
+      )
+
+      build_options.append(
+          f"--action_env=CLANG_COMPILER_PATH={clang_path}")
+      build_options.append(f"--repo_env=CC={clang_path}")
+      build_options.append(f"--repo_env=BAZEL_COMPILER={clang_path}")
+
+      if clang_major_version >= 16:
+          # Enable clang settings that are needed for the build to work with newer
+          # versions of Clang.
+          build_options.append("--config=clang")
+      if clang_major_version < 19:
+          build_options.append(
+              "--define=xnn_enable_avxvnniint8=false")
+
+  else:
+      logging.debug("Use Clang: False")
+
+  if args.target_cpu_features == "release":
+      if arch in ["x86_64", "AMD64"]:
+          logging.debug(
+              "Using release cpu features: --config=avx_%s",
+              "windows" if os_name == "windows" else "posix",
+          )
+          build_options.append(
+              "--config=avx_windows"
+              if os_name == "windows"
+              else "--config=avx_posix"
+          )
+  elif args.target_cpu_features == "native":
+      if os_name == "windows":
+          logger.warning(
+              "--target_cpu_features=native is not supported on Windows;"
+              " ignoring."
+          )
+      else:
+          logging.debug("Using native cpu features: --config=native_arch_posix")
+          build_options.append("--config=native_arch_posix")
+  else:
+      logging.debug("Using default cpu features")
+
+
+  if args.enable_cuda:
+      build_options.append("--config=cuda")
+      build_options.append(
+          f"--action_env=CLANG_CUDA_COMPILER_PATH={clang_path}"
+      )
+
+      if args.build_cuda_with_clang:
+        logging.debug("Building CUDA with Clang")
+        build_options.append("--config=build_cuda_with_clang")
+      else:
+        logging.debug("Building CUDA with NVCC")
+        build_options.append("--config=build_cuda_with_nvcc")
+
+      if args.cuda_version:
+          logging.debug("Hermetic CUDA version: %s", args.cuda_version)
+          build_options.append(
+              f"--repo_env=HERMETIC_CUDA_VERSION={args.cuda_version}"
+          )
+      if args.cudnn_version:
+          logging.debug("Hermetic cuDNN version: %s", args.cudnn_version)
+          build_options.append(
+              f"--repo_env=HERMETIC_CUDNN_VERSION={args.cudnn_version}"
+          )
+      if args.cuda_compute_capabilities:
+          logging.debug(
+              "Hermetic CUDA compute capabilities: %s",
+              args.cuda_compute_capabilities,
+          )
+          build_options.append(
+              f"--repo_env=HERMETIC_CUDA_COMPUTE_CAPABILITIES={args.cuda_compute_capabilities}"
+          )
+
+
+  with open("config.bazelrc", "w") as f:
+      f.write(__BAZELRC)
+      f.write("\n".join(build_options))
 
   if args.configure_only:
     return
@@ -594,17 +666,56 @@ def main():
 
   command_base = (
     bazel_path,
-    "--bazelrc=config.bazelrc",
+    f"--bazelrc={config_path}",
     *args.bazel_startup_options,
     f"--output_base={output_path}",
     "build",
     "--verbose_failures=true",
     f"--compilation_mode=opt",
     f"--copt=-O3",
-    *args.bazel_options,
+    *build_options,
   )
 
-  if not args.build_gpu_pjrt_plugin:
+  if args.build_gpu_pjrt_plugin:
+      assert args.enable_cuda, "Must enable cuda to build pjrt plugin."
+
+      build_pjrt_plugin_command = [
+          *command_base,
+          "@xla//xla/pjrt/c:pjrt_c_api_gpu_plugin.so",
+          "--",
+      ]
+
+      print(" ".join(build_pjrt_plugin_command))
+      shell(build_pjrt_plugin_command)
+      out_dir = pathlib.Path("./lib")
+      out_dir.mkdir(exist_ok=True, parents=True)
+      (out_dir / f"pjrt_plugin.xla_cuda{args.cuda_version.split('.')[0]}.so").write_bytes(
+          pathlib.Path("./bazel-bin/external/xla/xla/pjrt/c/pjrt_c_api_gpu_plugin.so").read_bytes()
+      )
+  elif args.build_cpu_pjrt_plugin:
+      raise NotImplementedError(
+            "Building CPU PJRT plugin is not supported yet."
+      )
+
+      build_pjrt_plugin_command = [
+          *command_base,
+          "@xla//xla/pjrt/c:pjrt_c_api_cpu_plugin.so",
+          "--",
+      ]
+
+      print(" ".join(build_pjrt_plugin_command))
+      shell(build_pjrt_plugin_command)
+      out_dir = pathlib.Path("./lib")
+      out_dir.mkdir(exist_ok=True, parents=True)
+      (out_dir / f"pjrt_plugin.xla_cpu.so").write_bytes(
+          pathlib.Path("./bazel-bin/external/xla/xla/pjrt/c/pjrt_c_api_cpu_plugin.so").read_bytes()
+      )
+  elif args.load_gpu_pjrt_plugin:
+      # Loads a prebuilt pjrt plugin from the jaxlib wheels.
+      out_dir = pathlib.Path("./lib")
+      load_pjrt_plugin_libraries(out_dir)
+
+  else:
       build_cpu_wheel_command = [
           *command_base,
           "//connector:libconnector.so", "--",
@@ -617,8 +728,6 @@ def main():
           pathlib.Path("./bazel-bin/connector/libconnector.so").read_bytes()
       )
 
-  if args.build_gpu_plugin or args.build_gpu_pjrt_plugin:
-    load_pjrt_plugin_libraries(pathlib.Path("./lib"))
 
 if __name__ == "__main__":
   main()

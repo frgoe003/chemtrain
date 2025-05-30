@@ -1,11 +1,25 @@
-//
-// Created by Paul Fuchs on 24.09.24.
-//
+/*
+Copyright 2025 Multiscale Modeling of Fluid Materials, TU Munich
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==============================================================================*/
 
 #include "xla/pjrt/pjrt_api.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_c_api_client.h"
 #include "xla/literal_util.h"
+
+#include "connector/utils.h"
 
 #ifndef GRAPH_BUILDER_H
 #define GRAPH_BUILDER_H
@@ -44,15 +58,20 @@ namespace jcn {
         virtual void initialize(std::vector<float> multiplier) = 0;
 
         virtual NeighborListShapes get_neighbor_list_shapes(
-            int max_atoms, int inum, int* numneigh) = 0;
+            int max_atoms, int inum, int* numneigh,
+            bool check_buffers) = 0;
 
         virtual std::vector<xla::PjRtBuffer*> build_graph(
             xla::PjRtClient* client, int device_id, int inum, int *ilist,
                 int *numneigh, int **firstneigh, bool update) = 0;
 
         virtual bool evaluate_statistics(
-            std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results
+            std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results,
+            bool check_buffers
         ) { return true; }; // Returns success if not required
+
+    protected:
+        Logger logger = Logger::getlogger();
 
     };
 
@@ -66,7 +85,7 @@ namespace jcn {
             /**
              * Initializes the interface.
              *
-             * @params multipliers: A vector of multipliers specifying the
+             * @param multipliers: A vector of multipliers specifying the
              *     relative increase of the neighborlist buffers. Only the
              *     first element is used.
              */
@@ -85,7 +104,8 @@ namespace jcn {
              *     dimensions.
              */
             NeighborListShapes get_neighbor_list_shapes(
-                int max_atoms, int inum, int* numneigh) override;
+                int max_atoms, int inum, int* numneigh,
+                bool check_buffers) override;
 
             /**
               * Builds the sparse neighborlist from the reference neighborlist.
@@ -108,7 +128,8 @@ namespace jcn {
                 int *numneigh, int **firstneigh, bool update) override;
 
             bool evaluate_statistics(
-                std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results
+                std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results,
+                bool check_buffers
             ) override;
 
         private:
@@ -127,6 +148,85 @@ namespace jcn {
             int fill_value = 0;
 
     };
+
+
+    /**
+     * Class that interfaces neighborlists, e.g., from LAMMPS, to a dense
+     * neighbor list in chemtrain.
+     */
+    class SimpleDenseNeighborList : public GraphBuilder {
+
+        public:
+            /**
+             * Initializes the interface.
+             *
+             * @param multipliers: A vector of multipliers specifying the
+             *     relative increase of the neighborlist buffers. Only the
+             *     first element is used.
+             */
+            void initialize(std::vector<float> multipliers) override;
+
+            /**
+             * Returns the required shapes and types of the sparse neighborlist
+             * based on the reference neighborlist.
+             *
+             * @param max_atoms: The maximum number of atoms in the system.
+             * @param inum: The number of local atoms.
+             * @param numneigh: Array holding the number of neighbors for each
+             *     atom.
+             *
+             * @returns Returns ``NeighborListShapes`` struct with necessary
+             *     dimensions.
+             */
+            NeighborListShapes get_neighbor_list_shapes(
+                int max_atoms, int inum, int* numneigh,
+                bool check_buffers) override;
+
+            /**
+              * Builds the sparse neighborlist from the reference neighborlist.
+              *
+              * @param client: The PjRt client to allocate buffers.
+              * @param device_id: The device ID on which to allocate buffers.
+              * @param inum: The number of local atoms.
+              * @param ilist: Array holding the indices of the senders of
+              *     each neighborlist entry.
+              * @param numneigh: Array holding the number of neighbors for each
+              *     atom.
+              * @param firstneigh: Array holding the index of the neighbors
+              *     (receivers) for each sender.
+              * @param update: Whether the neighbor list data must be updated.
+              *
+              * @returns A vector holding references to the buffers.
+              */
+            std::vector<xla::PjRtBuffer*> build_graph(
+                xla::PjRtClient* client, int device_id, int inum, int *ilist,
+                int *numneigh, int **firstneigh, bool update) override;
+
+            bool evaluate_statistics(
+                std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results,
+                bool check_buffers
+            ) override;
+
+        private:
+            float buffer_multiplier;
+
+            std::unique_ptr<xla::Literal> neighbor_literal;
+            std::unique_ptr<xla::Literal> edge_literal;
+            std::unique_ptr<xla::Literal> triplet_literal;
+
+            std::unique_ptr<xla::PjRtBuffer> neighbor_buffer;
+            std::unique_ptr<xla::PjRtBuffer> edge_buffer;
+            std::unique_ptr<xla::PjRtBuffer> triplet_buffer;
+
+            int neighbor_buffer_size_ = 0;
+
+            int n_valid_edges_ = 2; // At least one edge should be present
+            int n_valid_triplets_ = 1;
+
+            int max_atoms_ = 0;
+
+    };
+
 
     class DeviceSparseNeighborList : public GraphBuilder {
 
@@ -153,7 +253,8 @@ namespace jcn {
              *     dimensions.
              */
             NeighborListShapes get_neighbor_list_shapes(
-                int max_atoms, int inum, int* numneigh) override;
+                int max_atoms, int inum, int* numneigh,
+                bool check_buffers) override;
 
             /**
               * Builds the sparse neighborlist from the reference neighborlist.
@@ -194,7 +295,8 @@ namespace jcn {
              *     no overflow occured.
              */
             bool evaluate_statistics(
-                std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results
+                std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results,
+                bool check_buffers
             ) override;
 
         private:

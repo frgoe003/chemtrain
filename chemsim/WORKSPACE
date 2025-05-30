@@ -1,7 +1,9 @@
+# Reproduced from https://github.com/jax-ml/jax under the Apache 2.0 license.
+
 # The XLA commit is determined by third_party/xla/workspace.bzl.
 load("//third_party/xla:workspace.bzl", xla_workspace = "repo")
-xla_workspace()
 
+xla_workspace()
 
 # Initialize the XLA repository and all dependencies.
 #

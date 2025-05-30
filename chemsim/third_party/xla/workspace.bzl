@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Reproduced from https://github.com/jax-ml/jax
+
 # buildifier: disable=module-docstring
 load("//third_party:repo.bzl", "tf_http_archive", "tf_mirror_urls")
 
@@ -21,8 +23,8 @@ load("//third_party:repo.bzl", "tf_http_archive", "tf_mirror_urls")
 #    curl -L https://github.com/openxla/xla/archive/<git hash>.tar.gz | sha256sum
 #    and update XLA_SHA256 with the result.
 
-XLA_COMMIT = "b0368b065c36a4dc27cf8de8a31f6510fa6f5086"
-XLA_SHA256 = "82b889ff11bac258df7e9230fbb45921f0adb0cde85561f8ab699fb0f4cfb5f1"
+XLA_COMMIT = "76da730179313b3bebad6dea6861768421b7358c"
+XLA_SHA256 = "d67ced09b69ab8d7b26fa4cd5f48b22db57eb330294a35f6e1d462ee17066757"
 
 def repo():
     tf_http_archive(

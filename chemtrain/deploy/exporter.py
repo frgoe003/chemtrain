@@ -21,61 +21,90 @@ import jax
 from fontTools.misc.cython import returns
 from jax import numpy as jnp, export, lax
 
-from typing import Dict, NamedTuple, Any, List, Tuple, Callable
+from typing import Dict, NamedTuple, Any, List, Tuple, Callable, NoReturn
 
 import jax_md_mod
 from jax_md import util as md_util, space
 
-from . import graphs, shape_util
+from . import graphs, util
 from ._protobuf import model_pb2 as model_proto
 
 
 class Exporter(metaclass=abc.ABCMeta):
     """Exports a potential model to an MLIR module.
 
+    To export a potential model, subclass this class, select an appropriate
+    graph type and define the energy function:
+
     Usage:
-        To export a potential model, subclass this class, select an appropriate
-        graph type and define the energy function:
 
-        ```python
-            class LennardJonesExport(exporter.Exporter):
+        >>> import jax.numpy as jnp
+        >>> from jax_md_mod import custom_energy
+        >>> from jax_md import partition, space
+        >>> from chemtrain.deploy import exporter, graphs
+        >>> class LennardJonesExport(exporter.Exporter):
+        ...
+        ...     graph_type = graphs.SimpleSparseNeighborList
+        ...     r_cutoff = 5.0
+        ...     unit_style = "real"
+        ...     nbr_order = [1, 1]
+        ...
+        ...     def energy_fn(self, pos, species, graph):
+        ...
+        ...         neighbors = partition.NeighborList(
+        ...             jnp.stack((graph.senders, graph.receivers)),
+        ...             pos, None, None, graph.senders.size, partition.Sparse,
+        ...             None, None, None
+        ...         )
+        ...
+        ...         assert neighbors.idx.shape[0] == 2, "Wrong shape"
+        ...
+        ...         displacement_fn, _ = space.free()
+        ...         apply_fn = custom_energy.customn_lennard_jones_neighbor_list(
+        ...             displacement_fn, None, None,
+        ...             sigma=jnp.asarray([3.165]), epsilon=jnp.asarray([1.0]),
+        ...             r_onset=4.0, r_cutoff=5.0,
+        ...             initialize_neighbor_list=False,
+        ...             per_particle=True # Important for export
+        ...         )
+        ...
+        ...         return apply_fn(pos, neighbors, species=species)
+        ...
+        >>> model = LennardJonesExport()
+        >>> try:
+        ...     model.save("out.ptb")
+        ... except AssertionError as e:
+        ...     # We need to call the export method first
+        ...     print(f"Error: {e}")
+        Error: Model has not been exported yet. Please call `export()` first.
+        >>>
+        >>> model.export()
 
-                graph_type = graphs.DeviceSparseNeighborList
-
-                def energy_fn(self, pos, species, graph):
-
-                neighbors = partition.NeighborList(
-                    jnp.stack((graph.senders, graph.receivers)),
-                    pos, None, None, graph.senders.size, partition.Sparse,
-                    None, None, None
-                )
-
-                assert neighbors.idx.shape[0] == 2, "Wrong shape"
-
-                apply_fn = custom_energy.customn_lennard_jones_neighbor_list(
-                    lambda ra, rb, **kwargs: rb - ra, None, None,
-                    sigma=3.165, epsilon=1.0, r_onset=4.0, r_cutoff=5.0,
-                    initialize_neighbor_list=False
-                )
-
-                return apply_fn(pos, neighbors)
-
-            mlir_module = LennardJonesExport().export()
-        ```
 
     Attributes:
         graph_type: Specifies the required neighborhood representation and
             how to generate it from the input data.
+            See ref:`chemtrain.deploy.graphs`.
+        nbr_order: List of two integers specifying the number of neighbors
+            required for the newton and non-newton setting to correctly
+            compute forces.
+        r_cutoff: Cutoff radius for the potential.
+        unit_style: Specifies the units in which the potential requires
+            positions and returns energies. The force units depend solely
+            on the length and energy units.
 
     """
 
     # Use the default graph containing the full neighbor indices
     graph_type: graphs.NeighborList = graphs.SimpleSparseNeighborList
 
-    num_mpl: int = 0
+    # Order to which neighbors are required for a correct force computation
+    # in the newton and the non-newton setting
+    nbr_order: List[int] = [1, 1]
+
     r_cutoff: float
 
-    mask: bool = False
+    unit_style: str = "real"
 
     _symbols: List[str] = []
     _constraints: List[str] = []
@@ -99,13 +128,14 @@ class Exporter(metaclass=abc.ABCMeta):
         pass
 
     @staticmethod
-    @shape_util.define_symbols("n_atoms")
+    @util.define_symbols("n_atoms")
     def _define_position_shapes(n_atoms, **kwargs):
         shape_defs = (
             jax.ShapeDtypeStruct((n_atoms, 3), jnp.float32),
             jax.ShapeDtypeStruct((n_atoms,), jnp.int32),
-            jax.ShapeDtypeStruct((1,), jnp.int32),
-            jax.ShapeDtypeStruct((1,), jnp.int32),
+            jax.ShapeDtypeStruct((), jnp.int32), # n_local
+            jax.ShapeDtypeStruct((), jnp.int32), # n_ghost
+            jax.ShapeDtypeStruct((), jnp.bool_), # newton flag
         )
 
         return shape_defs
@@ -130,39 +160,45 @@ class Exporter(metaclass=abc.ABCMeta):
         return shapes
 
 
-    def _energy_fn(self, position, species, n_local, n_ghost, *graph_args):
+    def _energy_fn(self, position, species, n_local, n_ghost, newton, *graph_args):
         # Expects particles to be sorted by local, ghost, and padding atoms
 
         valid_mask = jnp.arange(position.shape[0]) < (n_local + n_ghost)
         ghost_mask = jnp.arange(position.shape[0]) < n_local
 
         graph, build_statistics = self.graph_type.create_from_args(
-            self.r_cutoff, self.num_mpl, position, species,
-            ghost_mask,valid_mask, *graph_args)
+            self.r_cutoff, self.nbr_order, position, species,
+            ghost_mask, valid_mask, newton, *graph_args)
         graph = lax.stop_gradient(graph)
 
         @functools.partial(jax.grad, has_aux=True)
         def force_and_aux(pos):
-            if self.mask:
-                per_atom_energies = self.energy_fn(pos, species, valid_mask, graph)
-            else:
-                per_atom_energies = self.energy_fn(pos, species, graph)
+            per_atom_energies = self.energy_fn(pos, species, graph)
 
             assert per_atom_energies.shape == ghost_mask.shape, (
                 f"Per particle energies have shape {per_atom_energies.shape}, "
                 f"but should have shape {ghost_mask.shape}."
             )
 
-            # Attention: Force is negative gradient of potential
-            total_neg_energy = jnp.float32(-1.0) * md_util.high_precision_sum(
-                per_atom_energies * valid_mask)
+            # Attention: Force is negative gradient of potential.
+            # Depending on the newton flag, we either compute:
+            # - the gradient of the _total potential_ w.r.t. the _local atoms_
+            # - the gradient of the _local potential_ w.r.t. _all atoms_
+            # The latter case equals newton=true and requires additional
+            # communication to sum up the forces on the ghost atoms.
+            total_energy = md_util.high_precision_sum(
+                jnp.where(valid_mask, per_atom_energies, jnp.float32(0.0)))
             local_energy = md_util.high_precision_sum(
-                ghost_mask * per_atom_energies)
+                jnp.where(ghost_mask, per_atom_energies, jnp.float32(0.0))
+            )
+
+            force_energy = jnp.where(newton, local_energy, total_energy)
+            force_energy = jnp.negative(force_energy)
 
             # Differentiate w.r.t. the total potential in the box, but exclude
             # ghost atom contributions to the total potential
             aux = local_energy, *build_statistics
-            return total_neg_energy, aux
+            return force_energy, aux
 
         return force_and_aux(position)
 
@@ -171,9 +207,14 @@ class Exporter(metaclass=abc.ABCMeta):
 
         proto = model_proto.Model()
 
-        # Hard-coded for now
         proto.neighbor_list.cutoff = self.r_cutoff
-        proto.neighbor_list.num_mpl = self.num_mpl
+        proto.unit_style = self.unit_style
+
+        assert len(self.nbr_order) == 2, (
+            "The nbr_order must contain the order of required neighbors for "
+            "the newton and non-newton setting."
+        )
+        proto.neighbor_list.nbr_order.extend(self.nbr_order)
 
         self.graph_type.set_properties(proto)
 
@@ -200,8 +241,13 @@ class Exporter(metaclass=abc.ABCMeta):
 
         return str(self._proto)
 
-    def save(self, file: str):
-        """Saves the exported protobuffer to a file."""
+    def save(self, file: str) -> None:
+        """Saves the exported protobuffer to a file.
+
+        Args:
+            file: Path to the file where the model should be saved.
+
+        """
 
         assert self._proto is not None, (
             "Model has not been exported yet. Please call `export()` first."

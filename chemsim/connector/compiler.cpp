@@ -1,6 +1,18 @@
-//
-// Created by Paul Fuchs on 13.09.24.
-//
+/*
+Copyright 2025 Multiscale Modeling of Fluid Materials, TU Munich
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==============================================================================*/
 
 #include <fstream>
 #include <iostream>
@@ -65,13 +77,14 @@ namespace jcn {
         // For shape refinement, we have to provide the shapes of the input tensors
         xla::Shape position_shape = xla::ShapeUtil::MakeShape(xla::F32, absl::Span<const int64_t>{n_atoms, 3});
         xla::Shape species_shape = xla::ShapeUtil::MakeShape(xla::S32, absl::Span<const int64_t>{n_atoms});
-        xla::Shape num_shape = xla::ShapeUtil::MakeShape(xla::S32, absl::Span<const int64_t>{1});
+        xla::Shape num_shape = xla::ShapeUtil::MakeShape(xla::S32, absl::Span<const int64_t>{});
+        xla::Shape newton_flag = xla::ShapeUtil::MakeShape(xla::PRED, absl::Span<const int64_t>{});
 
         std::vector<xla::Shape> inputShapes = {
-            position_shape, species_shape, num_shape, num_shape};
+            position_shape, species_shape, num_shape, num_shape, newton_flag};
 
         // For different graphs, the input shapes can vary
-        int input_args = 4;
+        int input_args = 5;
         for (size_t i = 0; i < graph_shapes.size(); i++) {
             xla::Shape neighbor_shape = xla::ShapeUtil::MakeShape(
                 graph_types[i], graph_shapes[i]);

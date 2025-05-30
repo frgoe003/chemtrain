@@ -129,6 +129,7 @@ API Documentation
    :titlesonly:
 
    api/data/index
+   api/deploy/index
    api/learn/index
    api/quantity/index
    api/ensemble/index
@@ -143,6 +144,7 @@ API Documentation
    chemsim/installation
    chemsim/getting_started
    chemsim/connector
+   chemsim/implementation
 
 .. toctree::
    :titlesonly:
