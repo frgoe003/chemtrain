@@ -99,8 +99,8 @@ __activate:__
 #! /bin/bash
 
 export PATH=<path/to/lammps/build>:$PATH
-export LAMMPS_PLUGIN_PATH=<path/to/chemsim/build>
-export JCN_PJRT_PATH=<path/to/chemsim/lib>
+export LAMMPS_PLUGIN_PATH=<path/to/chemtrain-deploy/build>
+export JCN_PJRT_PATH=<path/to/chemtrain-deploy/lib>
 ```
 
 Calling the script with ``source ./activate`` will set all necessary variables

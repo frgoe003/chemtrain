@@ -27,37 +27,5 @@ If no buffer overflowed during the computation, the interface return the
 results to LAMMPS.
 
 
-```mermaid {Title: Connector}
-
-flowchart TD;
-
-LAMMPS;
-MPI[MPI: Synchronize Recompilation];
-Compute[Compute];
-ComputeShapes[Infer Shapes];
-CheckShapes[\Buffers Filled?\];
-CheckRecompile[\Recompilation Allowed? \];
-Recompile[Recompile Exectuable];
-Computation;
-Evaluate[Evaluate Statistics];
-Success[\Computation Succesful?\];
-Return[LAMMPS];
-
-LAMMPS --> Compute;
-Compute --> ComputeShapes;
-ComputeShapes --> CheckShapes;
-CheckShapes -- No --> Computation;
-CheckShapes -- Yes  --> CheckRecompile;
-CheckRecompile -- No --> MPI;
-MPI --> Compute;
-CheckRecompile -- Yes --> Recompile;
-Recompile --> Computation;
-Computation --> Evaluate;
-Evaluate --> Success;
-Success -- Yes --> Return;
-Success -- No --> Compute;
-
-```
-
 
 
