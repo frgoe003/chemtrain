@@ -153,6 +153,7 @@ API Documentation
 
 
    jax_md_mod/model/index
+   jax_md_mod/jax_md_mod.custom_electrostatics
    jax_md_mod/jax_md_mod.custom_energy
    jax_md_mod/jax_md_mod.custom_interpolate
    jax_md_mod/jax_md_mod.custom_partition
