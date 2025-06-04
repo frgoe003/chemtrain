@@ -2,8 +2,9 @@
 
 ## Example Setup
 
-Using an exported model in ``chemsim`` requires a correct
-[installation](#chemsim_installation) of ``LAMMPS`` with the ``JCN`` plugin.
+Using an exported model in ``chemtrain-deploy`` requires a correct
+[installation](#chemtrain-deploy_installation) of ``LAMMPS`` with the ``JCN``
+plugin.
 Additionally, exporting a model requires a working installation of ``chemtrain``.
 
 The following LAMMPS script describes how to use an exported model in a

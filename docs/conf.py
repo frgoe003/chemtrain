@@ -25,7 +25,7 @@ project = 'Chemtrain'
 copyright = (f'{datetime.now().year}, Multiscale Modeling of Fluid Materials, '
              f'TU Munich')
 author = 'Multiscale Modeling of Fluid Materials'
-
+#
 release = chemtrain_version
 
 
@@ -33,8 +33,8 @@ release = chemtrain_version
 
 subprocess.call("doxygen Doxyfile", shell=True)
 
-breathe_projects = { "chemsim": "doxygen/xml" }
-breathe_default_project = "chemsim"
+breathe_projects = { "chemtrain-deploy": "doxygen/xml" }
+breathe_default_project = "chemtrain-deploy"
 
 # -- General configuration ---------------------------------------------------
 

@@ -138,13 +138,13 @@ API Documentation
 
 .. toctree::
    :titlesonly:
-   :caption: Chemsim
+   :caption: chemtrain-deploy
    :maxdepth: 2
 
-   chemsim/installation
-   chemsim/getting_started
-   chemsim/connector
-   chemsim/implementation
+   chemtrain-deploy/installation
+   chemtrain-deploy/getting_started
+   chemtrain-deploy/connector
+   chemtrain-deploy/implementation
 
 .. toctree::
    :titlesonly:

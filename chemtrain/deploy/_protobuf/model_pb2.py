@@ -15,7 +15,7 @@ _sym_db = _symbol_database.Default()
 
 DESCRIPTOR = _descriptor.FileDescriptor(
   name='model.proto',
-  package='chemsim',
+  package='chemtrain-deploy',
   syntax='proto2',
   serialized_options=None,
   create_key=_descriptor._internal_create_key,
@@ -26,7 +26,7 @@ DESCRIPTOR = _descriptor.FileDescriptor(
 
 _MODEL_NEIGHBORLISTTYPE = _descriptor.EnumDescriptor(
   name='NeighborListType',
-  full_name='chemsim.Model.NeighborListType',
+  full_name='chemtrain-deploy.Model.NeighborListType',
   filename=None,
   file=DESCRIPTOR,
   create_key=_descriptor._internal_create_key,
@@ -57,21 +57,21 @@ _sym_db.RegisterEnumDescriptor(_MODEL_NEIGHBORLISTTYPE)
 
 _MODEL_NEIGHBORLIST = _descriptor.Descriptor(
   name='NeighborList',
-  full_name='chemsim.Model.NeighborList',
+  full_name='chemtrain-deploy.Model.NeighborList',
   filename=None,
   file=DESCRIPTOR,
   containing_type=None,
   create_key=_descriptor._internal_create_key,
   fields=[
     _descriptor.FieldDescriptor(
-      name='type', full_name='chemsim.Model.NeighborList.type', index=0,
+      name='type', full_name='chemtrain-deploy.Model.NeighborList.type', index=0,
       number=1, type=14, cpp_type=8, label=2,
       has_default_value=False, default_value=0,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
       serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
     _descriptor.FieldDescriptor(
-      name='cutoff', full_name='chemsim.Model.NeighborList.cutoff', index=1,
+      name='cutoff', full_name='chemtrain-deploy.Model.NeighborList.cutoff', index=1,
       number=2, type=2, cpp_type=6, label=2,
       has_default_value=False, default_value=float(0),
       message_type=None, enum_type=None, containing_type=None,
@@ -85,7 +85,7 @@ _MODEL_NEIGHBORLIST = _descriptor.Descriptor(
       is_extension=False, extension_scope=None,
       serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
     _descriptor.FieldDescriptor(
-      name='half_list', full_name='chemsim.Model.NeighborList.half_list', index=3,
+      name='half_list', full_name='chemtrain-deploy.Model.NeighborList.half_list', index=3,
       number=4, type=8, cpp_type=7, label=1,
       has_default_value=False, default_value=False,
       message_type=None, enum_type=None, containing_type=None,
@@ -109,28 +109,28 @@ _MODEL_NEIGHBORLIST = _descriptor.Descriptor(
 
 _MODEL = _descriptor.Descriptor(
   name='Model',
-  full_name='chemsim.Model',
+  full_name='chemtrain-deploy.Model',
   filename=None,
   file=DESCRIPTOR,
   containing_type=None,
   create_key=_descriptor._internal_create_key,
   fields=[
     _descriptor.FieldDescriptor(
-      name='mlir_module', full_name='chemsim.Model.mlir_module', index=0,
+      name='mlir_module', full_name='chemtrain-deploy.Model.mlir_module', index=0,
       number=1, type=9, cpp_type=9, label=2,
       has_default_value=False, default_value=b"".decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
       serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
     _descriptor.FieldDescriptor(
-      name='neighbor_list', full_name='chemsim.Model.neighbor_list', index=1,
+      name='neighbor_list', full_name='chemtrain-deploy.Model.neighbor_list', index=1,
       number=4, type=11, cpp_type=10, label=2,
       has_default_value=False, default_value=None,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
       serialized_options=None, file=DESCRIPTOR,  create_key=_descriptor._internal_create_key),
     _descriptor.FieldDescriptor(
-      name='unit_style', full_name='chemsim.Model.unit_style', index=2,
+      name='unit_style', full_name='chemtrain-deploy.Model.unit_style', index=2,
       number=5, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=b"".decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
@@ -165,12 +165,12 @@ Model = _reflection.GeneratedProtocolMessageType('Model', (_message.Message,), {
   'NeighborList' : _reflection.GeneratedProtocolMessageType('NeighborList', (_message.Message,), {
     'DESCRIPTOR' : _MODEL_NEIGHBORLIST,
     '__module__' : 'model_pb2'
-    # @@protoc_insertion_point(class_scope:chemsim.Model.NeighborList)
+    # @@protoc_insertion_point(class_scope:chemtrain-deploy.Model.NeighborList)
     })
   ,
   'DESCRIPTOR' : _MODEL,
   '__module__' : 'model_pb2'
-  # @@protoc_insertion_point(class_scope:chemsim.Model)
+  # @@protoc_insertion_point(class_scope:chemtrain-deploy.Model)
   })
 _sym_db.RegisterMessage(Model)
 _sym_db.RegisterMessage(Model.NeighborList)
