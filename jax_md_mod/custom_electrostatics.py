@@ -244,7 +244,7 @@ def custom_coulomb_recip_ewald(charge: jnp.ndarray,
         _invbox = jnp.linalg.inv(_box)
 
         if fractional_coordinates:
-            position = jnp.einsum('ij,nj->ni', _box, position)
+            position = space.transform(_box, position)
 
         # Non-homogeneous grid dimension
         if isinstance(grid, int):
