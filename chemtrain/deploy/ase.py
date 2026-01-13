@@ -80,17 +80,18 @@ class ChemtrainCalculator(calculator.Calculator):
     def initialize(self, atoms, overflow: bool = False):
 
         # Recompile if overflow occurred
-        recompile = overflow or self.nbrs is None
+        recompile = overflow or (self.nbrs is None)
 
         # Padd the atoms to the next exponent of 2
         self.num_atoms = len(atoms)
         if self.num_atoms > self.max_atoms:
-            self.max_atoms *= int(self.capacity_multiplier * self.num_atoms)
+            print(f"Increase the number of atoms from {self.max_atoms} to {self.num_atoms}")
+            self.max_atoms = int(self.capacity_multiplier * self.num_atoms)
             recompile = True
 
         self.data = {
             # Global properties
-            "periodic": jnp.asarray(atoms.get_pbc(), dtype=bool),
+            "periodic": ~jnp.asarray(atoms.get_pbc(), dtype=bool),
             "box": jnp.asarray([[atoms.get_cell()[j, i] for j in range(3)] for i in range(3)]) / self.scale_pos,
             "total_charge": jnp.sum(atoms.get_initial_charges()) * self.scale_charge,
             # Atomic properties
@@ -106,7 +107,7 @@ class ChemtrainCalculator(calculator.Calculator):
                 ),
         }
 
-        print(f"Loaded data {self.data}")
+        print(f"Recompile {recompile} with overflow {overflow}")
 
         # Initialize a new neighbor list and a new model
         if recompile:
@@ -192,8 +193,10 @@ class ChemtrainCalculator(calculator.Calculator):
             print(f"Computed quantities: {quantities}")
 
             if not any(quantities['overflow']):
-                self.initialize(atoms, overflow=True)
                 break
+
+            print("Detected overflow!")
+            self.initialize(atoms, overflow=True)
     
         else:
             raise RuntimeError(
@@ -201,4 +204,4 @@ class ChemtrainCalculator(calculator.Calculator):
             )
     
         self.results["energy"] = onp.asarray(quantities['U'][0]) / self.scale_energy
-        self.results["forces"] = onp.asarray(quantities['F'][0, :self.num_atoms, :]) / self.scale_energy * self.scale_pos
+        self.results["forces"] = onp.asarray(quantities['F'][0, :self.num_atoms, :]) / self.scale_energy / self.scale_pos
