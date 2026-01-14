@@ -213,12 +213,6 @@ def batch_apply_fn(apply_fn: ApplyFn) -> ApplyFn:
                 node_features_flat += (jnp.tile(
                     feat[None, :], (num_graphs, 1) + (1,) * (feat.ndim -1)
                 ).ravel(),)
-
-        # print(f"Vectors shape: {vectors.shape}")
-        # print(f"Senders shape: {senders.shape}")
-        # print(f"Receivers shape: {receivers.shape}")
-        # print(f"Species shape: {species.shape}")
-        # print(f"Mask shape: {mask.shape}")
     
         energies_flat = wrapped_apply_fn(
             params, senders, receivers, edge_features_flat,
