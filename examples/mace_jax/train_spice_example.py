@@ -118,7 +118,7 @@ def main():
     variables, apply_fn = mace_jax_compose.mace_jax_neighborlist(
         model_config, torch_model, displacement_fn, max_edge_multiplier=1.25,
         positive_species=False,
-        per_particle=False,
+        per_particle=True,
         scale_pos=0.1,  # Convert from Angstrom to nm
         scale_pot=96.185,  # Convert from eV to kJ/mol
         cueq_config=cueq_config
@@ -155,10 +155,12 @@ def main():
             atomic_numbers = jnp.asarray(model_config["atomic_numbers"], dtype=jnp.int32)
             mapped_species = jnp.argmax(species[:, None] == atomic_numbers[None, :], axis=-1)
 
-            return apply_fn(
+            pots = apply_fn(
                 vars, position, neighbor,
                 species=mapped_species, **kwargs
             )
+
+            return jnp.sum(pots)
 
         return energy_fn
 
@@ -210,18 +212,29 @@ def main():
     plot_predictions(train_predictions, dataset["training"],
                                  out_dir, f"preds_training")
 
-
-    _, apply_fn = mace_jax_compose.mace_jax_neighborlist(
-        model_config, torch_model, displacement_fn, max_edge_multiplier=1.25,
-        positive_species=False,
-        per_particle=True,
-        scale_pos=1.0,  # Convert from Angstrom to nm
-        scale_pot=96.185 / 4.184,  # Convert from eV to kJ/mol
-        cueq_config=cueq_config
-    )
-
     # Do not export if cuequivariance is enabled
-    if config["disable_cue"]: return
+    if not config["disable_cue"]: return
+
+    def energy_fn_template(params):
+        vars = {**variables}
+        vars["params"] = params
+
+        def energy_fn(position, neighbor, species, **kwargs):
+            
+            # Need to map from our atomic numbers to the species provided by the
+            # model (0-based).
+            
+            atomic_numbers = jnp.asarray(model_config["atomic_numbers"], dtype=jnp.int32)
+            mapped_species = jnp.argmax(species[:, None] == atomic_numbers[None, :], axis=-1)
+
+            pots = apply_fn(
+                vars, position, neighbor,
+                species=mapped_species, **kwargs
+            )
+
+            return pots
+
+        return energy_fn
 
     # Test exporting the MACE-JAX model
     class ExportedModel(exporter.Exporter):
@@ -242,18 +255,26 @@ def main():
                 None, None, None
             )
 
+            species += 1
+
             assert neighbors.idx.shape[0] == 2, "Wrong shape"
 
+            pos /= 10.0 # From A to nm
             pots = energy_fn_template(trainer_fm.best_params)(
                 pos, neighbors, species=species
-            )            
+            )
+            pots /= 4.184 # From kJ/mol to kcal/mol
 
             return pots
+
+    print("Exporting the trained model...")
 
     model =  ExportedModel()
 
     model.export()
     model.save(out_dir / "out.ptb")
+
+    print("Exported the trained model to", out_dir / "out.ptb")
 
 
 
