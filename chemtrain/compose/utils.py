@@ -34,7 +34,7 @@ class ApplyFn(Protocol):
 
 
 
-def batch_apply_fn(apply_fn: ApplyFn) -> ApplyFn:
+def batch_apply_fn(_apply_fn: ApplyFn) -> ApplyFn:
     """Write custom vmap rules for the apply function.
 
     Instead of batching over graphs, combines all graphs into a supergraph.
@@ -50,6 +50,13 @@ def batch_apply_fn(apply_fn: ApplyFn) -> ApplyFn:
         in the neural network.
 
     """
+
+    def apply_fn(*args, **kwargs):
+        print(f"\n\nCalled apply function with args {args} and kwargs {kwargs}.")
+        res = _apply_fn(*args, **kwargs)
+        print(f"Apply function returned {res}.\n\n")
+        return res
+
 
     def wrapped(params, senders, receivers, edge_features, node_features):
         
@@ -67,14 +74,20 @@ def batch_apply_fn(apply_fn: ApplyFn) -> ApplyFn:
     @jax.custom_vjp
     @jax.custom_batching.custom_vmap
     def wrapped_apply_fn(params, senders, receivers, edge_features, node_features):
+        print("In wrapped apply fn.")
+
         return apply_fn(params, senders, receivers, edge_features, node_features)
         
     def wrapped_fun_fwd(*args):
+        print("In wrapped fun fwd.")
+
         y = wrapped_apply_fn(*args)
         return y, args
 
     @jax.custom_batching.custom_vmap
     def wrapped_fun_bwd(res, y_bar):
+        print(f"In wrapped fun bwd with res {res} and y_bar {y_bar}.")
+        
         _, vjp_fn = jax.vjp(apply_fn, *res)
 
         return vjp_fn(y_bar)
@@ -82,7 +95,8 @@ def batch_apply_fn(apply_fn: ApplyFn) -> ApplyFn:
     @wrapped_fun_bwd.def_vmap
     def wrapped_fun_bwd_batch(
             axis_size, in_batched, res, b_y_bar):
-        
+        print(f"In wrapped fun bwd batch with {axis_size} for {in_batched} and b_y_bar {b_y_bar}.")
+
         (params_batched, *_), y_bar_batched = in_batched
         params, senders, receivers, edge_features, node_features = res
 
@@ -158,6 +172,7 @@ def batch_apply_fn(apply_fn: ApplyFn) -> ApplyFn:
     @wrapped_apply_fn.def_vmap
     def wrapped_fun_batch(
             axis_size, in_batched, params, senders, receivers, edge_features, node_features):
+        print(f"Call custom vamp function with {axis_size} for {in_batched} and edge_features {edge_features}.")    
 
         _, bsenders, breceivers, bedge_features, bnode_features = in_batched
 
