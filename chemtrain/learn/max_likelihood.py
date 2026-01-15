@@ -145,31 +145,43 @@ def shmap_update_fn(batched_model, loss_fn, optimizer, penalty_fn=None):
 
     param_loss_fn = _get_param_loss_fn(loss_fn, batched_model, penalty_fn)
 
-    @jax.jit
-    @partial(jax.shard_map, mesh=mesh, in_specs=(
-        PartitionSpec('batch',),
-        PartitionSpec(),
-        PartitionSpec()
-    ), out_specs=PartitionSpec())
-    def _inner_sharded(batch, params, opt_state):
-        (loss, per_target_loss), grad = value_and_grad(
-            param_loss_fn, has_aux=True)(params, batch)
-        # step optimizer within pmap to minimize communication overhead
-        grad = lax.pmean(grad, axis_name='batch')
-        loss = lax.pmean(loss, axis_name='batch')
-        per_target_loss = lax.pmean(per_target_loss, axis_name='batch')
+    if mesh.size > 1:
+        @jax.jit
+        @partial(jax.shard_map, mesh=mesh, in_specs=(
+            PartitionSpec('batch',),
+            PartitionSpec(),
+            PartitionSpec()
+        ), out_specs=PartitionSpec())
+        def _inner(batch, params, opt_state):
+            (loss, per_target_loss), grad = value_and_grad(
+                param_loss_fn, has_aux=True)(params, batch)
+            grad = lax.pmean(grad, axis_name='batch')
+            loss = lax.pmean(loss, axis_name='batch')
+            per_target_loss = lax.pmean(per_target_loss, axis_name='batch')
 
-        new_params, new_opt_state = step_optimizer(
-            params, opt_state, grad, optimizer)
+            new_params, new_opt_state = step_optimizer(
+                params, opt_state, grad, optimizer)
 
-        return new_params, new_opt_state, loss, grad, per_target_loss
+            return new_params, new_opt_state, loss, grad, per_target_loss
+           
+    else:
+        @jax.jit
+        def _inner(batch, params, opt_state):
+            (loss, per_target_loss), grad = value_and_grad(
+                param_loss_fn, has_aux=True)(params, batch)
+
+            new_params, new_opt_state = step_optimizer(
+                params, opt_state, grad, optimizer)
+
+            return new_params, new_opt_state, loss, grad, per_target_loss
 
     def update_fn(params, opt_state, batch, per_target=False):
-        params = device_put(params, replicate)
-        opt_state = device_put(opt_state, replicate)
-        batch = device_put(batch, split)
+        if mesh.size > 1:
+            params = device_put(params, replicate)
+            opt_state = device_put(opt_state, replicate)
+            batch = device_put(batch, split)
 
-        *outs, per_target_loss = _inner_sharded(batch, params, opt_state)
+        *outs, per_target_loss = _inner(batch, params, opt_state)
 
         if per_target:
             return *outs, per_target_loss
@@ -206,43 +218,40 @@ def shmap_loss_fn(batched_model, loss_fn, penalty_fn=None):
 
     param_loss_fn = _get_param_loss_fn(loss_fn, batched_model, penalty_fn)
 
-    @jax.jit
-    def batch_update(params, data):
-        if mesh.size > 1:
-            @partial(jax.shard_map, mesh=mesh, in_specs=(
-                PartitionSpec('batch'),
-                PartitionSpec(),
-            ), out_specs=PartitionSpec())
-            def _inner(batch, params):
-                loss, per_target_loss = param_loss_fn(params, *batch)
+    if mesh.size > 1:
+        @jax.jit
+        @partial(jax.shard_map, mesh=mesh, in_specs=(
+            PartitionSpec('batch'),
+            PartitionSpec(),
+        ), out_specs=PartitionSpec())
+        def _inner(batch, params):
+            loss, per_target_loss = param_loss_fn(params, *batch)
 
-                loss = lax.pmean(loss, axis_name='batch')
-                per_target_loss = lax.pmean(per_target_loss, axis_name='batch')
+            loss = lax.pmean(loss, axis_name='batch')
+            per_target_loss = lax.pmean(per_target_loss, axis_name='batch')
 
-                return loss, per_target_loss
+            return loss, per_target_loss
 
-        else:
-            @jax.jit
-            def _inner(batch, params):
-                loss, per_target_loss = param_loss_fn(params, *batch)
-                return loss, per_target_loss
+    else:
+        @jax.jit
+        def _inner(batch, params):
+            loss, per_target_loss = param_loss_fn(params, *batch)
+            return loss, per_target_loss
 
-        return _inner(data, params)
-
-    def loss_fn(params, batch, mask=None, per_target=False):
-        data = batch, mask
+    def shmapped_loss_fn(params, batch, mask=None, per_target=False):
+        bm = batch, mask
         if mesh.size > 1:
             params = device_put(params, replicate)
-            data = device_put(data, split)
+            bm = device_put(bm, split)
 
-        *outs, per_target_loss = batch_update(params, data)
+        *outs, per_target_loss = _inner(bm, params)
 
         if per_target:
             return *outs, per_target_loss
         else:
             return outs
 
-    return loss_fn
+    return shmapped_loss_fn
 
 
 def shmap_model(batched_model):
@@ -267,19 +276,23 @@ def shmap_model(batched_model):
     replicate = NamedSharding(mesh, PartitionSpec())
     split = NamedSharding(mesh, PartitionSpec('batch'))
 
-    _sharded_model = jax.jit(jax.shard_map(
-        batched_model, mesh=mesh,
-        in_specs=(PartitionSpec(), PartitionSpec('batch',)),
-        out_specs=PartitionSpec('batch',)
-    ))
+    if mesh.size > 1:
+        _model = jax.jit(jax.shard_map(
+            batched_model, mesh=mesh,
+            in_specs=(PartitionSpec(), PartitionSpec('batch',)),
+            out_specs=PartitionSpec('batch',)
+        ))
+    else:
+        _model = jax.jit(batched_model)
 
-    def shmapped_model(params, batch):
-        params = device_put(params, replicate)
-        batch = device_put(batch, split)
+    def model(params, batch):
+        if mesh.size > 1:
+            params = device_put(params, replicate)
+            batch = device_put(batch, split)
 
-        return _sharded_model(params, batch)
-
-    return shmapped_model
+        return _model(params, batch)
+    
+    return model
 
 
 def init_val_predictions(batched_model, val_loader, batch_size=1,
