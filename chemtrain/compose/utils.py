@@ -15,8 +15,11 @@
 
 """Utilities to connect models to chemtrain."""
 
+import numpy as onp
+
 import jax
 import jax.numpy as jnp
+from jax import lax
 
 from typing import Protocol, Any, Tuple
 
@@ -84,33 +87,17 @@ def batch_apply_fn(_apply_fn: ApplyFn) -> ApplyFn:
     @wrapped_fun_bwd.def_vmap
     def wrapped_fun_bwd_batch(
             axis_size, in_batched, res, b_y_bar):
-        (params_batched, *_), y_bar_batched = in_batched
-        params, senders, receivers, edge_features, node_features = res
-
-        num_graphs = axis_size
-        num_edges = senders.shape[-1]
-        natoms = node_features[0].shape[1]
-
-        # Flatten the graphs into one supergraph. The order of edges does not
-        # change, only the nodes are relabeled.
-        senders_flat = jnp.where(
-            senders.ravel() < natoms,
-            senders.ravel() + natoms * jnp.repeat(jnp.arange(num_graphs), num_edges),
-            num_graphs * natoms
+        
+        args_batched, y_bar_batched = in_batched
+        bparams, *inputs_batched = args_batched
+        params, *graph_args = res
+        
+        flattened_graph, graph_shapes = flatten_graph(
+            axis_size, inputs_batched, *graph_args
         )
-        receivers_flat = jnp.where(
-            receivers.ravel() < natoms,
-            receivers.ravel() + natoms * jnp.repeat(jnp.arange(num_graphs), num_edges),
-            num_graphs * natoms
-        )
-                
-        # Flatten all other features
-        edge_features_flat = tuple(
-            jnp.reshape(feat, (-1,) + feat.shape[2:]) for feat in edge_features
-        )
-        node_features_flat = tuple(
-            jnp.reshape(feat, (-1,) + feat.shape[2:]) for feat in node_features
-        )
+        senders_flat, receivers_flat, edge_features_flat, node_features_flat = \
+            flattened_graph
+        num_graphs, num_edges, natoms = graph_shapes
  
         if not y_bar_batched:
             # Tile the cotangent if it is not batched
@@ -121,13 +108,30 @@ def batch_apply_fn(_apply_fn: ApplyFn) -> ApplyFn:
         else:
             y_bar_flat = jnp.reshape(b_y_bar, (-1,))
 
-        # Let jax figure out the vjp on the flattened supergraph
-        _, vjp_fn = jax.vjp(
-            apply_fn, params, senders_flat, 
-            receivers_flat, edge_features_flat, node_features_flat
-        )
+        # TODO: Can we also just apply the vjp to the batched fwd function to
+        #       save some operations?
         
+        # TODO: Correct the param batching logic here....
+        #       Params could in principle be batched INSIDE the jvp function.
+
+        # Let jax figure out the vjp on the flattened supergraph
+
+        if jax.tree.leaves(bparams)[0]:
+            _, vjp_fn = jax.vjp(
+                lambda *args: lax.map(
+                    lambda p: wrapped_apply_fn(p, *args[1:]), args[0]
+                ),
+                params, senders_flat, receivers_flat, edge_features_flat,
+                node_features_flat
+            )
+        else:
+            _, vjp_fn = jax.vjp(
+                apply_fn, params, senders_flat, 
+                receivers_flat, edge_features_flat, node_features_flat
+            )
+
         grads = vjp_fn(y_bar_flat)
+        
         g_params, g_senders, g_receivers, g_edge_features, g_node_features = grads
 
         # Reshape the gradients back to the batched shape
@@ -147,7 +151,7 @@ def batch_apply_fn(_apply_fn: ApplyFn) -> ApplyFn:
 
         # Return which of the outputs are batched
         out_batched = (
-            params_batched, True, True,
+            bparams, True, True,
             (True,) * len(g_edge_features),
             (True,) * len(g_node_features)
         )
@@ -160,11 +164,69 @@ def batch_apply_fn(_apply_fn: ApplyFn) -> ApplyFn:
     def wrapped_fun_batch(
             axis_size, in_batched, params, senders, receivers, edge_features, node_features):
 
-        _, bsenders, breceivers, bedge_features, bnode_features = in_batched
+        bparams, *inputs_batched = in_batched
+
+        # Find out whether any of the parameters is batched
+        batched_params = jax.tree.reduce(
+            onp.logical_or, bparams, onp.bool(False)
+        )
+ 
+        # TODO: Is is possible that both params and graphs are batched at the
+        #       same time?
+        #       It seems possible. In that case, we just tile all parameters
+        #       and apply a complete lax.map.
+
+        if batched_params:
+            print("Found batched parameters.")
+            # Ensure that all params are in the batched shape
+            args_tiled = jax.tree.map(
+                lambda l, b: jnp.tile(l, (axis_size,) + (1,) * (l.ndim - 1))
+                if not b else l,
+                (params, senders, receivers, edge_features, node_features),
+                (bparams, *inputs_batched),
+            )
+
+            energies = lax.map(
+                lambda args: wrapped_apply_fn(*args), args_tiled
+            )
+
+            return energies, True
+        else:
+            
+            flattened_graph, graph_shapes = flatten_graph(
+                axis_size, inputs_batched, senders, receivers, edge_features,
+                node_features
+            )
+            senders, receivers, edge_features_flat, node_features_flat = \
+                flattened_graph
+            num_graphs, num_edges, natoms = graph_shapes
+
+
+            energies_flat = wrapped_apply_fn(
+                params, senders, receivers, edge_features_flat,
+                node_features_flat
+            )
+
+            # Unflatten the results
+            return energies_flat.reshape((axis_size, -1)), True
+
+    return wrapped
+
+
+def flatten_graph(axis_size, in_batched, senders, receivers, edge_features, node_features):
+        """Flattens batched graphs into a supergraph."""
+
+        bsenders, breceivers, bedge_features, bnode_features = in_batched
 
         num_graphs = axis_size
-        num_edges = senders.shape[1]
-        natoms = node_features[0].shape[1]
+        num_edges = (
+            senders.shape[1] if bsenders
+            else senders.shape[0]
+        )
+        natoms = (
+            node_features[0].shape[1] if bnode_features[0]
+            else node_features[0].shape[0]
+        )
 
         if bsenders:
             assert breceivers, (
@@ -214,15 +276,5 @@ def batch_apply_fn(_apply_fn: ApplyFn) -> ApplyFn:
                 node_features_flat += (jnp.tile(
                     feat[None, :], (num_graphs, 1) + (1,) * (feat.ndim -1)
                 ).ravel(),)
-    
-        energies_flat = wrapped_apply_fn(
-            params, senders, receivers, edge_features_flat,
-            node_features_flat
-        )
 
-        # Unflatten the results
-        energies = energies_flat.reshape((num_graphs, -1))
-
-        return energies, True
-
-    return wrapped
+        return (senders, receivers, edge_features_flat, node_features_flat), (num_graphs, num_edges, natoms)

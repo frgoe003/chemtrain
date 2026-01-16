@@ -45,8 +45,8 @@ from mace_jax.modules.wrapper_ops import CuEquivarianceConfig
 def get_default_config():
     parser = argparse.ArgumentParser()
     parser.add_argument("device", type=str, default="-1")
-    parser.add_argument("--epochs", type=int, default=250)
-    parser.add_argument("--lr", type=float, default=5e-5)
+    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--test", action="store_true", default=False)
     parser.add_argument("--disable_cue", action="store_true", default=False)
     args = parser.parse_args()
