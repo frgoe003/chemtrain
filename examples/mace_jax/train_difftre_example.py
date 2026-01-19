@@ -65,7 +65,7 @@ def get_default_config():
             ),
         ),
         targets=OrderedDict(
-            rdf = ["data/rdf_liquid.txt"],
+            rdf = ["data/rdf_liquid.csv"],
         ),
         timings=OrderedDict(
             dt=4e-3,
