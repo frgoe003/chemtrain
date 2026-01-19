@@ -123,13 +123,10 @@ def batch_apply_fn(_apply_fn: ApplyFn) -> ApplyFn:
             onp.logical_or, bparams, onp.bool(False)
         )
  
-        # TODO: Is is possible that both params and graphs are batched at the
-        #       same time?
-        #       It seems possible. In that case, we just tile all parameters
-        #       and apply a complete lax.map.
+        # If the parameters are batched, the super-graph strategy does not work.
+        # Thus, we fall back to a sequential evaluation via lax.map.
 
         if batched_params:
-            print("Found batched parameters.")
             # Ensure that all params are in the batched shape
             args_tiled = jax.tree.map(
                 lambda l, b: jnp.tile(l, (axis_size,) + (1,) * (l.ndim - 1))
