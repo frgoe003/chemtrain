@@ -46,7 +46,7 @@ def get_default_config():
 
     return OrderedDict(
         optimizer=OrderedDict(
-            init_lr=1e-3,
+            init_lr=1e-5,
             lr_decay=1e-2,
             epochs=args.epochs,
             batch=args.batch,
@@ -62,14 +62,18 @@ def get_default_config():
         ),
         dataset=OrderedDict(
             subsets=[
-                "SPICE Dipeptides",
+                "Dipeptides",
+                "Amino Acid",
+                "PubChem",
+                "Water",
+                "DES",
             ],
             total_charge='total_charge', # Use all samples if commented out
             max_samples=1000 # Use all samples if commented out
         ),
         gammas=OrderedDict(
-            # U=1e-3,
-            U=0.0, # There seems to be a difference in predicted energies
+            U=1e-3,
+            # U=0.0, # There seems to be a difference in predicted energies
             F=1e-2,
         ),
         disable_cue=args.disable_cue,
@@ -85,7 +89,7 @@ def main():
         "/ds/project/paul/Datasets/",
         subsets=config["dataset"].get("subsets"),
         max_samples=config["dataset"].get("max_samples"),
-        fractional=False
+        fractional=False, neutral=True
     )
     dataset = spice.process_dataset(dataset)
 
@@ -117,10 +121,11 @@ def main():
     
     variables, apply_fn = mace_jax_compose.mace_jax_neighborlist(
         model_config, torch_model, displacement_fn, max_edge_multiplier=1.25,
-        positive_species=False,
         per_particle=True,
         scale_pos=0.1,  # Convert from Angstrom to nm
         scale_pot=96.185,  # Convert from eV to kJ/mol
+        # Map species to atomic numbers for MACE-JAX compatibility
+        species_mapping=mace_jax_compose.AtomicNumberMapping(max_number=60),
         cueq_config=cueq_config
     )
 
@@ -128,20 +133,19 @@ def main():
     config["dataset"]["subsets"] = list(info["subsets"].values())
 
     # Infer the number of neighbors within the model cutoff
-    nbrs_init, (max_neighbors, max_edges, avg_num_neighbors,
-               ) = preprocessing.allocate_neighborlist(
+    nbrs_init, _ = preprocessing.allocate_neighborlist(
         dataset["training"], displacement_fn, 0.0,
         model_config["r_max"] / 10., mask_key="mask",
         format=partition.Sparse, count_triplets=False
     )
 
     nbrs_init = nbrs_init.update(dataset['training']['R'][0], mask=dataset['training']['mask'][0])
-    species_init = jnp.argmax(dataset['training']['species'][0][:, None] == jnp.array(model_config["atomic_numbers"])[None, :], axis=-1)
-    print(f"Use initial species: {species_init}")
-    print(f"Compute initial energy as a test: {apply_fn(variables, dataset['training']['R'][0], nbrs_init, species=species_init, mask=dataset['training']['mask'][0])}")
+    species_init = dataset['training']['species'][0]
+
+    print(f"Compute initial energy as a test: "
+          f"{apply_fn(variables, dataset['training']['R'][0], nbrs_init, species=species_init, mask=dataset['training']['mask'][0])}")
 
     init_params = variables["params"]
-
 
     def energy_fn_template(params):
         vars = {**variables}
@@ -149,16 +153,16 @@ def main():
 
         def energy_fn(position, neighbor, species, **kwargs):
             
-            # Need to map from our atomic numbers to the species provided by the
-            # model (0-based).
-            
+            pots = apply_fn(
+                vars, position, neighbor, species=species, **kwargs
+            )
+
+            # Substract the prodived atomic energies
             atomic_numbers = jnp.asarray(model_config["atomic_numbers"], dtype=jnp.int32)
             mapped_species = jnp.argmax(species[:, None] == atomic_numbers[None, :], axis=-1)
-
-            pots = apply_fn(
-                vars, position, neighbor,
-                species=mapped_species, **kwargs
-            )
+            pots -= jnp.asarray(
+                model_config['atomic_energies'] * 96.185, dtype=jnp.float32
+            )[mapped_species] * kwargs.get('mask', 1.0)
 
             return jnp.sum(pots)
 
@@ -215,7 +219,7 @@ def main():
     # Do not export if cuequivariance is enabled
     if not config["disable_cue"]: return
 
-    def energy_fn_template(params):
+    def export_energy_fn_template(params):
         vars = {**variables}
         vars["params"] = params
 
@@ -223,13 +227,10 @@ def main():
             
             # Need to map from our atomic numbers to the species provided by the
             # model (0-based).
-            
-            atomic_numbers = jnp.asarray(model_config["atomic_numbers"], dtype=jnp.int32)
-            mapped_species = jnp.argmax(species[:, None] == atomic_numbers[None, :], axis=-1)
+            species += 1 # From 0-based to 1-based            
 
             pots = apply_fn(
-                vars, position, neighbor,
-                species=mapped_species, **kwargs
+                vars, position, neighbor, species=species, **kwargs
             )
 
             return pots
@@ -247,21 +248,19 @@ def main():
             2*model_config["num_interactions"]
         ]
 
-        def energy_fn(self, pos, species, graph):
+        def energy_fn(self, position, species, graph):
 
             neighbors = partition.NeighborList(
                 jax.numpy.stack((graph.senders, graph.receivers)),
-                pos, None, None, graph.senders.size, partition.Sparse,
+                position, None, None, graph.senders.size, partition.Sparse,
                 None, None, None
             )
 
-            species += 1
-
             assert neighbors.idx.shape[0] == 2, "Wrong shape"
 
-            pos /= 10.0 # From A to nm
-            pots = energy_fn_template(trainer_fm.best_params)(
-                pos, neighbors, species=species
+            position /= 10.0 # From A to nm
+            pots = export_energy_fn_template(trainer_fm.best_params)(
+                position, neighbors, species=species
             )
             pots /= 4.184 # From kJ/mol to kcal/mol
 

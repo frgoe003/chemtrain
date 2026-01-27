@@ -17,7 +17,7 @@ from jax import random
 
 from jax_md_mod import custom_quantity, io
 from jax_md import (
-    partition, space, simulate, quantity as snapshot_quantity
+    partition, space, simulate
 )
 
 import optax
@@ -46,7 +46,7 @@ def get_default_config():
     parser = argparse.ArgumentParser()
     parser.add_argument("device", type=str, default="-1")
     parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--lr", type=float, default=2e-4)
+    parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--test", action="store_true", default=False)
     parser.add_argument("--disable_cue", action="store_true", default=False)
     args = parser.parse_args()
@@ -82,8 +82,8 @@ def get_default_config():
             weight_decay=0e-2,
             batch=1, # Note: Batch size -1 possible -> All statepoints
             optimizer_kwargs=OrderedDict(
-                b1=0.9,
-                b2=0.99,
+                b1=0.5,
+                b2=0.9,
                 eps=1e-8,
                 eps_root=1e-16,
                 nesterov=False,
@@ -92,7 +92,7 @@ def get_default_config():
         gammas=OrderedDict(
             rdf = [1.0],
         ),
-        reweighting_ratio=0.9,
+        reweighting_ratio=0.5,
         disable_cue=args.disable_cue,
     )
 
@@ -144,10 +144,10 @@ def main():
     
     variables, apply_fn = mace_jax_compose.mace_jax_neighborlist(
         model_config, torch_model, displacement_fn, max_edge_multiplier=1.25,
-        positive_species=True,
         per_particle=False,
         scale_pos=0.1,  # Convert from Angstrom to nm
         scale_pot=96.185,  # Convert from eV to kJ/mol
+        species_mapping=mace_jax_compose.AtomicNumberMapping(max_number=90),
         cueq_config=cueq_config
     )
 

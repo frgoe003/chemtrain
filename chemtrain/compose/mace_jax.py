@@ -1,3 +1,26 @@
+# MIT License
+#
+# Copyright (c) 2022 mace-jax
+# Copyright (c) 2026 Multiscale Modeling of Fluid Materials, TU Munich
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 """Loads a MACE model from PyTorch via MACE-JAX."""
 
 from typing import Dict, Any, Tuple, Callable
@@ -116,7 +139,7 @@ class JaxMACE(mace_jax_models.ScaleShiftMACE):
 
         node_inter_es = jnp.sum(jnp.stack(node_energies_list, axis=0), axis=0)
         node_inter_es = self.scale_shift(node_inter_es, node_heads)
-        
+
         node_energy = node_e0 + node_inter_es
 
         # Only necessary to return energies per node (for now)
@@ -137,8 +160,7 @@ def load_foundational_model(family: str = "mp",
     """
 
     torch_model = mace_jax_from_torch._load_torch_model_from_foundations(
-            family, version
-    )
+            family, version)
     torch_model.eval()
 
     config = mace_jax_from_torch.extract_config_mace_model(torch_model)
@@ -148,6 +170,35 @@ def load_foundational_model(family: str = "mp",
     return torch_model, config
 
 
+class SpeciesMapping():
+    """Identity mapping for species."""
+
+    def __call__(self, species: jnp.ndarray, config: Dict) -> jnp.ndarray:
+        del config # Unused
+
+        return species
+
+
+class AtomicNumberMapping(SpeciesMapping):
+    """Maps atomic numbers to MACE-JAX species."""
+
+    def __init__(self, max_number: int = 100):
+        self.max_number = max_number
+
+
+    def __call__(self, species: jnp.ndarray, config: Dict) -> jnp.ndarray:
+
+        atomic_numbers = jnp.asarray(config["atomic_numbers"], dtype=jnp.int32)
+
+        # Create lookup table, mapping from atomic number to index
+        lookup_table = jnp.argmax(
+            jnp.arange(self.max_number)[:, None] + 1 == atomic_numbers[None, :],
+            axis=-1
+        )
+
+        return lookup_table[species - 1]
+
+
 def mace_jax_neighborlist(config: Dict[str, Any],
                           torch_model: Any,
                           displacement: space.DisplacementFn,
@@ -155,8 +206,8 @@ def mace_jax_neighborlist(config: Dict[str, Any],
                           per_particle: bool = False,
                           scale_pos: float = 0.1,
                           scale_pot: float = 96.485,
-                          positive_species: bool = False,
-                          cueq_config: CuEquivarianceConfig = None
+                          species_mapping: SpeciesMapping = SpeciesMapping(),
+                          cueq_config: CuEquivarianceConfig = None,
                           ) -> Tuple[Any, Callable]:
     """MACE model for property prediction.
 
@@ -170,7 +221,7 @@ def mace_jax_neighborlist(config: Dict[str, Any],
         per_particle: Return per-particle energies instead of total energy.
         scale_pos: Scaling factor for positions, i.e., to convert units.
         scale_pot: Scaling factor for potentials, i.e., to convert units.
-        positive_species: Whether species are truly positive.
+        species_mapping: Mapping for species to model-compatible indices.
         cueq_config: Configuration for CuEquivariance optimizations.
 
     Returns:
@@ -212,12 +263,11 @@ def mace_jax_neighborlist(config: Dict[str, Any],
                  species: jax.Array = None,
                  mask: jax.Array = None,
                  **dynamic_kwargs):
-        if species is None:
-            species = jnp.zeros(position.shape[0], dtype=jnp.int32)
+        assert species is not None, "Species must be provided."
+        species = species_mapping(species, config)
+
         if mask is None:
             mask = jnp.ones(position.shape[0], dtype=jnp.bool_)
-        if positive_species:
-            species -= 1
 
         vectors, senders, receivers = custom_partition.readout_vectors(
             displacement, r_cutoff, position, neighbor, species,
@@ -238,9 +288,3 @@ def mace_jax_neighborlist(config: Dict[str, Any],
             return jnp.sum(per_atom_energies)
 
     return jax.tree.map(jnp.asarray, variables), jax.jit(apply_fn)
-
-
-if __name__ == '__main__':
-    _, config = load_foundational_model()
-    
-    print(f"Loaded foundational model with config: {config}")
