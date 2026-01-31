@@ -51,6 +51,52 @@ def mask_dense(idx, mask=None):
     return jnp.where(total_mask, idx.shape[0], idx)
 
 
+def partition_neighbor_list(nbrs: partition.NeighborList,
+                            partitions: Array = None,
+                            max_capacity: int = None) -> partition.NeighborList:
+    """Removes edges between particles of different partitions.
+
+    Args:
+        nbrs: Dense or sparse neighbor list.
+        partitions: Array containing the partition indices of each particle.
+        max_capacity: Maximum capacity of the masked neighbor list.
+            If not specified, the capacity of the original neighbor list is used.
+
+    Returns:
+        Returns a neighbor list without edges to invalid particles.
+
+    """
+
+    def mask_sparse(idx):
+        # Mask out all invalid edges
+        senders, receivers = idx
+
+        edge_mask = partitions[senders] != partitions[receivers]
+
+        return jnp.where(edge_mask[jnp.newaxis, :], nbrs.reference_position.shape[0], idx)
+
+    if nbrs.format == partition.NeighborListFormat.Dense:
+        raise NotImplementedError(
+            "Partitioning is not yet implemented for dense neighbor lists."
+        )
+
+    else:
+        new_idx = mask_sparse(nbrs.idx)
+        if max_capacity is not None:
+            invalid_idx = nbrs.reference_position.shape[0]
+            valid = jnp.logical_and(
+                new_idx[0, :] < invalid_idx,
+                new_idx[1, :] < invalid_idx
+            )
+            _, select = lax.top_k(valid, k=max_capacity)
+            new_idx = jnp.take(new_idx, select, axis=1)
+
+    return nbrs.set(
+        idx=new_idx, max_occupancy=max_capacity
+        if max_capacity is not None else nbrs.max_occupancy,
+    )
+
+
 def mask_neighbor_list(nbrs: partition.NeighborList,
                        mask: Array = None) -> partition.NeighborList:
     """Masks the neighbor list indices.

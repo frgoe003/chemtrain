@@ -1092,7 +1092,7 @@ def rigid_body_alignment(positions, reference_positions, weights=None):
     # Weighted covariance: X^T W Y
     cov = jnp.einsum('ni,n,nj->ij', X, weights, Y)
 
-    U, _, Vh = jnp.linalg.svd(cov, full_matrices=True, compute_uv=True)
+    U, _, Vh = jnp.linalg.svd(cov, full_matrices=False, compute_uv=True)
     V = Vh.T
 
     # Proper rotation (avoid reflection)
@@ -1114,7 +1114,20 @@ def rigid_body_alignment(positions, reference_positions, weights=None):
     # Compute the mean squared deviation after alignment
     msd = jnp.sum(weights[:, jnp.newaxis] * jnp.square(p_opt - reference_positions))
 
-    return (R, t), p_opt, msd
+    # Compute the com distance and the rotation angle
+
+    d2 = jnp.sum((pbar - qbar) ** 2)
+    # Save sqrt operation for gradient stability
+    d = jnp.sqrt(jnp.where(d2 > 0, jnp.sqrt(d2), 1.0)) * (d2 > 0)
+
+    # Convert to rotation angle.
+    cos_theta = (jnp.trace(R) - 1) / 2
+    sin_theta = jnp.linalg.norm(R - R.T) / (2 * jnp.sqrt(2))
+
+    theta = jnp.atan2(sin_theta, cos_theta)
+
+
+    return (R, t), p_opt, (msd, d, theta)
 
 
 
@@ -1163,7 +1176,7 @@ def init_rmsd(reference_positions,
         q = vmap(partial(displacement_fn, box=reference_box),
                 in_axes=(None, 0))(ref_q, reference_positions[idx])
 
-        *_, msd = rigid_body_alignment(p, q, weights=weights)
+        *_, (msd, *_) = rigid_body_alignment(p, q, weights=weights)
         rmsd = jnp.sqrt(msd)
 
         return rmsd

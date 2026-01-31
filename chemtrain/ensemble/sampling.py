@@ -137,7 +137,7 @@ def process_printouts(time_step, total_time, t_equilib, print_every, t_start=0):
         A class containing information for the simulator
         on which states to save.
     """
-    assert total_time > 0. and t_equilib > 0., 'Times need to be positive.'
+    assert total_time > 0. and t_equilib >= 0., 'Times need to be positive.'
     assert total_time > t_equilib, ('Total time needs to exceed equilibration '
                                     'time, otherwise no trajectory will be '
                                     'sampled.')
