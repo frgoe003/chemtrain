@@ -72,6 +72,9 @@ dynamic = ["version"]
     "breathe",
     "sphinxcontrib-mermaid"
 ]
+"mace-jax" = [
+    "mace-jax @ git+https://github.com/ACEsuit/mace-jax.git@7e9d467d1701290b6606a20ff2c625c27e973254"
+]
 
 [tool.setuptools.packages.find]
 namespaces = false

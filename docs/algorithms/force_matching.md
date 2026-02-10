@@ -129,7 +129,7 @@ $\theta_1 = \log b_0,\ \theta_2= \log k_B$.
 r_init = position_dataset[0, ...]
 
 displacement_fn, shift_fn = space.periodic_general(box, fractional_coordinates=True)
-neighbor_fn = custom_partition.masked_neighbor_list(displacement_fn, 0.0, r_cutoff=1.0)
+neighbor_fn = custom_partition.masked_neighbor_list(displacement_fn, r_cutoff=1.0)
 
 nbrs_init = neighbor_fn.allocate(r_init)
 
