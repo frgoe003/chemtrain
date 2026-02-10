@@ -586,6 +586,7 @@ def readout_vectors(displacement_fn: space.DisplacementFn,
                     species: Array = None,
                     mask: Array = None,
                     max_edges = None,
+                    edges_per_particle: float = None,
                     **kwargs
                     ):
     """Computes neighbor list statistics for test conformation.
@@ -598,6 +599,8 @@ def readout_vectors(displacement_fn: space.DisplacementFn,
         species: Species of atoms.
         mask: Mask indicating whether particles are real or padded.
         max_edges: Maximum number of edges to consider.
+        edges_per_particle: Limit the number of edges to a value proportional
+            to the number of particles.
         kwargs: Keyword arguments passed to the displacement function.
 
     Returns:
@@ -605,6 +608,22 @@ def readout_vectors(displacement_fn: space.DisplacementFn,
 
     """
     dyn_displacement = functools.partial(displacement_fn, **kwargs)
+
+    if edges_per_particle is not None:
+        if max_edges is not None:
+            raise ValueError(
+                "Either edges_per_particle or max_edges can be specified, not both."
+            )
+        
+        # Restrict to two digits after the decimal point. This step is required
+        # because JAX symbolic dimensions support only integer operations.
+        factor = int(edges_per_particle * 1000)
+        gcd = onp.gcd(factor, 1000)
+        max_edges = (factor // gcd) * position.shape[0] // (1000 // gcd)
+
+        print(f"Limit the maximum number of edges to {max_edges} "
+              f"({factor // gcd} / {1000 // gcd} edges per particle).")
+
 
     if species is None:
         species = jnp.ones(position.shape[0], dtype=jnp.int32)

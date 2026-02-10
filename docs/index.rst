@@ -128,6 +128,7 @@ API Documentation
    :maxdepth: 2
    :titlesonly:
 
+   api/compose/index
    api/data/index
    api/deploy/index
    api/learn/index
