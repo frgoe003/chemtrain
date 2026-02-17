@@ -699,8 +699,8 @@ def readout_vectors(displacement_fn: space.DisplacementFn,
     vectors = jnp.where(
         jnp.logical_and(
             jnp.logical_and(senders < position.shape[0], mask[senders]),
-            jnp.logical_and(receivers < position.shape[0], mask[senders])
-        )[:, jnp.newaxis], vectors, r_cutoff)
+            jnp.logical_and(receivers < position.shape[0], mask[receivers])
+        )[:, jnp.newaxis], vectors, r_cutoff / jnp.sqrt(3))
 
     if max_edges is not None:
         # Sort vectors by length and remove up to max_edges edges

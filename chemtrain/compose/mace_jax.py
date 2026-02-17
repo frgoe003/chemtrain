@@ -23,7 +23,7 @@
 
 """Loads a MACE model from PyTorch via MACE-JAX."""
 
-from typing import Dict, Any, Tuple, Callable
+from typing import Dict, Any, Optional, Tuple, Callable
 
 import jax
 import jax.numpy as jnp
@@ -42,6 +42,8 @@ from . import utils
 class JaxMACE(mace_jax_models.ScaleShiftMACE):
     """MACE-JAX model matching chemtrain's expected __call__ signature."""
 
+    radial_edge_transform: Optional[Callable[..., jnp.ndarray]] = None
+
     def __call__(
         self,
         vectors,
@@ -51,7 +53,7 @@ class JaxMACE(mace_jax_models.ScaleShiftMACE):
         mask,
         *,
         num_species: int,
-
+        radial_transform_kwargs: Optional[Dict[str, Any]] = None,
     ) -> jnp.ndarray:
         batch = jnp.zeros(species.shape, dtype=jnp.int32)
 
@@ -69,6 +71,9 @@ class JaxMACE(mace_jax_models.ScaleShiftMACE):
         # https://github.com/ACEsuit/mace-jax/blob/7e9d467d1701290b6606a20ff2c625c27e973254/mace_jax/tools/gin_model.py#L234
 
         lengths = jnp.linalg.norm(vectors, axis=-1, keepdims=True)
+
+        # jax.debug.print("Lenths in {} and {} with mean {}", lengths.min(), lengths.max(), lengths.mean())
+
         edge_index = jnp.stack([senders, receivers], axis=0)
         node_attrs = jax.nn.one_hot(
             species,
@@ -91,6 +96,14 @@ class JaxMACE(mace_jax_models.ScaleShiftMACE):
             self._atomic_numbers,
             node_attrs_index=species,
         )
+
+        # Enables to scale / unscale edge features before / after the
+        # radial embedding, e.g., to perform alchemical integration.
+        if self.radial_edge_transform is not None:
+            if radial_transform_kwargs is None:
+                radial_transform_kwargs = {}
+            edge_feats = self.radial_edge_transform(
+                lengths, edge_feats, **radial_transform_kwargs)
 
         if self.pair_repulsion:
             pair_node_energy = self.pair_repulsion_fn(
@@ -202,12 +215,13 @@ class AtomicNumberMapping(SpeciesMapping):
 def mace_jax_neighborlist(config: Dict[str, Any],
                           torch_model: Any,
                           displacement: space.DisplacementFn,
-                          max_edge_multiplier: float = 1.25,
+                          max_edge_multiplier: Optional[float] = None,
                           per_particle: bool = False,
                           scale_pos: float = 0.1,
                           scale_pot: float = 96.485,
                           species_mapping: SpeciesMapping = SpeciesMapping(),
-                          cueq_config: CuEquivarianceConfig = None,
+                          cueq_config: Optional[CuEquivarianceConfig] = None,
+                          switch: bool = False,
                           ) -> Tuple[Any, Callable]:
     """MACE model for property prediction.
 
@@ -232,8 +246,6 @@ def mace_jax_neighborlist(config: Dict[str, Any],
     jax_model, variables, template_data = mace_jax_from_torch.convert_model(
         torch_model, config, cueq_config=cueq_config)
 
-    print(f"Called with cuex config: {cueq_config}")
-
     cueq_enabled = False if cueq_config is None else cueq_config.enabled
 
     del template_data # Unused
@@ -242,15 +254,39 @@ def mace_jax_neighborlist(config: Dict[str, Any],
     jax_model.__class__ = JaxMACE
 
     r_cutoff = jnp.array(config["r_max"], dtype=jnp.float32) * scale_pos
-    edges_per_particle = config["avg_num_neighbors"] * max_edge_multiplier
+    edges_per_particle = (
+        config["avg_num_neighbors"] * max_edge_multiplier
+        if max_edge_multiplier is not None
+        else None
+    )
+
+
+    def switch_fn(lengths, edge_feats, *, lambda_edge, scale_edge, **kwargs):
+        del kwargs # Unused
+
+        # jax.debug.print("Apply switch lambda {}", lambda_edge)
+
+        norm_dist = 1.0 - lengths / r_cutoff * scale_pos
+        lambda_edge = lambda_edge[:, jnp.newaxis]
+        # exp = 1.0
+
+        scales = (1 - lambda_edge) * jnp.exp(-8.0 * lambda_edge * norm_dist ** 2.0)
+        scales = jnp.where(scale_edge[:, jnp.newaxis], scales, 1.0)
+        return edge_feats * scales
+    
+    jax_model.radial_edge_transform = switch_fn if switch else None
 
     def _apply_fn(params, senders, receivers, edge_feats, node_feats):
-        vectors, = edge_feats
+        vectors, *_ = edge_feats
         species, mask = node_feats
 
         return jax_model.apply(
             params, vectors, senders, receivers, species, mask,
             num_species=config['num_elements'],
+            radial_transform_kwargs={
+                'scale_edge': edge_feats[1] if switch else None,
+                'lambda_edge': edge_feats[2] if switch else None,
+            } if switch else None,
         )
 
     # Cuequivariance does not support batching yet
@@ -277,8 +313,19 @@ def mace_jax_neighborlist(config: Dict[str, Any],
 
         vectors /= scale_pos
 
+        edge_feats = (vectors,) # Placeholder for switch edge features
+        node_feats = (species, mask)
+        if switch:
+            switch_edge = jnp.logical_xor(
+                dynamic_kwargs['switch'][senders],
+                dynamic_kwargs['switch'][receivers]
+            )
+            edge_feats = edge_feats + (
+                switch_edge, jnp.full(senders.shape, dynamic_kwargs['lambda_switch'])
+            ) # Add switch node features
+
         per_atom_energies = _apply_fn(
-            params, senders, receivers, (vectors,), (species, mask)
+            params, senders, receivers, edge_feats, node_feats
         )
         per_atom_energies *= scale_pot
 

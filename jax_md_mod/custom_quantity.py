@@ -1052,7 +1052,7 @@ def init_local_structure_index(displacement_fn,
 
 
 
-def rigid_body_alignment(positions, reference_positions, weights=None):
+def rigid_body_alignment(positions, reference_positions, weights=None, eps=1e-5):
     """Computes the optimal rigid body motion aligning the positions to
     a reference structure.
 
@@ -1117,15 +1117,17 @@ def rigid_body_alignment(positions, reference_positions, weights=None):
     # Compute the com distance and the rotation angle
 
     d2 = jnp.sum((pbar - qbar) ** 2)
+    d2 = jnp.where(d2 > eps, d2, eps)
     # Save sqrt operation for gradient stability
-    d = jnp.sqrt(jnp.where(d2 > 0, jnp.sqrt(d2), 1.0)) * (d2 > 0)
+    d = jnp.sqrt(d2)
 
     # Convert to rotation angle.
     cos_theta = (jnp.trace(R) - 1) / 2
-    sin_theta = jnp.linalg.norm(R - R.T) / (2 * jnp.sqrt(2))
+    sin_theta = jnp.sum((R - R.T) ** 2)
+    sin_theta = jnp.where(sin_theta > eps, sin_theta, eps)
+    sin_theta = jnp.sqrt(sin_theta) / (2 * jnp.sqrt(2))
 
-    theta = jnp.atan2(sin_theta, cos_theta)
-
+    theta = jnp.arctan2(sin_theta, cos_theta)
 
     return (R, t), p_opt, (msd, d, theta)
 
