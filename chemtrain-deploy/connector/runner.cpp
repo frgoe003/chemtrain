@@ -110,7 +110,7 @@ namespace jcn {
           xla::CpuClientOptions create_options;
           create_options.asynchronous = true;
 
-          client_or_status = xla::GetTfrtCpuClient(create_options);
+          client_or_status = xla::GetPjRtCpuClient(create_options);
 
         } else {
 
@@ -258,7 +258,7 @@ namespace jcn {
                 compiler->compile(
                     atoms.n_atoms, neighbors.graph_shapes, neighbors.graph_types);
 
-                absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> executable_or_status = client->Compile(
+                absl::StatusOr<std::unique_ptr<xla::PjRtLoadedExecutable>> executable_or_status = client->CompileAndLoad(
                     compiler->module(), compile_options);
 
                 if (!executable_or_status.ok()) {
