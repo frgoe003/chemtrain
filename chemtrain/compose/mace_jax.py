@@ -270,7 +270,7 @@ def mace_jax_neighborlist(config: Dict[str, Any],
         lambda_edge = lambda_edge[:, jnp.newaxis]
         # exp = 1.0
 
-        scales = (1 - lambda_edge) * jnp.exp(-8.0 * lambda_edge * norm_dist ** 2.0)
+        scales = (1 - lambda_edge) * jnp.exp(-6.0 * lambda_edge * norm_dist ** 2.0)
         scales = jnp.where(scale_edge[:, jnp.newaxis], scales, 1.0)
         return edge_feats * scales
     

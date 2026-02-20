@@ -27,6 +27,109 @@ import jax_md_mod
 from jax_md import simulate, partition
 import numpy as onp
 
+try:
+    import mpi4py.MPI as MPI
+    import mpi4jax
+except:
+    MPI = None
+
+
+def use_mpi():
+    """Whether MPI is available."""
+    if MPI is None:
+        return False
+    try:
+        if hasattr(MPI, "Is_initialized") and not MPI.Is_initialized():
+            return False
+        return MPI.COMM_WORLD.Get_size() > 1
+    except Exception as e:
+        print(f"Initializing MPI failed with error: {e}")
+        return False
+
+
+def is_root():
+    """Whether the current MPI process is the root process."""
+    if not use_mpi():
+        return True
+    return MPI.COMM_WORLD.Get_rank() == 0
+
+
+def get_mpi():
+    """Returns the MPI communicator."""
+    if not use_mpi():
+        return None
+    return MPI
+
+
+def get_communicator():
+    """Returns the MPI communicator."""
+    if not use_mpi():
+        return None
+    return MPI.COMM_WORLD
+
+
+def mpi_tree_slice(tree, dim=None):
+    """Slices a pytree with disjoint subsets across MPI processes."""
+    if not use_mpi():
+        return tree, None
+
+    if dim is None:
+        dim = tree_util.tree_leaves(tree)[0].shape[0]
+
+    assert tree_util.tree_reduce(
+        lambda x, y: x == y.shape[0], tree, True
+    ), 'Tree first dimension size is not equal.'    
+
+    # Get the size of the first tree dimension
+    dim = tree_util.tree_leaves(tree)[0].shape[0]
+
+    comm = get_communicator()
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+    return tree_util.tree_map(lambda x: x[rank::size], tree), dim
+
+
+def mpi_tree_gather(tree, dim):
+    """Gathers a pytree from all MPI processes."""
+    if not use_mpi():
+        return tree
+    
+    comm = get_communicator()
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+
+    gathered_tree = tree_util.tree_map(
+        lambda x: jnp.zeros(
+            (dim, *x.shape[1:]), dtype=x.dtype
+        ).at[rank::size].set(x), tree
+    )
+    tree = tree_util.tree_map(
+        lambda x: mpi4jax.allreduce(
+            x, MPI.LOR if x.dtype == jnp.bool_ else MPI.SUM, comm=comm
+        ), gathered_tree
+    )
+
+    return tree
+
+
+def mpi_tree_mean(tree, dim):
+    """Mean of a pytree from all MPI processes."""
+    if not use_mpi():
+        return tree
+    
+    comm = get_communicator()
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+    slice_size = onp.arange(dim)[rank::size].size
+
+    tree = tree_util.tree_map(
+        lambda x: mpi4jax.allreduce(
+            x * (slice_size / dim), MPI.SUM, comm=comm
+        ), tree
+    )
+
+    return tree
+
 
 # freezing seems to give slight performance improvement
 @partial(chex.dataclass, frozen=True)
