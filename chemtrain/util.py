@@ -89,7 +89,7 @@ def mpi_tree_slice(tree, dim=None):
     return tree_util.tree_map(lambda x: x[rank::size], tree), dim
 
 
-def mpi_tree_gather(tree, dim):
+def mpi_tree_gather(tree, dim=None):
     """Gathers a pytree from all MPI processes."""
     if not use_mpi():
         return tree
@@ -100,7 +100,7 @@ def mpi_tree_gather(tree, dim):
 
     gathered_tree = tree_util.tree_map(
         lambda x: jnp.zeros(
-            (dim, *x.shape[1:]), dtype=x.dtype
+            (size * x.shape[0] if dim is None else dim, *x.shape[1:]), dtype=x.dtype
         ).at[rank::size].set(x), tree
     )
     tree = tree_util.tree_map(
@@ -112,7 +112,7 @@ def mpi_tree_gather(tree, dim):
     return tree
 
 
-def mpi_tree_mean(tree, dim):
+def mpi_tree_mean(tree, dim=None):
     """Mean of a pytree from all MPI processes."""
     if not use_mpi():
         return tree
@@ -120,7 +120,12 @@ def mpi_tree_mean(tree, dim):
     comm = get_communicator()
     rank = comm.Get_rank()
     size = comm.Get_size()
-    slice_size = onp.arange(dim)[rank::size].size
+
+    if dim is None:
+        slice_size = 1
+        dim = size
+    else:
+        slice_size = onp.arange(dim)[rank::size].size
 
     tree = tree_util.tree_map(
         lambda x: mpi4jax.allreduce(

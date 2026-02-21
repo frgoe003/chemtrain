@@ -12,16 +12,199 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import functools
+from concurrent.futures import Future, ThreadPoolExecutor
+from typing import Any, Dict, NamedTuple, Optional, cast
 
+try:
+    import mpi4py
+except ImportError:
+    mpi4py = None
+
+import h5py
 import jax
 from jax import numpy as jnp, random
+import numpy as onp
 
 from jax_sgmc.data import numpy_loader, core
 
 from chemtrain.data.preprocessing import train_val_test_split
 from chemtrain import util
+from chemtrain import config as chemtrain_config
 
-from typing import NamedTuple
+PyTree = Any
+
+
+class HDF5ParallelDataLoader(numpy_loader.NumpyDataLoader):
+    """DataLoader that can be used in distributed settings and reads data from HDF5 files.
+
+    This DataLoader is designed to be used in distributed settings, where multiple
+    processes are running in parallel. It ensures that each process gets a different
+    subset of the data, and that the data is shuffled differently for each process.
+
+    Args:
+        file: HDF file containing the entries of the dataset as root datasets.
+        strict_order: Whether to strictly enforce the order of the data.
+            If False, the indices for the batches are redistributed.
+
+    """
+
+    def __init__(self, file, strict_order: bool = False):
+        # The sample is necessary to return the observations in the correct format.
+        super().__init__()
+
+        if isinstance(file, h5py.File):
+            self._dataset = file
+        else:
+            self._dataset = h5py.File(name=file, mode="r")
+
+        root_datasets = {
+            key: val.shape[0] for key, val in self._dataset.items()
+            if isinstance(val, h5py.Dataset)
+        }
+
+        assert len(set(root_datasets.values())) == 1, \
+            "All datasets in the HDF5 file must have the same length."
+
+        self._observation_count = list(root_datasets.values())[0]
+        self._keys = list(root_datasets.keys())
+
+        self._format_cache = {
+            key: jax.ShapeDtypeStruct(
+                dtype=onp.dtype(cast(h5py.Dataset, self._dataset[key]).dtype),
+                shape=tuple(int(s) for s in cast(h5py.Dataset, self._dataset[key]).shape[1:]),
+            )
+            for key in self._keys
+        }
+
+        self._strict_order = strict_order
+
+        # Clone to use communicator with mpi4py
+        comm = util.get_communicator()
+        if comm is not None:
+            self._comm = comm.Clone()
+        else:
+            self._comm = None
+
+    def is_root(self):
+        if self._comm is None:
+            return False
+        return self._comm.Get_rank() == 0
+
+    def get_batches(self, chain_id: int) -> PyTree:
+        """Draws a batch from a chain.
+
+        Args:
+        chain_id: ID of the chain, which holds the information about the form of
+            the batch and the process of assembling.
+
+        Returns:
+        Returns a superbatch as registered by :func:`register_random_pipeline` or
+        :func:`register_ordered_pipeline` with `cache_size` batches holding
+        `mb_size` observations.
+
+        """
+        # Data slicing is the same for all methods of random and ordered access,
+        # only the indices for slicing differ. The method _get_indices find the
+        # correct method for the chain.
+
+        if self._comm is None:
+            selections_idx, selections_mask = self._get_indices(chain_id)
+        else:
+            if self.is_root():
+                selections_idx, selections_mask = self._get_indices(chain_id)
+
+                # We need to slice the data across the batch dimension and not the
+                # cache dimension.
+                selections_idx = onp.ascontiguousarray(
+                    onp.asarray(selections_idx, dtype=onp.int32).swapaxes(0, 1)
+                )
+                selections_mask = onp.ascontiguousarray(
+                    onp.asarray(selections_mask, dtype=onp.bool_).swapaxes(0, 1)
+                )
+                batch_size, cache_size = selections_idx.shape
+            else:
+                selections_idx = None
+                selections_mask = None
+                batch_size, cache_size = None, None
+
+            batch_size = self._comm.bcast(batch_size, root=0)
+            cache_size = self._comm.bcast(cache_size, root=0)
+            world_size = self._comm.Get_size()
+
+            if batch_size is None or cache_size is None:
+                raise RuntimeError("Failed to broadcast batch metadata from root process.")
+            if batch_size < world_size:
+                raise ValueError(
+                    f"mb_size ({batch_size}) must be >= number of MPI processes ({world_size})."
+                )
+            if batch_size % world_size != 0:
+                raise ValueError(
+                    f"mb_size ({batch_size}) must be divisible by number of MPI processes ({world_size})."
+                )
+
+            slice_size = batch_size // world_size
+
+            recv = onp.empty((slice_size, cache_size), dtype=onp.int32)
+            recv_mask = onp.empty((slice_size, cache_size), dtype=onp.bool_)
+
+            # Note: mpi4py Scatter/Scatterv write into the receive buffer and
+            # return None.
+            self._comm.Scatter(selections_idx, recv, root=0)
+            self._comm.Scatter(selections_mask, recv_mask, root=0)
+
+            selections_idx = recv
+            selections_mask = recv_mask
+
+        selections_idx = onp.asarray(selections_idx, dtype=onp.int32)
+        selections_mask = onp.asarray(selections_mask, dtype=onp.bool_)
+        selections_idx = selections_idx.swapaxes(0, 1)
+        selections_mask = selections_mask.swapaxes(0, 1)
+
+        restore_shape = selections_idx.shape
+        unique, restore = onp.unique(selections_idx.ravel(), return_inverse=True)
+
+        # Slice the data and transform into pytree
+        def _read_leaf(leaf_name: str) -> jax.Array:
+            dataset = 
+            per_observation_shape = tuple(int(s) for s in dataset.shape[1:])
+            target_shape = tuple(selections_idx.shape) + per_observation_shape
+
+            restored = dataset[unique][restore]
+            return jnp.asarray(restored.reshape(target_shape))
+
+        selected_observations = {
+            leaf_name: jnp.asarray(
+                cast(h5py.Dataset, self._dataset[leaf_name])
+                [unique][restore].reshape(restore_shape + self._format_cache[leaf_name].shape)
+            )  for leaf_name in self._keys
+        }
+
+        return selected_observations, jnp.array(selections_mask, dtype=jnp.bool_)
+
+    def save_state(self, chain_id: int) -> PyTree:
+        raise NotImplementedError("Saving of the DataLoader state is not supported.")
+
+    def load_state(self, chain_id: int, data) -> None:
+        raise NotImplementedError("Loading of the DataLoader state is not supported.")
+
+    @property
+    def _format(self):
+        """Returns shape and dtype of a single observation."""
+        return self._format_cache
+
+    @property
+    def static_information(self):
+        """Returns information about total samples count and batch size. """
+        information = {
+            "observation_count": self._observation_count
+        }
+        return information
+
+    def close(self):
+        self._dataset.close()
+
+
+
 
 
 class DataLoaders(NamedTuple):
@@ -66,6 +249,8 @@ def init_dataloaders(dataset, train_ratio=0.7, val_ratio=0.1, shuffle=False):
 def init_batch_functions(data_loader: core.HostDataLoader,
                          mb_size: int,
                          cache_size: int = 1,
+                         *,
+                         prefetch: bool = False,
                          ) -> core.RandomBatch:
     """Initializes reference data access outside jit-compiled functions.
 
@@ -89,6 +274,27 @@ def init_batch_functions(data_loader: core.HostDataLoader,
         cache_size, mb_size=mb_size)
     mask_shape = (cache_size, mb_size)
 
+    prefetch_futures: Dict[int, Future] = {}
+    executor = None
+    if prefetch:
+        executor = ThreadPoolExecutor(max_workers=1)
+
+    def _chain_id_as_int(chain_id) -> int:
+        if isinstance(chain_id, (int, onp.integer)):
+            return int(chain_id)
+        return int(jax.device_get(chain_id))
+
+    def _prefetch_once(chain_id: int):
+        return data_loader.get_batches(chain_id)
+
+    def _submit_prefetch(chain_id: int) -> None:
+        if not prefetch:
+            return
+        if executor is None:
+            raise RuntimeError("Prefetch requested but executor is not initialized.")
+
+        prefetch_futures[chain_id] = executor.submit(_prefetch_once, chain_id)
+
     def init_fn(random: bool = True, rng_seed=None, **kwargs) -> core.CacheState:
 
         if random:
@@ -96,7 +302,6 @@ def init_batch_functions(data_loader: core.HostDataLoader,
                 cache_size=cache_size, mb_size=mb_size, **kwargs
             )
         else:
-            print(f"Initialize full data pipeline")
             chain_id = data_loader.register_ordered_pipeline(
                 cache_size=cache_size, mb_size=mb_size, **kwargs
             )
@@ -104,6 +309,8 @@ def init_batch_functions(data_loader: core.HostDataLoader,
         initial_state, initial_mask = data_loader.get_batches(chain_id)
         if initial_mask is None:
             initial_mask = jnp.ones((cache_size, mb_size), dtype=jnp.bool_)
+
+        _submit_prefetch(chain_id)
 
         initial_internal_state = {}
         if rng_seed is not None:
@@ -122,7 +329,18 @@ def init_batch_functions(data_loader: core.HostDataLoader,
 
     def _new_cache_fn(state: core.CacheState,
                       ) -> core.CacheState:
-        new_data, masks = data_loader.get_batches(state.chain_id)
+        chain_id = _chain_id_as_int(state.chain_id)
+
+        if prefetch:
+            future = prefetch_futures.pop(chain_id, None)
+            if future is None:
+                new_data, masks = data_loader.get_batches(chain_id)
+            else:
+                new_data, masks = future.result()
+
+            _submit_prefetch(chain_id)
+        else:
+            new_data, masks = data_loader.get_batches(chain_id)
 
         if masks is None:
             # Assume all samples to be valid.
@@ -177,6 +395,7 @@ def init_batch_functions(data_loader: core.HostDataLoader,
 
     def batch_fn(data_state: core.CacheState,
                  information: bool = False,
+                 device_count: int = 1,
                  ) -> core.Batch:
         """Draws a new random batch.
 
@@ -202,6 +421,10 @@ def init_batch_functions(data_loader: core.HostDataLoader,
             return new_state, mini_batch
 
     def release():
-        pass
+        for future in prefetch_futures.values():
+            future.cancel()
+        prefetch_futures.clear()
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     return init_fn, batch_fn, release

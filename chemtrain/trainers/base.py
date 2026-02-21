@@ -39,6 +39,7 @@ from jax.tree_util import tree_map
 from jax_sgmc import data
 
 from chemtrain import util
+from chemtrain import config as chemtrain_config
 from chemtrain.data import data_loaders
 from chemtrain.learn import max_likelihood, difftre
 from jax_md_mod.model import dropout
@@ -1023,7 +1024,10 @@ class DataParallelTrainer(MLETrainerTemplate):
 
         # Initialize the access functions
         batch_fns = data_loaders.init_batch_functions(
-            data_loader, mb_size=batch_size, cache_size=self.batch_cache,
+            data_loader,
+            mb_size=batch_size,
+            cache_size=self.batch_cache,
+            prefetch=chemtrain_config.read("async_dataloading", True),
         )
         init_train_state, get_train_batch, release = batch_fns
 

@@ -29,6 +29,7 @@ from jax_sgmc.data import numpy_loader
 from jax_md_mod import custom_quantity
 
 from chemtrain import (util)
+from chemtrain import config as chemtrain_config
 from chemtrain.learn import (
     force_matching, max_likelihood, difftre, property_prediction
 )
@@ -1152,7 +1153,8 @@ class RelativeEntropy(tt.PropagationBase):
             R=reference_data, copy=False)
         init_ref_batch, get_ref_batch, _ = data_loaders.init_batch_functions(
             data_loader=reference_loader, mb_size=reference_batch_size,
-            cache_size=batch_cache
+            cache_size=batch_cache,
+            prefetch=chemtrain_config.read("async_dataloading", True),
         )
         init_reference_batch_state = init_ref_batch(shuffle=True)
         self.data_states[key] = init_reference_batch_state
