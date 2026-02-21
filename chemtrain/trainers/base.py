@@ -27,6 +27,7 @@ from abc import abstractmethod
 from os import PathLike
 import inspect
 from typing import Callable, Dict, Any
+from types import ModuleType
 
 import cloudpickle as pickle
 import jax
@@ -42,11 +43,11 @@ from chemtrain import util
 from chemtrain import config as chemtrain_config
 from chemtrain.data import data_loaders
 from chemtrain.learn import max_likelihood, difftre
-from jax_md_mod.model import dropout
-from chemtrain.ensemble.reweighting import init_pot_reweight_propagation_fns
-from chemtrain.ensemble import sampling
+from chemtrain.ensemble import sampling, reweighting
 from chemtrain.typing import EnergyFnTemplate
 from chemtrain.util import format_not_recognized_error
+
+from jax_md_mod.model import dropout
 
 
 class CaptureStdout:
@@ -60,7 +61,9 @@ class CaptureStdout:
     """
     def __init__(self, file=None):
         self.files = []
-        if file is not None:
+
+        # Only write to files on root process
+        if file is not None and util.is_root():
             self.files = [file]
 
     def write(self, message):
@@ -101,8 +104,7 @@ class TrainerInterface(metaclass=abc.ABCMeta):
     """Abstract class defining the user interface of trainers as well as
     checkpointing functionality.
     """
-    # TODO write protocol classes for better documentation of initialized
-    #  functions
+
     def __init__(self,
                  checkpoint_path,
                  reference_energy_fn_template=None,
@@ -155,6 +157,10 @@ class TrainerInterface(metaclass=abc.ABCMeta):
             }
 
         if format == ".pkl":
+            # Only root process saves trainer
+            if not self.is_root():
+                return
+
             leaves, treedef = tree_util.tree_flatten(data)
             leaves = [
                 onp.asarray(leaf) if isinstance(leaf, jnp.ndarray) else leaf
@@ -178,6 +184,9 @@ class TrainerInterface(metaclass=abc.ABCMeta):
                 was specified, saves the latest parameters instead.
 
         """
+        if not self.is_root():
+            return
+
         if best:
             try:
                 params = self.best_params
@@ -274,6 +283,22 @@ class TrainerInterface(metaclass=abc.ABCMeta):
             object.__setattr__(self, key, value.object)
         else:
             object.__setattr__(self, key, value)
+
+    @staticmethod
+    def use_mpi():
+        """Checks whether MPI is being used."""
+        return util.use_mpi()
+
+    @staticmethod
+    def is_root():
+        """Checks whether current process is root process."""
+        return util.is_root()
+
+    @staticmethod
+    def get_mpi() -> ModuleType | None:
+        """Returns the MPI interface."""
+        return util.get_mpi()
+
 
     def restore(self, checkpoint):
         """Restores the trainer from a checkpoint.
@@ -687,7 +712,7 @@ class PropagationBase(MLETrainerTemplate):
                 "defined in the state_kwargs."
             )
 
-        gen_init_traj, *reweight_fns = init_pot_reweight_propagation_fns(
+        gen_init_traj, *reweight_fns = reweighting.init_pot_reweight_propagation_fns(
             energy_fn_template, simulator_template, neighbor_fn, timings,
             state_kwargs, self.reweight_ratio, npt_ensemble,
             energy_batch_size, safe_propagation=safe_propagation,
@@ -998,6 +1023,14 @@ class DataParallelTrainer(MLETrainerTemplate):
         # Ensures that the batch size is divisible by the number of devices
         batch_size -= onp.mod(batch_size, device_count())
 
+        mpi_world_size = 1
+        if util.use_mpi():
+            comm = util.get_communicator()
+            if comm is not None:
+                mpi_world_size = comm.Get_size()
+
+        global_batch_size = batch_size * mpi_world_size
+
         if batch_size != self.batch_size:
             logging.info(
                 f"Batch size for stage {stage} changed to {batch_size} "
@@ -1011,14 +1044,14 @@ class DataParallelTrainer(MLETrainerTemplate):
             # Increase the number of observations to make them divisible by
             # the batch size
             observation_count += onp.mod(
-                batch_size - onp.mod(observation_count, batch_size), batch_size
+                global_batch_size - onp.mod(observation_count, global_batch_size), global_batch_size
             )
 
-        if onp.mod(observation_count, batch_size) != 0:
+        if onp.mod(observation_count, global_batch_size) != 0:
             warnings.warn(
                 f"Batch size {batch_size} does not divide the number of "
                 f"observations {observation_count}. "
-                f"Trainer will skip {observation_count % batch_size} samples "
+                f"Trainer will skip {observation_count % global_batch_size} samples "
                 f"for state {stage}"
             )
 
@@ -1037,7 +1070,7 @@ class DataParallelTrainer(MLETrainerTemplate):
 
         self._get_batch_fns[stage] = get_train_batch
         self._batch_states[stage] = train_batch_state
-        self._batches_per_epoch[stage] = observation_count // batch_size
+        self._batches_per_epoch[stage] = observation_count // global_batch_size
         self.release_fns[stage] = release
 
     def _get_batch_stage(self, stage, information=False):

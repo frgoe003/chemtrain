@@ -90,6 +90,68 @@ class HDF5ParallelDataLoader(numpy_loader.NumpyDataLoader):
             return False
         return self._comm.Get_rank() == 0
 
+    def _mpi_rank(self) -> int:
+        if self._comm is None:
+            return 0
+        return int(self._comm.Get_rank())
+
+    def _mpi_size(self) -> int:
+        if self._comm is None:
+            return 1
+        return int(self._comm.Get_size())
+
+    def register_random_pipeline(
+        self,
+        cache_size: int = 1,
+        mb_size: Optional[int] = None,
+        in_epochs: bool = False,
+        shuffle: bool = False,
+        **kwargs: Any,
+    ) -> int:
+        """Register a pipeline with local mb_size per rank.
+
+        Under MPI, the underlying index pipeline is registered with
+        ``mb_size_global = mb_size_local * world_size`` so each rank can take a
+        disjoint slice of a global batch.
+        """
+        if mb_size is None:
+            raise ValueError("mb_size must be provided")
+
+        world_size = self._mpi_size()
+        chain_id = super().register_random_pipeline(
+            cache_size=cache_size,
+            mb_size=mb_size * world_size,
+            in_epochs=in_epochs,
+            shuffle=shuffle,
+            **kwargs,
+        )
+        self._chains[chain_id]["local_mb_size"] = int(mb_size)
+        self._chains[chain_id]["world_size"] = int(world_size)
+        return chain_id
+
+    def register_ordered_pipeline(
+        self,
+        cache_size: int = 1,
+        mb_size: Optional[int] = None,
+        **kwargs: Any,
+    ) -> int:
+        """Register a pipeline with local mb_size per rank.
+
+        See :meth:`register_random_pipeline`.
+        """
+        if mb_size is None:
+            raise ValueError("mb_size must be provided")
+
+        world_size = self._mpi_size()
+        chain_id = super().register_ordered_pipeline(
+            cache_size=cache_size,
+            mb_size=mb_size * world_size,
+            **kwargs,
+        )
+        self._chains[chain_id]["local_mb_size"] = int(mb_size)
+        self._chains[chain_id]["world_size"] = int(world_size)
+        return chain_id
+
     def get_batches(self, chain_id: int) -> PyTree:
         """Draws a batch from a chain.
 
@@ -109,74 +171,54 @@ class HDF5ParallelDataLoader(numpy_loader.NumpyDataLoader):
 
         if self._comm is None:
             selections_idx, selections_mask = self._get_indices(chain_id)
+            selections_idx = onp.asarray(selections_idx, dtype=onp.int32)
+            selections_mask = onp.asarray(selections_mask, dtype=onp.bool_)
         else:
+            rank = self._mpi_rank()
+            world_size = self._mpi_size()
+
             if self.is_root():
                 selections_idx, selections_mask = self._get_indices(chain_id)
-
-                # We need to slice the data across the batch dimension and not the
-                # cache dimension.
-                selections_idx = onp.ascontiguousarray(
-                    onp.asarray(selections_idx, dtype=onp.int32).swapaxes(0, 1)
-                )
-                selections_mask = onp.ascontiguousarray(
-                    onp.asarray(selections_mask, dtype=onp.bool_).swapaxes(0, 1)
-                )
-                batch_size, cache_size = selections_idx.shape
+                selections_idx = onp.ascontiguousarray(onp.asarray(selections_idx, dtype=onp.int32))
+                selections_mask = onp.ascontiguousarray(onp.asarray(selections_mask, dtype=onp.bool_))
+                global_shape = selections_idx.shape
             else:
                 selections_idx = None
                 selections_mask = None
-                batch_size, cache_size = None, None
+                global_shape = None
 
-            batch_size = self._comm.bcast(batch_size, root=0)
-            cache_size = self._comm.bcast(cache_size, root=0)
-            world_size = self._comm.Get_size()
+            global_shape = self._comm.bcast(global_shape, root=0)
+            if global_shape is None:
+                raise RuntimeError("Failed to broadcast global index shape from root process.")
 
-            if batch_size is None or cache_size is None:
-                raise RuntimeError("Failed to broadcast batch metadata from root process.")
-            if batch_size < world_size:
-                raise ValueError(
-                    f"mb_size ({batch_size}) must be >= number of MPI processes ({world_size})."
-                )
-            if batch_size % world_size != 0:
-                raise ValueError(
-                    f"mb_size ({batch_size}) must be divisible by number of MPI processes ({world_size})."
-                )
+            if not self.is_root():
+                selections_idx = onp.empty(global_shape, dtype=onp.int32)
+                selections_mask = onp.empty(global_shape, dtype=onp.bool_)
 
-            slice_size = batch_size // world_size
+            # Broadcast the global index tables. This is small compared to the
+            # actual HDF5 payload and ensures all ranks see a consistent
+            # partitioning.
+            assert selections_idx is not None
+            assert selections_mask is not None
+            self._comm.Bcast(selections_idx, root=0)
+            self._comm.Bcast(selections_mask, root=0)
 
-            recv = onp.empty((slice_size, cache_size), dtype=onp.int32)
-            recv_mask = onp.empty((slice_size, cache_size), dtype=onp.bool_)
-
-            # Note: mpi4py Scatter/Scatterv write into the receive buffer and
-            # return None.
-            self._comm.Scatter(selections_idx, recv, root=0)
-            self._comm.Scatter(selections_mask, recv_mask, root=0)
-
-            selections_idx = recv
-            selections_mask = recv_mask
-
-        selections_idx = onp.asarray(selections_idx, dtype=onp.int32)
-        selections_mask = onp.asarray(selections_mask, dtype=onp.bool_)
-        selections_idx = selections_idx.swapaxes(0, 1)
-        selections_mask = selections_mask.swapaxes(0, 1)
+            # Each rank takes a strided slice along the *batch* dimension.
+            # This matches util.mpi_tree_gather/mpi_tree_mean conventions.
+            selections_idx = cast(onp.ndarray, selections_idx)[:, rank::world_size]
+            selections_mask = cast(onp.ndarray, selections_mask)[:, rank::world_size]
 
         restore_shape = selections_idx.shape
         unique, restore = onp.unique(selections_idx.ravel(), return_inverse=True)
 
         # Slice the data and transform into pytree
-        def _read_leaf(leaf_name: str) -> jax.Array:
-            dataset = 
-            per_observation_shape = tuple(int(s) for s in dataset.shape[1:])
-            target_shape = tuple(selections_idx.shape) + per_observation_shape
-
-            restored = dataset[unique][restore]
-            return jnp.asarray(restored.reshape(target_shape))
-
         selected_observations = {
             leaf_name: jnp.asarray(
-                cast(h5py.Dataset, self._dataset[leaf_name])
-                [unique][restore].reshape(restore_shape + self._format_cache[leaf_name].shape)
-            )  for leaf_name in self._keys
+                cast(h5py.Dataset, self._dataset[leaf_name])[unique][restore].reshape(
+                    restore_shape + self._format_cache[leaf_name].shape
+                )
+            )
+            for leaf_name in self._keys
         }
 
         return selected_observations, jnp.array(selections_mask, dtype=jnp.bool_)
