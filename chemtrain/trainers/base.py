@@ -135,6 +135,8 @@ class TrainerInterface(metaclass=abc.ABCMeta):
         """Dumps a checkpoint during training, from which training can
         be resumed.
         """
+        if not self.is_root(): return
+
         assert self.checkpoint_path is not None
         if checkpoint_frequency is not None:
             pathlib.Path(self.checkpoint_path).mkdir(parents=True,
@@ -295,7 +297,7 @@ class TrainerInterface(metaclass=abc.ABCMeta):
         return util.is_root()
 
     @staticmethod
-    def get_mpi() -> ModuleType | None:
+    def get_mpi() -> ModuleType | None:
         """Returns the MPI interface."""
         return util.get_mpi()
 
@@ -1061,6 +1063,7 @@ class DataParallelTrainer(MLETrainerTemplate):
             mb_size=batch_size,
             cache_size=self.batch_cache,
             prefetch=chemtrain_config.read("async_dataloading", True),
+            use_mpi=util.use_mpi(),
         )
         init_train_state, get_train_batch, release = batch_fns
 
@@ -1159,9 +1162,16 @@ class DataParallelTrainer(MLETrainerTemplate):
 
             # Only get valid samples by masking with numpy
             predictions = shmapped_model(params, batch)
+            mask = jnp.asarray(batch_info.mask, dtype=jnp.bool_)
+            if util.use_mpi():
+                # shmap_model gathers predictions across ranks under MPI.
+                # Gather mask as well to keep shapes consistent.
+                mask = util.mpi_tree_gather(mask)
+
+            mask_np = onp.asarray(mask)
             predictions = tree_util.tree_map(
-                lambda x: x[onp.asarray(batch_info.mask), ...],
-                jax.device_get(predictions)
+                lambda x: x[mask_np, ...],
+                device_get(predictions)
             )
 
             if all_predictions is None:
@@ -1229,6 +1239,12 @@ class DataParallelTrainer(MLETrainerTemplate):
 
         # The correction factor accounts for including invalid (masked) samples
         # in the mean of the split
+        if util.use_mpi():
+            comm = util.get_communicator()
+            MPI = util.get_mpi()
+            if comm is not None and MPI is not None:
+                valid_samples = comm.allreduce(valid_samples, op=MPI.SUM)
+                total_samples = comm.allreduce(total_samples, op=MPI.SUM)
         scale_factor =  total_samples / valid_samples
 
         total_loss /= self._batches_per_epoch[stage]

@@ -80,21 +80,53 @@ def mpi_tree_slice(tree, dim=None):
     if not use_mpi():
         return tree, None
 
+    leaves = tree_util.tree_leaves(tree)
     if dim is None:
-        dim = tree_util.tree_leaves(tree)[0].shape[0]
+        dim = leaves[0].shape[0]
 
-    assert tree_util.tree_reduce(
-        lambda x, y: x == y.shape[0], tree, True
-    ), 'Tree first dimension size is not equal.'    
-
-    # Get the size of the first tree dimension
-    dim = tree_util.tree_leaves(tree)[0].shape[0]
+    assert all(
+        leaf.shape[0] == leaves[0].shape[0] for leaf in leaves
+    ), 'Tree first dimension size is not equal.'
 
     comm = get_communicator()
     assert comm is not None
     rank = comm.Get_rank()
     size = comm.Get_size()
     return tree_util.tree_map(lambda x: x[rank::size], tree), dim
+
+
+def mpi_tree_broadcast(tree, root: int = 0):
+    """Broadcast a pytree from `root` to all MPI processes using mpi4jax."""
+    if not use_mpi():
+        return tree
+
+    if mpi4jax is None:
+        raise RuntimeError(
+            "MPI is available (mpi4py), but mpi4jax is not installed. "
+            "Install mpi4jax to use mpi_tree_broadcast."
+        )
+
+    MPI_mod = cast(Any, MPI)
+    mpi4jax_mod = cast(Any, mpi4jax)
+
+    comm = get_communicator()
+    assert comm is not None
+    rank = comm.Get_rank()
+
+    def _bcast_leaf(x):
+        x = jnp.asarray(x)
+        if rank != root:
+            x = jnp.zeros_like(x)
+        res = mpi4jax_mod.allreduce(
+            x, MPI_mod.LOR if x.dtype == jnp.bool_ else MPI_mod.SUM, comm=comm
+        )
+        return res[0] if isinstance(res, tuple) else res
+
+    return tree_util.tree_map(_bcast_leaf, tree)
+
+
+def mpi_tree_bcast(tree, root: int = 0):
+    return mpi_tree_broadcast(tree, root=root)
 
 
 def mpi_tree_gather(tree, dim=None):
@@ -125,6 +157,8 @@ def mpi_tree_gather(tree, dim=None):
             x, MPI_mod.LOR if x.dtype == jnp.bool_ else MPI_mod.SUM, comm=comm
         ), gathered_tree
     )
+
+    tree = tree_util.tree_map(lambda x: x[0] if isinstance(x, tuple) else x, tree)
 
     return tree
 
@@ -158,6 +192,8 @@ def mpi_tree_mean(tree, dim=None):
             x * (slice_size / dim), MPI_mod.SUM, comm=comm
         ), tree
     )
+
+    tree = tree_util.tree_map(lambda x: x[0] if isinstance(x, tuple) else x, tree)
 
     return tree
 

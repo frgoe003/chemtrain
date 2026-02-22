@@ -180,14 +180,13 @@ def shmap_update_fn(batched_model, loss_fn, optimizer, penalty_fn=None):
             (loss, per_target_loss), grad = value_and_grad(
                 param_loss_fn, has_aux=True)(params, batch)
 
-            new_params, new_opt_state = step_optimizer(
-                params, opt_state, grad, optimizer)
-
             if util.use_mpi():
-                # Average loss and grad across MPI processes
                 loss = util.mpi_tree_mean(loss)
                 per_target_loss = util.mpi_tree_mean(per_target_loss)
                 grad = util.mpi_tree_mean(grad)
+
+            new_params, new_opt_state = step_optimizer(
+                params, opt_state, grad, optimizer)
 
             return new_params, new_opt_state, loss, grad, per_target_loss
 

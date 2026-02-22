@@ -14,6 +14,7 @@
 import functools
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Dict, NamedTuple, Optional, cast
+import warnings
 
 try:
     import mpi4py
@@ -48,7 +49,7 @@ class HDF5ParallelDataLoader(numpy_loader.NumpyDataLoader):
 
     """
 
-    def __init__(self, file, strict_order: bool = False):
+    def __init__(self, file, strict_order: bool = False, *, close_comm: bool = True):
         # The sample is necessary to return the observations in the correct format.
         super().__init__()
 
@@ -77,11 +78,14 @@ class HDF5ParallelDataLoader(numpy_loader.NumpyDataLoader):
         }
 
         self._strict_order = strict_order
+        self._close_comm = bool(close_comm)
+        self._owns_comm = False
 
         # Clone to use communicator with mpi4py
         comm = util.get_communicator()
         if comm is not None:
             self._comm = comm.Clone()
+            self._owns_comm = True
         else:
             self._comm = None
 
@@ -243,7 +247,26 @@ class HDF5ParallelDataLoader(numpy_loader.NumpyDataLoader):
         return information
 
     def close(self):
-        self._dataset.close()
+        try:
+            self._dataset.close()
+        finally:
+            if self._close_comm and self._owns_comm and self._comm is not None:
+                try:
+                    self._comm.Free()
+                except Exception:
+                    # Best-effort cleanup.
+                    pass
+                self._comm = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def use_mpi(self) -> bool:
+        """Whether this loader implements an MPI sharding strategy."""
+        return self._comm is not None and self._mpi_size() > 1
 
 
 
@@ -293,6 +316,7 @@ def init_batch_functions(data_loader: core.HostDataLoader,
                          cache_size: int = 1,
                          *,
                          prefetch: bool = False,
+                         use_mpi: bool = False,
                          ) -> core.RandomBatch:
     """Initializes reference data access outside jit-compiled functions.
 
@@ -312,8 +336,47 @@ def init_batch_functions(data_loader: core.HostDataLoader,
       the last computation.
     """
 
+    comm = None
+    rank = 0
+    world_size = 1
+    if use_mpi and util.use_mpi():
+        comm = util.get_communicator()
+        if comm is not None:
+            rank = int(comm.Get_rank())
+            world_size = int(comm.Get_size())
+
+    # Check whether the loader supports mpi sharding and whether sharding is
+    # active. If one is False, we fallback to one rank loading all data and
+    # then distribute the data to all ranks.
+
+    def _loader_uses_mpi() -> bool:
+        attr = getattr(data_loader, "use_mpi", None)
+        if not callable(attr):
+            return False
+        try:
+            return bool(attr())
+        except Exception:
+            return False
+
+    loader_uses_mpi = _loader_uses_mpi()
+    fallback_shard = comm is not None and world_size > 1 and not loader_uses_mpi
+
+    if prefetch and comm is not None and world_size > 1:
+        warnings.warn(
+            "prefetch=True uses a background thread that may call MPI "
+            "operations. If you observe hangs or non-deterministic crashes, "
+            "disable prefetch."
+        )
+
+    # We need to make this distinction because if the data loader does not 
+    # support loading of sharded batches, one rank has to load batches for
+    # all the devices and then shard them manually.
+    loader_mb_size = mb_size if not fallback_shard else mb_size * world_size
+
     hcb_format, mb_information = data_loader.batch_format(
-        cache_size, mb_size=mb_size)
+        cache_size, mb_size=loader_mb_size
+    )
+    rng_batch_size = mb_information.batch_size if not fallback_shard else mb_size
     mask_shape = (cache_size, mb_size)
 
     prefetch_futures: Dict[int, Future] = {}
@@ -326,9 +389,12 @@ def init_batch_functions(data_loader: core.HostDataLoader,
             return int(chain_id)
         return int(jax.device_get(chain_id))
 
+    # Helper function that can be submitted to a thread pool.
     def _prefetch_once(chain_id: int):
         return data_loader.get_batches(chain_id)
 
+    # Helper function that submits the prefetch only if prefetching is
+    # enabled.
     def _submit_prefetch(chain_id: int) -> None:
         if not prefetch:
             return
@@ -341,22 +407,45 @@ def init_batch_functions(data_loader: core.HostDataLoader,
 
         if random:
             chain_id = data_loader.register_random_pipeline(
-                cache_size=cache_size, mb_size=mb_size, **kwargs
+                cache_size=cache_size, mb_size=loader_mb_size, **kwargs
             )
         else:
             chain_id = data_loader.register_ordered_pipeline(
-                cache_size=cache_size, mb_size=mb_size, **kwargs
+                cache_size=cache_size, mb_size=loader_mb_size, **kwargs
             )
 
-        initial_state, initial_mask = data_loader.get_batches(chain_id)
+        initial_state, initial_mask = _prefetch_once(chain_id)
+
+        if fallback_shard:
+            # Rank 0 selects the (global) batch; broadcast via mpi4jax, then slice
+            # into disjoint per-rank minibatches.
+            initial_state = util.mpi_tree_broadcast(initial_state, root=0)
+            if initial_mask is None:
+                initial_mask = jnp.ones((cache_size, loader_mb_size), dtype=jnp.bool_)
+            initial_mask = util.mpi_tree_broadcast(initial_mask, root=0)
+
+            initial_state_swapped = jax.tree_util.tree_map(
+                lambda x: jnp.swapaxes(x, 0, 1), initial_state
+            )
+            initial_state_swapped, _ = util.mpi_tree_slice(initial_state_swapped)
+            initial_state = jax.tree_util.tree_map(
+                lambda x: jnp.swapaxes(x, 0, 1), initial_state_swapped
+            )
+
+            initial_mask_swapped = jnp.swapaxes(initial_mask, 0, 1)
+            initial_mask_swapped, _ = util.mpi_tree_slice(initial_mask_swapped)
+            initial_mask = jnp.swapaxes(initial_mask_swapped, 0, 1)
+
         if initial_mask is None:
-            initial_mask = jnp.ones((cache_size, mb_size), dtype=jnp.bool_)
+            initial_mask = jnp.ones(mask_shape, dtype=jnp.bool_)
 
         _submit_prefetch(chain_id)
 
         initial_internal_state = {}
         if rng_seed is not None:
             initial_internal_state['rng'] = jax.random.PRNGKey(rng_seed)
+
+        # Perform the sharding here! Avoids thread-safety issues 
 
         inital_cache_state = core.CacheState(
             cached_batches=initial_state,
@@ -379,10 +468,27 @@ def init_batch_functions(data_loader: core.HostDataLoader,
                 new_data, masks = data_loader.get_batches(chain_id)
             else:
                 new_data, masks = future.result()
-
-            _submit_prefetch(chain_id)
         else:
             new_data, masks = data_loader.get_batches(chain_id)
+
+        # Scatter in the main thread (after prefetch).
+        if fallback_shard:
+            new_data = util.mpi_tree_broadcast(new_data, root=0)
+            if masks is None:
+                masks = jnp.ones((cache_size, loader_mb_size), dtype=jnp.bool_)
+            masks = util.mpi_tree_broadcast(masks, root=0)
+
+            new_data_swapped = jax.tree_util.tree_map(
+                lambda x: jnp.swapaxes(x, 0, 1), new_data
+            )
+            new_data_swapped, _ = util.mpi_tree_slice(new_data_swapped)
+            new_data = jax.tree_util.tree_map(
+                lambda x: jnp.swapaxes(x, 0, 1), new_data_swapped
+            )
+
+            masks_swapped = jnp.swapaxes(masks, 0, 1)
+            masks_swapped, _ = util.mpi_tree_slice(masks_swapped)
+            masks = jnp.swapaxes(masks_swapped, 0, 1)
 
         if masks is None:
             # Assume all samples to be valid.
@@ -397,6 +503,9 @@ def init_batch_functions(data_loader: core.HostDataLoader,
             callback_uuid=state.callback_uuid,
             state=state.state
         )
+
+        # Already load the next batch in the background.
+        _submit_prefetch(chain_id)
 
         return new_state
         
@@ -414,7 +523,7 @@ def init_batch_functions(data_loader: core.HostDataLoader,
         internal_state = data_state.state
         if 'rng' in internal_state.keys():
             key, split = random.split(internal_state['rng'])
-            mini_batch['rng'] = random.split(split, mb_information.batch_size)
+            mini_batch['rng'] = random.split(split, rng_batch_size)
             internal_state['rng'] = key
 
         current_line = current_line + 1
@@ -430,7 +539,7 @@ def init_batch_functions(data_loader: core.HostDataLoader,
         
         info = core.MiniBatchInformation(
             observation_count = mb_information.observation_count,
-            batch_size = mb_information.batch_size,
+            batch_size = rng_batch_size,
             mask = mask)
             
         return new_state, mini_batch, info
