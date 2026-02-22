@@ -190,7 +190,7 @@ def main():
 
     trainer_fm = trainers.ForceMatching(
         init_params, optimizer, energy_fn_template, nbrs_init,
-        batch_per_device=config["optimizer"]["batch"] // len(jax.devices()),
+        batch=config["optimizer"]["batch"],
         batch_cache=config["optimizer"]["cache"],
         gammas=config["gammas"],
         weights_keys={
@@ -237,14 +237,14 @@ def main():
     plot_convergence(trainer_fm, out_dir)
 
 
-    test_predictions = trainer_fm.predict(dataset['testing'],
-                                          batch_size=config["optimizer"][
-                                                         "batch"] // len(
-                                              jax.devices()))
-    train_predictions = trainer_fm.predict(dataset['training'],
-                                           batch_size=config["optimizer"][
-                                                          "batch"] // len(
-                                               jax.devices()))
+    test_predictions = trainer_fm.predict(
+        dataset['testing'],
+        batch_size=config["optimizer"]["batch"],
+    )
+    train_predictions = trainer_fm.predict(
+        dataset['training'],
+        batch_size=config["optimizer"]["batch"],
+    )
     validation_predictions = trainer_fm.predict(
         dataset["validation"], trainer_fm.best_params,
         batch_size=config["optimizer"]["batch"],
@@ -330,9 +330,8 @@ def init_optimizer(config, dataset, key="optimizer"):
     else:
         exit()
 
-    transition_steps = int(
-        config[key]["epochs"] * num_samples
-    ) // config[key]["batch"]
+    global_batch = int(config[key]["batch"])
+    transition_steps = int(config[key]["epochs"] * num_samples) // global_batch
 
     if config[key].get("power") == "exponential":
         lr_schedule_fm = optax.exponential_decay(

@@ -94,7 +94,7 @@ for ((idx=${#counts[@]}-1; idx>=0; idx--)); do
                 ./run_with_rank_gpu.sh "$vis" \
                 "$PYTHON" train_spice_example.py \
                     --epochs "$EPOCHS" \
-                    --batch "$local_batch" \
+                    --batch "$GLOBAL_BATCH" \
                     $async_flag \
                     --outdir "$outdir" \
                 2>&1 | tee -a "${outdir}/run.log"
@@ -114,7 +114,7 @@ for ((idx=${#counts[@]}-1; idx>=0; idx--)); do
             ./run_with_rank_gpu.sh "$vis" \
             "$PYTHON" train_spice_example.py \
                 --epochs "$EPOCHS" \
-                --batch "$local_batch" \
+                --batch "$GLOBAL_BATCH" \
                 --no-async_dataloading \
                 --numpy_loader \
                 --outdir "$outdir" \

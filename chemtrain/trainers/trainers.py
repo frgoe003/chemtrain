@@ -50,7 +50,7 @@ from chemtrain.typing import EnergyFnTemplate, TrajFn
 class PropertyPrediction(tt.DataParallelTrainer):
     """Trainer for direct prediction of molecular properties."""
     def __init__(self, error_fn, prediction_model, init_params, optimizer,
-                 graph_dataset, targets, batch_per_device=1, batch_cache=10,
+                 graph_dataset, targets, batch=None, batch_per_device=1, batch_cache=10,
                  train_ratio=0.7, val_ratio=0.1, test_error_fn=None,
                  shuffle=False, convergence_criterion="window_median",
                  checkpoint_folder="Checkpoints"):
@@ -61,9 +61,12 @@ class PropertyPrediction(tt.DataParallelTrainer):
         checkpoint_path = "output/property_prediction/" + str(checkpoint_folder)
         loss_fn = property_prediction.init_loss_fn(error_fn)
 
+        if batch is not None and batch_per_device != 1:
+            raise ValueError("Provide only one of `batch` or `batch_per_device`.")
+
         super().__init__(
             loss_fn, model, init_params, optimizer, checkpoint_path,
-            batch_per_device, batch_cache,
+            batch=batch, batch_cache=batch_cache, batch_per_device=batch_per_device,
             convergence_criterion=convergence_criterion
         )
 
@@ -128,8 +131,8 @@ class ForceMatching(tt.DataParallelTrainer):
         energy_fn_has_aux: Energy function has an auxiliary output. The
             energy function will be called with argument ``mode="with_aux"``
             and should return a tuple ``(pot, aux)``.
-        batch_per_device: Number of samples to process vectorized on every
-            device.
+        batch: Global batch size across MPI ranks and local devices.
+        batch_per_device: Legacy local batch size per device (per rank).
         batch_cache: Number of batches to load into the device memories.
         full_checkpoint: Save the whole trainer instead of only some statistics.
         disable_shmap: Use ``pmap`` instead of ``shmap`` for parallelization.
@@ -166,6 +169,7 @@ class ForceMatching(tt.DataParallelTrainer):
                  additional_targets: Dict[str, Dict] = None,
                  feature_extract_fns: Dict[str, Callable] = None,
                  energy_fn_has_aux: bool = False,
+                 batch: int | None = None,
                  batch_per_device: int = 1,
                  batch_cache: int = 10,
                  full_checkpoint: bool = False,
@@ -205,8 +209,12 @@ class ForceMatching(tt.DataParallelTrainer):
         loss_fn = force_matching.init_loss_fn(
             error_fns=error_fns, gammas=gammas, weights_keys=weights_keys)
 
+        if batch is not None and batch_per_device != 1:
+            raise ValueError("Provide only one of `batch` or `batch_per_device`.")
+
         super().__init__(loss_fn, model, init_params, optimizer,
-                         checkpoint_path, batch_per_device, batch_cache,
+                         checkpoint_path, batch=batch, batch_cache=batch_cache,
+                         batch_per_device=batch_per_device,
                          disable_shmap=disable_shmap, penalty_fn=penalty_fn,
                          convergence_criterion=convergence_criterion,
                          full_checkpoint=full_checkpoint,

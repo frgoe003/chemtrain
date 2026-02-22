@@ -26,7 +26,7 @@ import warnings
 from abc import abstractmethod
 from os import PathLike
 import inspect
-from typing import Callable, Dict, Any
+from typing import Callable, Dict, Any, Optional
 from types import ModuleType
 
 import cloudpickle as pickle
@@ -866,11 +866,24 @@ class DataParallelTrainer(MLETrainerTemplate):
     _val_loader: data.DataLoader
     _test_loader: data.DataLoader
 
-    def __init__(self, loss_fn, model, init_params, optimizer, checkpoint_path,
-                 batch_per_device: int,  batch_cache: int = 1,
-                 full_checkpoint=True, penalty_fn=None, energy_fn_template=None,
-                 convergence_criterion="window_median", log_file=None,
-                 disable_shmap: bool = False):
+    def __init__(
+        self,
+        loss_fn,
+        model,
+        init_params,
+        optimizer,
+        checkpoint_path,
+        batch: Optional[int] = None,
+        batch_cache: int = 1,
+        full_checkpoint=True,
+        penalty_fn=None,
+        energy_fn_template=None,
+        convergence_criterion="window_median",
+        log_file=None,
+        disable_shmap: bool = False,
+        *,
+        batch_per_device: Optional[int] = None,
+    ):
 
         self._disable_shmap = disable_shmap
         self.batched_model = model
@@ -887,7 +900,42 @@ class DataParallelTrainer(MLETrainerTemplate):
 
         self._loss_fn = loss_fn
         self.batch_cache = batch_cache
-        self.batch_size = batch_per_device * device_count()
+
+        local_device_count = int(device_count())
+        mpi_world_size = 1
+        if util.use_mpi():
+            comm = util.get_communicator()
+            if comm is not None:
+                mpi_world_size = int(comm.Get_size())
+
+        if batch is None and batch_per_device is None:
+            raise ValueError(
+                "`batch` (global) must be provided (or legacy `batch_per_device`)."
+            )
+        if batch is not None and batch_per_device is not None:
+            raise ValueError("Provide only one of `batch` or `batch_per_device`.")
+
+        if batch_per_device is not None:
+            # Legacy convention: batch_per_device is local to a rank.
+            local_batch_size = int(batch_per_device) * local_device_count
+            global_batch_size = local_batch_size * mpi_world_size
+        else:
+            global_batch_size = int(batch)
+            if global_batch_size % mpi_world_size != 0:
+                raise ValueError(
+                    f"Global batch {global_batch_size} must be divisible by MPI world size {mpi_world_size}."
+                )
+            local_batch_size = global_batch_size // mpi_world_size
+
+            if local_batch_size % local_device_count != 0:
+                raise ValueError(
+                    f"Per-rank batch {local_batch_size} must be divisible by local device_count {local_device_count}."
+                )
+            batch_per_device = local_batch_size // local_device_count
+
+        self.global_batch_size = int(global_batch_size)
+        self.local_batch_size = int(local_batch_size)
+        self.batch_per_device = int(batch_per_device)
 
         if optimizer is None:
             print(f"No optimizer specified")
@@ -1003,7 +1051,7 @@ class DataParallelTrainer(MLETrainerTemplate):
                 Not applied to the training split.
             rng_seed: Seed to include random keys in the reference data.
                 The keys are refreshed whenever a new batch is drawn.
-            batch_size: Overwrites the default batch size.
+            batch_size: Overwrites the default GLOBAL batch size.
 
         """
         if stage in self.release_fns.keys():
@@ -1018,12 +1066,9 @@ class DataParallelTrainer(MLETrainerTemplate):
             print(f"Chose custom batch size {batch_size} for split {stage}")
 
         if batch_size is None:
-            batch_size = self.batch_size
+            batch_size = self.global_batch_size
         if batch_size > observation_count:
             batch_size = observation_count
-
-        # Ensures that the batch size is divisible by the number of devices
-        batch_size -= onp.mod(batch_size, device_count())
 
         mpi_world_size = 1
         if util.use_mpi():
@@ -1031,12 +1076,31 @@ class DataParallelTrainer(MLETrainerTemplate):
             if comm is not None:
                 mpi_world_size = comm.Get_size()
 
-        global_batch_size = batch_size * mpi_world_size
+        local_device_count = int(device_count())
+        divisor = int(mpi_world_size) * local_device_count
+        if divisor <= 0:
+            raise RuntimeError("Invalid divisor for batch sharding.")
 
-        if batch_size != self.batch_size:
+        # Ensure GLOBAL batch is divisible by MPI world size and local device_count.
+        if onp.mod(batch_size, divisor) != 0:
+            new_batch_size = int(batch_size - onp.mod(batch_size, divisor))
+            if new_batch_size <= 0:
+                raise ValueError(
+                    f"Global batch size {batch_size} too small for divisor {divisor}."
+                )
+            warnings.warn(
+                f"Global batch size {batch_size} is not divisible by {divisor}; "
+                f"using {new_batch_size} instead."
+            )
+            batch_size = new_batch_size
+
+        global_batch_size = int(batch_size)
+        local_batch_size = int(global_batch_size // int(mpi_world_size))
+
+        if global_batch_size != self.global_batch_size:
             logging.info(
-                f"Batch size for stage {stage} changed to {batch_size} "
-                f"from {self.batch_size}."
+                f"Global batch size for stage {stage} changed to {global_batch_size} "
+                f"from {self.global_batch_size}."
             )
 
         if include_all:
@@ -1051,7 +1115,7 @@ class DataParallelTrainer(MLETrainerTemplate):
 
         if onp.mod(observation_count, global_batch_size) != 0:
             warnings.warn(
-                f"Batch size {batch_size} does not divide the number of "
+                f"Global batch size {global_batch_size} does not divide the number of "
                 f"observations {observation_count}. "
                 f"Trainer will skip {observation_count % global_batch_size} samples "
                 f"for state {stage}"
@@ -1060,7 +1124,7 @@ class DataParallelTrainer(MLETrainerTemplate):
         # Initialize the access functions
         batch_fns = data_loaders.init_batch_functions(
             data_loader,
-            mb_size=batch_size,
+            mb_size=local_batch_size,
             cache_size=self.batch_cache,
             prefetch=chemtrain_config.read("async_dataloading", True),
             use_mpi=util.use_mpi(),
@@ -1331,8 +1395,9 @@ class DataParallelTrainer(MLETrainerTemplate):
                 only consists of a few observations.
         """
         n_samples = util.tree_multiplicity(sample)
-        assert n_samples <= self.batch_size, ("Number of provided samples must"
-                                              " not exceed trainer batch size.")
+        assert n_samples <= self.local_batch_size, (
+            "Number of provided samples must not exceed per-rank batch size."
+        )
         batch = next(self._get_batch())
         updated_batch = util.tree_set(batch, sample, n_samples)
         self._update_with_dropout(updated_batch)
