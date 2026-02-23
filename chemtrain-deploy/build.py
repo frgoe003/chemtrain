@@ -414,6 +414,11 @@ def main():
       default=False,
       help_str="Should we produce verbose debugging output?")
   parser.add_argument(
+     "--install_location",
+      default="./lib",
+      help="Directory to which the compiled connector should be copied."
+  )
+  parser.add_argument(
       "--bazel_path",
       help="Path to the Bazel binary to use. The default is to find bazel via "
       "the PATH; if none is found, downloads a fresh copy of bazel from "
@@ -696,7 +701,7 @@ def main():
 
       print(" ".join(build_pjrt_plugin_command))
       shell(build_pjrt_plugin_command)
-      out_dir = pathlib.Path("./lib")
+      out_dir = pathlib.Path(args.install_location)
       out_dir.mkdir(exist_ok=True, parents=True)
       (out_dir / f"pjrt_plugin.xla_cuda{args.cuda_version.split('.')[0]}.so").write_bytes(
           pathlib.Path("./bazel-bin/external/xla/xla/pjrt/c/pjrt_c_api_gpu_plugin.so").read_bytes()
@@ -714,14 +719,14 @@ def main():
 
       print(" ".join(build_pjrt_plugin_command))
       shell(build_pjrt_plugin_command)
-      out_dir = pathlib.Path("./lib")
+      out_dir = pathlib.Path(args.install_location)
       out_dir.mkdir(exist_ok=True, parents=True)
       (out_dir / f"pjrt_plugin.xla_cpu.so").write_bytes(
           pathlib.Path("./bazel-bin/external/xla/xla/pjrt/c/pjrt_c_api_cpu_plugin.so").read_bytes()
       )
   elif args.load_gpu_pjrt_plugin:
       # Loads a prebuilt pjrt plugin from the jaxlib wheels.
-      out_dir = pathlib.Path("./lib")
+      out_dir = pathlib.Path(args.install_location)
       load_pjrt_plugin_libraries(out_dir)
 
   else:
