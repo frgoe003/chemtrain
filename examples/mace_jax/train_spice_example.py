@@ -63,7 +63,7 @@ def get_default_config():
     return OrderedDict(
         optimizer=OrderedDict(
             init_lr=1e-5,
-            lr_decay=1e-2,
+            lr_decay=1e-1,
             epochs=args.epochs,
             batch=args.batch,
             cache=100,

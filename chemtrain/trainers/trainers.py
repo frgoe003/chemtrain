@@ -20,7 +20,7 @@ import pickle
 import time
 import warnings
 from os import PathLike
-from typing import Any, Mapping, Dict, Callable
+from typing import Any, Mapping, Dict, Callable, Optional
 
 import jax.tree_util
 import numpy as onp
@@ -50,7 +50,7 @@ from chemtrain.typing import EnergyFnTemplate, TrajFn
 class PropertyPrediction(tt.DataParallelTrainer):
     """Trainer for direct prediction of molecular properties."""
     def __init__(self, error_fn, prediction_model, init_params, optimizer,
-                 graph_dataset, targets, batch=None, batch_per_device=1, batch_cache=10,
+                 graph_dataset, targets, batch=1, batch_per_device=None, batch_cache=10,
                  train_ratio=0.7, val_ratio=0.1, test_error_fn=None,
                  shuffle=False, convergence_criterion="window_median",
                  checkpoint_folder="Checkpoints"):
@@ -60,9 +60,6 @@ class PropertyPrediction(tt.DataParallelTrainer):
         model = property_prediction.init_model(prediction_model)
         checkpoint_path = "output/property_prediction/" + str(checkpoint_folder)
         loss_fn = property_prediction.init_loss_fn(error_fn)
-
-        if batch is not None and batch_per_device != 1:
-            raise ValueError("Provide only one of `batch` or `batch_per_device`.")
 
         super().__init__(
             loss_fn, model, init_params, optimizer, checkpoint_path,
@@ -169,8 +166,8 @@ class ForceMatching(tt.DataParallelTrainer):
                  additional_targets: Dict[str, Dict] = None,
                  feature_extract_fns: Dict[str, Callable] = None,
                  energy_fn_has_aux: bool = False,
-                 batch: int | None = None,
-                 batch_per_device: int = 1,
+                 batch: Optional[int] = 1,
+                 batch_per_device: Optional[int] = None,
                  batch_cache: int = 10,
                  full_checkpoint: bool = False,
                  disable_shmap: bool = False,
@@ -208,9 +205,6 @@ class ForceMatching(tt.DataParallelTrainer):
 
         loss_fn = force_matching.init_loss_fn(
             error_fns=error_fns, gammas=gammas, weights_keys=weights_keys)
-
-        if batch is not None and batch_per_device != 1:
-            raise ValueError("Provide only one of `batch` or `batch_per_device`.")
 
         super().__init__(loss_fn, model, init_params, optimizer,
                          checkpoint_path, batch=batch, batch_cache=batch_cache,
