@@ -166,7 +166,7 @@ class ForceMatching(tt.DataParallelTrainer):
                  additional_targets: Dict[str, Dict] = None,
                  feature_extract_fns: Dict[str, Callable] = None,
                  energy_fn_has_aux: bool = False,
-                 batch: Optional[int] = 1,
+                 batch: Optional[int] = None,
                  batch_per_device: Optional[int] = None,
                  batch_cache: int = 10,
                  full_checkpoint: bool = False,
