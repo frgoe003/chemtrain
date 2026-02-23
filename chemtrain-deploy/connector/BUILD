@@ -138,6 +138,7 @@ cc_library(
         ":utils",
         ":xla_call_module_loader",
         "@llvm-project//mlir:AllPassesAndDialects",
+        "@llvm-project//mlir:MLProgramDialect",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
