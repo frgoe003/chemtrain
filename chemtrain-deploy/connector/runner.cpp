@@ -327,7 +327,6 @@ namespace jcn {
 
             // No idea what to specify here...
             xla::ExecuteOptions execute_options;
-            execute_options.untuple_result = true;
             //  execute_options.execution_mode = xla::ExecuteOptions::ExecutionMode::kSynchronous;
 
 
