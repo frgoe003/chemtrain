@@ -4,9 +4,19 @@
 
 To install mace-jax with foundational model support, issue these commands:
 ```{bash}
+<<<<<<< HEAD
 git clone https://github.com/ACEsuit/mace-jax --checkout 7e9d467d1701290b6606a20ff2c625c27e973254 /tmp/mace-jax
 sed -i 's/find:/find_namespace:/g' /tmp/mace-jax/setup.cfg
 pip install /tmp/mace-jax
+=======
+git clone https://github.com/ACEsuit/mace-jax /tmp/mace-jax
+git -C /tmp/mace-jax switch --detach 7e9d467d1701290b6606a20ff2c625c27e973254
+cd - 
+sed -i 's/find:/find_namespace:/g' /tmp/mace-jax/setup.cfg
+pip install /tmp/mace-jax
+pip install h5py
+pip install mace-torch
+>>>>>>> 24f37eb81c6bec845a51843da87962d662046762
 ```
 
 ## Example

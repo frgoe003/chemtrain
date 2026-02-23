@@ -162,9 +162,10 @@ def shmap_update_fn(batched_model, loss_fn, optimizer, penalty_fn=None):
             PartitionSpec(),
             PartitionSpec()
         ), out_specs=PartitionSpec())
-        def _inner(batch, params, opt_state):
+        def _inner_sharded(batch, params, opt_state):
             (loss, per_target_loss), grad = value_and_grad(
                 param_loss_fn, has_aux=True)(params, batch)
+            # step optimizer within pmap to minimize communication overhead
             grad = lax.pmean(grad, axis_name='batch')
             loss = lax.pmean(loss, axis_name='batch')
             per_target_loss = lax.pmean(per_target_loss, axis_name='batch')
@@ -188,6 +189,7 @@ def shmap_update_fn(batched_model, loss_fn, optimizer, penalty_fn=None):
             new_params, new_opt_state = step_optimizer(
                 params, opt_state, grad, optimizer)
 
+            return new_params, new_opt_state, loss, grad, per_target_loss
             return new_params, new_opt_state, loss, grad, per_target_loss
 
     def update_fn(params, opt_state, batch, per_target=False):
@@ -239,12 +241,14 @@ def shmap_loss_fn(batched_model, loss_fn, penalty_fn=None):
         )
 
         @jax.jit
-        @partial(jax.shard_map, mesh=mesh, in_specs=(
-            PartitionSpec('batch'),
-            PartitionSpec(),
-        ), out_specs=PartitionSpec())
-        def _inner(batch, params):
-            loss, per_target_loss = param_loss_fn(params, *batch)
+        def batch_update(params, data):
+            if mesh.size > 1:
+                @partial(jax.shard_map, mesh=mesh, in_specs=(
+                    PartitionSpec('batch'),
+                    PartitionSpec(),
+                ), out_specs=PartitionSpec())
+                def _inner(batch, params):
+                    loss, per_target_loss = param_loss_fn(params, *batch)
 
             loss = lax.pmean(loss, axis_name='batch')
             per_target_loss = lax.pmean(per_target_loss, axis_name='batch')
