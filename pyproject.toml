@@ -55,6 +55,8 @@ dynamic = ["version"]
     'tomli',
     'tomli-w',
     "scikit-learn",
+    "h5py",
+    "mpi4jax"
 ]
 "test" = [
     "pylint",
