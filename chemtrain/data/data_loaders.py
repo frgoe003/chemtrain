@@ -21,7 +21,11 @@ try:
 except ImportError:
     mpi4py = None
 
-import h5py
+try:
+    import h5py
+except ImportError:
+    h5py = None
+
 import jax
 from jax import numpy as jnp, random
 import numpy as onp
