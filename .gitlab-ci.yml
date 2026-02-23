@@ -19,7 +19,10 @@ cache:
 
 before_script:
   - apt-get update
-  - apt-get install -y doxygen
+  - apt-get install -y \
+      doxygen \
+      libopenmpi-dev \
+      openmpi
   - python --version ; pip --version  # For debugging
   - pip install virtualenv
 
