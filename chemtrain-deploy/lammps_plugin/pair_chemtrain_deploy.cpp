@@ -333,6 +333,8 @@ void ChemtrainDeploy::init_style()
 
 double ChemtrainDeploy::init_one(int i, int j)
 {
+  if (!allocated) allocate();
+
   if (setflag[i][j] == 0) error->all(FLERR, "Not all pair coeffs are set");
 
   // Initialize the old atom positions
