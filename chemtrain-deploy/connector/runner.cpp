@@ -19,10 +19,12 @@ limitations under the License.
 #include <vector>
 #include <chrono>
 #include <memory>
-#include <dlfcn.h>
-#include <filesystem>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <regex>
 #include <future>
+#include <cstdlib>
 
 #include "connector/runner.h"
 #include "connector/compiler.h"
@@ -59,35 +61,51 @@ namespace jcn {
 
         Logger logger = Logger::getlogger();
 
-        char* env_var = std::getenv("JCN_PJRT_PATH");
-        if (env_var == nullptr) {
+
+        char* raw_path = std::getenv("JCN_PJRT_PATH");
+        if (raw_path == nullptr) {
             std::cerr << "Set JCN_PJRT_PATH to discover PJRT Plugins" << std::endl;
             return;
         }
 
-        std::string plugin_path = std::string(std::getenv("JCN_PJRT_PATH"));
-
         try {
-            // Infer a name
+            struct stat st;
+            if (stat(raw_path, &st) != 0 || !S_ISDIR(st.st_mode)) {
+                std::cerr << "Invalid JCN_PJRT_PATH: " << raw_path << std::endl;
+                return;
+            }
+
+            DIR* dir = opendir(raw_path);
+            if (!dir) {
+                std::cerr << "Failed to open JCN_PJRT_PATH: " << raw_path << std::endl;
+                return;
+            }
+
             std::regex pattern(R"(pjrt_plugin\.xla_(\w+)\.so)");
 
-            for (const auto& entry : std::filesystem::directory_iterator(plugin_path)) {
-                std::string path = entry.path().string();
+            struct dirent* entry;
+            while ((entry = readdir(dir)) != nullptr) {
+                if (entry->d_name[0] == '.') continue;
+
+                std::string name(entry->d_name);
                 std::smatch match;
+                if (!std::regex_match(name, match, pattern)) continue;
 
-                if (!std::regex_search(path, match, pattern)) continue;
+                std::string backend = match.str(1);
+                std::string path = std::string(raw_path) + "/" + name;
 
-                absl::StatusOr<const PJRT_Api*> status_or_api = pjrt::LoadPjrtPlugin(match.str(1), path);
+                absl::StatusOr<const PJRT_Api*> status_or_api = pjrt::LoadPjrtPlugin(backend, path);
 
                 if (status_or_api.ok()) {
                     logger.log(
-                        LogLevel::INFO, "Loaded PJRT plugin " + match.str(1)
+                        LogLevel::INFO, "Loaded PJRT plugin " + backend
                     );
                 } else {
-                    std::cerr << "Failed to load PJRT plugin: " << status_or_api.status().ToString() << std::endl;
+                    std::cerr << "Failed to load PJRT plugin " << backend << ": " << status_or_api.status().ToString() << std::endl;
                 }
 
             }
+            closedir(dir);
         } catch (const std::exception& e) {
             std::cerr << "Failed to load pjrt plugins: " << e.what() << std::endl;
         }
@@ -113,6 +131,35 @@ namespace jcn {
           client_or_status = xla::GetPjRtCpuClient(create_options);
 
         } else {
+
+            logger.log(LogLevel::INFO, "Initializing PjRtClient for backend '" + config.backend + "' with options:");
+            logger.log(LogLevel::INFO, "  - Device: " + std::to_string(config.device));
+            logger.log(LogLevel::INFO, "  - Memory fraction: " + std::to_string(config.memory_fraction));
+
+            // For non-CPU backends we rely on PJRT plugins discovered from JCN_PJRT_PATH.
+            // Missing/empty env vars have previously resulted in hard-to-diagnose crashes
+            // in downstream plugin initialization on some systems, so we fail fast here.
+            const char* pjrt_path_c = std::getenv("JCN_PJRT_PATH");
+            if (pjrt_path_c == nullptr || std::string(pjrt_path_c).empty()) {
+                throw std::runtime_error(
+                    "JCN_PJRT_PATH is not set (or empty). Set it to the directory containing "
+                    "PJRT plugin files like 'pjrt_plugin.xla_" + config.backend + ".so'."
+                );
+            }
+
+            // Best-effort check for the expected plugin filename to provide a clearer error
+            // than the PJRT runtime when the backend name does not match the installed plugin.
+            try {
+                std::string expected = std::string(pjrt_path_c) + "/pjrt_plugin.xla_" + config.backend + ".so";
+                if (access(expected.c_str(), R_OK) != 0) {
+                    throw std::runtime_error(
+                        "Could not find expected PJRT plugin '" + expected + "'. "
+                        "Either install that plugin or use a backend name matching the available plugin file."
+                    );
+                }
+            } catch (const std::exception& e) {
+                throw std::runtime_error(std::string("PJRT plugin discovery failed: ") + e.what());
+            }
 
             absl::flat_hash_map<std::string, xla::PjRtValueType> create_options = {
                 {"memory_fraction", static_cast<float>(config.memory_fraction)},

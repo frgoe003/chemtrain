@@ -447,6 +447,15 @@ def main():
   )
   add_boolean_argument(
       parser,
+      "enable_nvshmem",
+      default=True,
+      help_str=(
+        "Enable NVSHMEM collectives for CUDA builds (PJRT). "
+        "Use --noenable_nvshmem to disable."
+      ),
+    )
+  add_boolean_argument(
+      parser,
       "build_gpu_pjrt_plugin",
       default=False,
       help_str=(
@@ -642,6 +651,11 @@ def main():
           f"--action_env=CLANG_CUDA_COMPILER_PATH={clang_path}"
       )
 
+      if not args.enable_nvshmem:
+        build_options.append(
+          "--@xla//xla/stream_executor/cuda:nvshmem_enabled=false"
+        )
+
       if args.build_cuda_with_clang:
         logging.debug("Building CUDA with Clang")
         build_options.append("--config=build_cuda_with_clang")
@@ -668,6 +682,9 @@ def main():
               f"--repo_env=HERMETIC_CUDA_COMPUTE_CAPABILITIES={args.cuda_compute_capabilities}"
           )
 
+
+  build_options.append("--cxxopt=-std=c++17")
+  build_options.append("--host_cxxopt=-std=c++17")
 
   with open("config.bazelrc", "w") as f:
       f.write(__BAZELRC)
@@ -736,7 +753,7 @@ def main():
       ]
       print(" ".join(build_cpu_wheel_command))
       shell(build_cpu_wheel_command)
-      out_dir = pathlib.Path("./lib")
+      out_dir = pathlib.Path(args.install_location)
       out_dir.mkdir(exist_ok=True, parents=True)
       (out_dir / "libconnector.so").write_bytes(
           pathlib.Path("./bazel-bin/connector/libconnector.so").read_bytes()

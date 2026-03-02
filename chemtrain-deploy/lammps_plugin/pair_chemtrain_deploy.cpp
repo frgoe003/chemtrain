@@ -182,6 +182,7 @@ void ChemtrainDeploy::allocate()
   memory->create(cutsq, n + 1, n + 1, "pair:cutsq");
   memory->create(cut, n + 1, n + 1, "pair:cut");
   memory->create(xold, atom->nmax, 3, "pair:xold");
+  xold_nmax = atom->nmax;
 
   for (int i = 1; i <= n; i++) {
       for (int j = 1; j <= n; j++) setflag[i][j] = 0;
@@ -233,7 +234,12 @@ void ChemtrainDeploy::settings(int narg, char **arg)
   }
 
   // Initialize the model within XLA
-  connector = std::make_unique<jcn::Connector>(config);
+  try {
+    connector = std::make_unique<jcn::Connector>(config);
+  } catch (const std::exception& e) {
+    std::string msg = std::string("chemtrain_deploy: failed to initialize connector: ") + e.what();
+    error->all(FLERR, msg.c_str());
+  }
 
 }
 
@@ -328,7 +334,14 @@ void ChemtrainDeploy::init_style()
 
 double ChemtrainDeploy::init_one(int i, int j)
 {
+  if (!allocated || xold == nullptr) allocate();
   if (setflag[i][j] == 0) error->all(FLERR, "Not all pair coeffs are set");
+
+  if (atom->nmax > xold_nmax) {
+    memory->destroy(xold);
+    memory->create(xold, atom->nmax, 3, "pair:xold");
+    xold_nmax = atom->nmax;
+  }
 
   // Initialize the old atom positions
   for (int i = 0; i < atom->nlocal; i++) {
