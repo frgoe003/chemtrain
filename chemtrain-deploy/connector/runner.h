@@ -47,7 +47,7 @@ namespace jcn {
 
     class Runner {
     public:
-        Runner(ConnectorConfig config, bool initialize);
+        Runner(ConnectorConfig connector_config, bool initialize);
         ~Runner() = default;
 
         ModelProperties load_model(ModelConfig config);
@@ -76,6 +76,9 @@ namespace jcn {
         xla::CompileOptions compile_options;
 
         ConnectorConfig config;
+
+        // Index into client->addressable_devices() used for buffer allocation.
+        int pjrt_device_index_ = 0;
 
         /*
          * Saves the recompilation request until the exectuable is actually

@@ -112,7 +112,8 @@ namespace jcn {
 
     }
 
-    Runner::Runner(ConnectorConfig config, bool initialize) {
+    Runner::Runner(ConnectorConfig connector_config, bool initialize)
+        : config(std::move(connector_config)) {
 
         if (initialize) {
             Runner::initialize();
@@ -123,7 +124,7 @@ namespace jcn {
 
         absl::StatusOr<std::unique_ptr<xla::PjRtClient>> client_or_status;
 
-        if (config.backend == "cpu") {
+        if (this->config.backend == "cpu") {
 
           xla::CpuClientOptions create_options;
           create_options.asynchronous = true;
@@ -132,9 +133,9 @@ namespace jcn {
 
         } else {
 
-            logger.log(LogLevel::INFO, "Initializing PjRtClient for backend '" + config.backend + "' with options:");
-            logger.log(LogLevel::INFO, "  - Device: " + std::to_string(config.device));
-            logger.log(LogLevel::INFO, "  - Memory fraction: " + std::to_string(config.memory_fraction));
+            logger.log(LogLevel::INFO, "Initializing PjRtClient for backend '" + this->config.backend + "' with options:");
+            logger.log(LogLevel::INFO, "  - Device: " + std::to_string(this->config.device));
+            logger.log(LogLevel::INFO, "  - Memory fraction: " + std::to_string(this->config.memory_fraction));
 
             // For non-CPU backends we rely on PJRT plugins discovered from JCN_PJRT_PATH.
             // Missing/empty env vars have previously resulted in hard-to-diagnose crashes
@@ -143,14 +144,14 @@ namespace jcn {
             if (pjrt_path_c == nullptr || std::string(pjrt_path_c).empty()) {
                 throw std::runtime_error(
                     "JCN_PJRT_PATH is not set (or empty). Set it to the directory containing "
-                    "PJRT plugin files like 'pjrt_plugin.xla_" + config.backend + ".so'."
+                    "PJRT plugin files like 'pjrt_plugin.xla_" + this->config.backend + ".so'."
                 );
             }
 
             // Best-effort check for the expected plugin filename to provide a clearer error
             // than the PJRT runtime when the backend name does not match the installed plugin.
             try {
-                std::string expected = std::string(pjrt_path_c) + "/pjrt_plugin.xla_" + config.backend + ".so";
+                std::string expected = std::string(pjrt_path_c) + "/pjrt_plugin.xla_" + this->config.backend + ".so";
                 if (access(expected.c_str(), R_OK) != 0) {
                     throw std::runtime_error(
                         "Could not find expected PJRT plugin '" + expected + "'. "
@@ -162,25 +163,25 @@ namespace jcn {
             }
 
             absl::flat_hash_map<std::string, xla::PjRtValueType> create_options = {
-                {"memory_fraction", static_cast<float>(config.memory_fraction)},
-                {"visible_devices", std::vector<int64_t>({config.device})},
+                {"memory_fraction", static_cast<float>(this->config.memory_fraction)},
+                {"visible_devices", std::vector<int64_t>({this->config.device})},
             };
 
             // Initialize the possible backends in the libconnector file
-            absl::StatusOr<bool> status_or_success = pjrt::IsPjrtPluginInitialized(config.backend);
+            absl::StatusOr<bool> status_or_success = pjrt::IsPjrtPluginInitialized(this->config.backend);
             if (!status_or_success.ok()) {
                 throw std::runtime_error("Failed to initialize PjRtClient: " + status_or_success.status().ToString());
             }
 
             if (!status_or_success.value()) {
-                absl::Status status = pjrt::InitializePjrtPlugin(config.backend);
+                absl::Status status = pjrt::InitializePjrtPlugin(this->config.backend);
                 if (!status.ok()) {
                     throw std::runtime_error("Failed to initialize PjRtClient: " + status.ToString());
                 }
             }
 
             // Get the client
-            client_or_status = xla::GetCApiClient(config.backend, create_options);
+            client_or_status = xla::GetCApiClient(this->config.backend, create_options);
 
         }
 
@@ -189,6 +190,28 @@ namespace jcn {
         }
 
         client = std::move(client_or_status).value();
+
+        // Determine the index into addressable_devices() to use for buffer allocation.
+        // When visible_devices filtering is applied, addressable_devices() may be remapped.
+        pjrt_device_index_ = 0;
+        absl::Span<xla::PjRtDevice* const> addressable = client->addressable_devices();
+        if (addressable.empty()) {
+            throw std::runtime_error("PjRtClient has no addressable devices");
+        }
+
+        for (int i = 0; i < addressable.size(); ++i) {
+            if (addressable[i]->id() == this->config.device) {
+                pjrt_device_index_ = i;
+                break;
+            }
+        }
+
+        logger.log(
+            LogLevel::INFO,
+            "Using addressable device index " + std::to_string(pjrt_device_index_) +
+                " (requested id=" + std::to_string(this->config.device) +
+                ", actual id=" + std::to_string(addressable[pjrt_device_index_]->id()) + ")"
+        );
 
         // Print devices
         absl::Span<xla::PjRtDevice* const> devices = client->devices();
@@ -351,13 +374,13 @@ namespace jcn {
 
             // Now we have to create the buffers, i.e., copy the data onto
             // the device
-            std::vector<xla::PjRtBuffer*> buffer_ptrs = atom_builder->build_domain(client.get(), config.device, lnum, gnum, x, type);
+            std::vector<xla::PjRtBuffer*> buffer_ptrs = atom_builder->build_domain(client.get(), pjrt_device_index_, lnum, gnum, x, type);
 
             // TODO: We have to add the gnum option to the neighbor list.
             //       This is only a workaround for the sparse neighbor list
             //       which includes the ghost atoms as senders.
             std::vector<xla::PjRtBuffer*> graph_buffers = neighbor_list->build_graph(
-                client.get(), config.device, inum, ilist, numneigh, firstneigh, update);
+                client.get(), pjrt_device_index_, inum, ilist, numneigh, firstneigh, update);
             buffer_ptrs.insert(buffer_ptrs.end(), graph_buffers.begin(), graph_buffers.end());
 
             std::vector<std::vector<xla::PjRtBuffer*>> arg_handles = {buffer_ptrs};
@@ -374,6 +397,7 @@ namespace jcn {
 
             // No idea what to specify here...
             xla::ExecuteOptions execute_options;
+            execute_options.untuple_result = true;
             //  execute_options.execution_mode = xla::ExecuteOptions::ExecutionMode::kSynchronous;
 
 
