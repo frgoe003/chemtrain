@@ -395,14 +395,9 @@ namespace jcn {
                 throw std::runtime_error("arg_handles is empty or not properly populated");
             }
 
-            // No idea what to specify here...
             xla::ExecuteOptions execute_options;
-            execute_options.untuple_result = true;
-            //  execute_options.execution_mode = xla::ExecuteOptions::ExecutionMode::kSynchronous;
 
-
-                start = std::chrono::high_resolution_clock::now();
-
+            start = std::chrono::high_resolution_clock::now();
 
             // Use std::async to execute the function asynchronously
             std::future<absl::StatusOr<std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>>> future_results =

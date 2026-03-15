@@ -16,6 +16,7 @@ limitations under the License.
 
 #include <chrono>
 #include <cmath>
+#include <numeric>
 
 #include "connector/domain.h"
 #include "connector/buffer.h"
@@ -147,8 +148,10 @@ namespace jcn {
         if (success) {
             auto start = std::chrono::high_resolution_clock::now();
 
-            absl::StatusOr<std::shared_ptr<xla::Literal>> force_literal = results[0][0]->ToLiteralSync();
-            absl::StatusOr<std::shared_ptr<xla::Literal>> energy_literal = results[0][1]->ToLiteralSync();
+            // NOTE: The runner returns buffers with the energy in slot 0
+            // and the forces in slot 1. Match that ordering here.
+            absl::StatusOr<std::shared_ptr<xla::Literal>> energy_literal = results[0][0]->ToLiteralSync();
+            absl::StatusOr<std::shared_ptr<xla::Literal>> force_literal = results[0][1]->ToLiteralSync();
 
             if (!force_literal.ok() || !energy_literal.ok()) {
                 throw std::runtime_error("Failed to convert buffer to literal");
@@ -177,9 +180,18 @@ namespace jcn {
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double> duration = end - start;
 
-            logger.log(LogLevel::DEBUG, "Time taken for force backtransfer: " + std::to_string(duration.count()) + " seconds");
+            logger.log(
+                LogLevel::DEBUG, "Time taken for force backtransfer: " 
+                + std::to_string(duration.count()) + " seconds"
+            );
 
-            potential = static_cast<double>(potential_data[0]);
+            // The energy buffer contains per-atom energies (one float per atom).
+            // Sum the first `inum` entries (local atoms) to obtain the total potential
+            // for this domain. 
+            potential = std::accumulate(
+                potential_data, potential_data + inum, 0.0,
+                [](double sum, float v){ return sum + static_cast<double>(v); }
+            );
 
             // Remove the buffers after computation
             buffers.clear();
