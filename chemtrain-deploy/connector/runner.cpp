@@ -230,8 +230,6 @@ namespace jcn {
 
         newton = config.newton;
 
-        atom_builder = std::make_unique<AtomBuilder>(
-            config.atom_multiplier, config.newton);
         model = std::make_unique<jcn::Model>();
 
         // Deserialize the protobuffer
@@ -245,6 +243,13 @@ namespace jcn {
 
         // Pass the mlir module to the compiler
         compiler = std::make_unique<Compiler>(model->mlir_module());
+
+        // Extract exported quantity keys from the model proto and pass to atom_builder
+        std::vector<std::string> quantities;
+        for (int i = 0; i < model->quantities_size(); ++i) {
+            quantities.push_back(model->quantities(i));
+        }
+        atom_builder = std::make_unique<AtomBuilder>(config.atom_multiplier, config.newton, quantities);
 
         // Read out statistics required for the neighbor lists
         std::vector<std::string> statistics_keys;
@@ -418,13 +423,15 @@ namespace jcn {
             // Now we have to copy the results back to the host
             std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>> results_buffers = std::move(results).value();
 
-            // Sort out the results buffers. First two entries in the buffer are energy and forces.
-            // TODO: Add support for arbitrary potential quantities
+            // Sort out the results buffers. Map statistics after the exported quantities.
+            // The atom_builder carries the exported `quantities` keys so we can
+            // determine the offset into the returned results.
             std::map<std::string, std::unique_ptr<xla::PjRtBuffer>> statistics;
+            int offset = static_cast<int>(atom_builder->get_quantities().size());
             for (int i = 0; i < neighbor_list->statistics_keys.size(); i++) {
                 statistics.emplace(
                     neighbor_list->statistics_keys[i],
-                    std::move(results_buffers[0][i + 2]) // TODO: Fixed number of potential outputs for now
+                    std::move(results_buffers[0][i + offset])
                 );
             }
 
