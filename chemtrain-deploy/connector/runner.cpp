@@ -62,52 +62,58 @@ namespace jcn {
         Logger logger = Logger::getlogger();
 
 
-        char* raw_path = std::getenv("JCN_PJRT_PATH");
-        if (raw_path == nullptr) {
-            std::cerr << "Set JCN_PJRT_PATH to discover PJRT Plugins" << std::endl;
+        const char* raw_env = std::getenv("JCN_PJRT_PATH");
+        if (raw_env == nullptr) {
+            std::cerr << "Set JCN_PJRT_PATH to discover PJRT plugins" << std::endl;
             return;
         }
 
+        std::string raw_path = std::string(raw_env) + "/pjrt";
+
         try {
             struct stat st;
-            if (stat(raw_path, &st) != 0 || !S_ISDIR(st.st_mode)) {
-                std::cerr << "Invalid JCN_PJRT_PATH: " << raw_path << std::endl;
+            if (stat(raw_path.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+                std::cerr << "Invalid PJRT plugin directory: " << raw_path << std::endl;
                 return;
             }
 
-            DIR* dir = opendir(raw_path);
+            DIR* dir = opendir(raw_path.c_str());
             if (!dir) {
-                std::cerr << "Failed to open JCN_PJRT_PATH: " << raw_path << std::endl;
+                std::cerr << "Failed to open PJRT plugin directory: " << raw_path << std::endl;
                 return;
             }
-
-            std::regex pattern(R"(pjrt_plugin\.xla_(\w+)\.so)");
 
             struct dirent* entry;
             while ((entry = readdir(dir)) != nullptr) {
                 if (entry->d_name[0] == '.') continue;
 
-                std::string name(entry->d_name);
-                std::smatch match;
-                if (!std::regex_match(name, match, pattern)) continue;
+                std::string backend(entry->d_name);
+                std::string backend_dir = raw_path + "/" + backend;
 
-                std::string backend = match.str(1);
-                std::string path = std::string(raw_path) + "/" + name;
-
-                absl::StatusOr<const PJRT_Api*> status_or_api = pjrt::LoadPjrtPlugin(backend, path);
-
-                if (status_or_api.ok()) {
-                    logger.log(
-                        LogLevel::INFO, "Loaded PJRT plugin " + backend
-                    );
-                } else {
-                    std::cerr << "Failed to load PJRT plugin " << backend << ": " << status_or_api.status().ToString() << std::endl;
+                struct stat backend_st;
+                if (stat(backend_dir.c_str(), &backend_st) != 0 || !S_ISDIR(backend_st.st_mode)) {
+                    continue;
                 }
 
+                std::string plugin_path = backend_dir + "/pjrt_plugin.so";
+                if (access(plugin_path.c_str(), R_OK) != 0) {
+                    continue;
+                }
+
+                absl::StatusOr<const PJRT_Api*> status_or_api =
+                    pjrt::LoadPjrtPlugin(backend, plugin_path);
+
+                if (status_or_api.ok()) {
+                    logger.log(LogLevel::INFO, "Loaded PJRT plugin " + backend);
+                } else {
+                    std::cerr << "Failed to load PJRT plugin " << backend
+                            << ": " << status_or_api.status().ToString() << std::endl;
+                }
             }
+
             closedir(dir);
         } catch (const std::exception& e) {
-            std::cerr << "Failed to load pjrt plugins: " << e.what() << std::endl;
+            std::cerr << "Failed to load PJRT plugins: " << e.what() << std::endl;
         }
 
     }
@@ -137,30 +143,6 @@ namespace jcn {
             logger.log(LogLevel::INFO, "  - Device: " + std::to_string(this->config.device));
             logger.log(LogLevel::INFO, "  - Memory fraction: " + std::to_string(this->config.memory_fraction));
 
-            // For non-CPU backends we rely on PJRT plugins discovered from JCN_PJRT_PATH.
-            // Missing/empty env vars have previously resulted in hard-to-diagnose crashes
-            // in downstream plugin initialization on some systems, so we fail fast here.
-            const char* pjrt_path_c = std::getenv("JCN_PJRT_PATH");
-            if (pjrt_path_c == nullptr || std::string(pjrt_path_c).empty()) {
-                throw std::runtime_error(
-                    "JCN_PJRT_PATH is not set (or empty). Set it to the directory containing "
-                    "PJRT plugin files like 'pjrt_plugin.xla_" + this->config.backend + ".so'."
-                );
-            }
-
-            // Best-effort check for the expected plugin filename to provide a clearer error
-            // than the PJRT runtime when the backend name does not match the installed plugin.
-            try {
-                std::string expected = std::string(pjrt_path_c) + "/pjrt_plugin.xla_" + this->config.backend + ".so";
-                if (access(expected.c_str(), R_OK) != 0) {
-                    throw std::runtime_error(
-                        "Could not find expected PJRT plugin '" + expected + "'. "
-                        "Either install that plugin or use a backend name matching the available plugin file."
-                    );
-                }
-            } catch (const std::exception& e) {
-                throw std::runtime_error(std::string("PJRT plugin discovery failed: ") + e.what());
-            }
 
             absl::flat_hash_map<std::string, xla::PjRtValueType> create_options = {
                 {"memory_fraction", static_cast<float>(this->config.memory_fraction)},

@@ -40,6 +40,7 @@ import sys
 import textwrap
 import urllib.request
 
+
 import pkgutil
 import importlib
 from typing import Optional
@@ -50,6 +51,7 @@ except ModuleNotFoundError:
     jax_plugins = None
 
 logger = logging.getLogger(__name__)
+
 
 def shell(cmd):
   try:
@@ -64,6 +66,71 @@ def shell(cmd):
     raise
   return output.decode("UTF-8").strip()
 
+
+SKIP_BASENAMES = {
+    "linux-vdso.so.1",
+    "ld-linux-x86-64.so.2",
+    "libcuda.so.1",   # usually provided by the host driver
+}
+
+LDD_RE = re.compile(r"\s*(\S+) => (\S+) \(")
+
+def resolved_deps(so_file: pathlib.Path, allowed_roots: list[pathlib.Path]) -> dict[str, pathlib.Path]:
+  """Returns a mapping from soname to resolved path for the dependencies of the given .so file."""
+  out = subprocess.check_output(["ldd", str(so_file)], text=True)
+  deps = {}
+  for line in out.splitlines():
+    m = LDD_RE.match(line)
+    if not m:
+      continue
+    soname, resolved = m.groups()
+    if resolved == "not":
+      continue
+    if soname in SKIP_BASENAMES:
+      continue
+    if any(resolved.startswith(str(prefix)) for prefix in allowed_roots):
+      deps[soname] = pathlib.Path(resolved).resolve()
+  return deps
+
+def copy_deps(so_file: pathlib.Path, dst_dir: pathlib.Path, allowed_roots: list[pathlib.Path]) -> None:
+  """Copies the given .so file and its dependencies to the dst_dir, preserving sonames via symlinks."""
+  dst_dir.mkdir(parents=True, exist_ok=True)
+  copied_realpaths = {}
+
+  for soname, real_src in resolved_deps(so_file, allowed_roots).items():
+    real_name = real_src.name
+    real_dst = dst_dir / real_name
+
+    print(f"Copying dependency {real_src} to {real_dst} with soname {soname}")
+
+    if real_src not in copied_realpaths:
+      shutil.copy2(real_src, real_dst)
+      copied_realpaths[real_src] = real_dst
+
+    soname_dst = dst_dir / soname
+    if soname != real_name and not soname_dst.exists():
+      soname_dst.symlink_to(real_name)
+
+
+def _locate_tool(name: str) -> str:
+    path = shutil.which(name)
+    if not path:
+        raise RuntimeError(f"Missing required tool: {name}")
+    return path
+
+
+def copy_and_patch_rpath(src_plugin: pathlib.Path, dst_plugin: pathlib.Path, rpath: pathlib.Path) -> None:
+    dst_plugin.parent.mkdir(parents=True, exist_ok=True)
+
+    if dst_plugin.exists():
+        dst_plugin.unlink()
+
+    shutil.copy2(src_plugin, dst_plugin)
+
+    dst_plugin.chmod(dst_plugin.stat().st_mode | stat.S_IWUSR)
+
+    patchelf = _locate_tool("patchelf")
+    subprocess.run([patchelf, "--set-rpath", rpath, str(dst_plugin)], check=True)
 
 # Python
 
@@ -413,6 +480,7 @@ def main():
       "verbose",
       default=False,
       help_str="Should we produce verbose debugging output?")
+  
   parser.add_argument(
      "--install_location",
       default="./lib",
@@ -720,27 +788,38 @@ def main():
       shell(build_pjrt_plugin_command)
       out_dir = pathlib.Path(args.install_location)
       out_dir.mkdir(exist_ok=True, parents=True)
-      (out_dir / f"pjrt_plugin.xla_cuda{args.cuda_version.split('.')[0]}.so").write_bytes(
-          pathlib.Path("./bazel-bin/external/xla/xla/pjrt/c/pjrt_c_api_gpu_plugin.so").read_bytes()
+
+      source_dir = pathlib.Path("./bazel-bin/external/xla/xla/pjrt/c/pjrt_c_api_gpu_plugin.so").resolve()
+
+      # Copy the .so file
+      target_dir = out_dir / "pjrt/cuda"
+      target_dir.mkdir(exist_ok=True, parents=True)
+
+
+      # Copy the dependencies
+      allowed_roots = [
+         pathlib.Path("./out").resolve(),
+         pathlib.Path("./bazel-out").resolve(),
+         pathlib.Path(out_dir).resolve(),
+      ]
+      
+      copy_and_patch_rpath(
+        source_dir,
+        target_dir / f"pjrt_plugin.so",
+        "$ORIGIN/deps"
       )
+
+      copy_deps(
+        source_dir,
+        target_dir / "deps", allowed_roots
+      )
+
+
   elif args.build_cpu_pjrt_plugin:
       raise NotImplementedError(
             "Building CPU PJRT plugin is not supported yet."
       )
 
-      build_pjrt_plugin_command = [
-          *command_base,
-          "@xla//xla/pjrt/c:pjrt_c_api_cpu_plugin.so",
-          "--",
-      ]
-
-      print(" ".join(build_pjrt_plugin_command))
-      shell(build_pjrt_plugin_command)
-      out_dir = pathlib.Path(args.install_location)
-      out_dir.mkdir(exist_ok=True, parents=True)
-      (out_dir / f"pjrt_plugin.xla_cpu.so").write_bytes(
-          pathlib.Path("./bazel-bin/external/xla/xla/pjrt/c/pjrt_c_api_cpu_plugin.so").read_bytes()
-      )
   elif args.load_gpu_pjrt_plugin:
       # Loads a prebuilt pjrt plugin from the jaxlib wheels.
       out_dir = pathlib.Path(args.install_location)
