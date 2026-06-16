@@ -99,10 +99,64 @@ if not getattr(e3nn_extract.Extract, "_chemtrain_mace_compat", False):
 import mace.modules.irreps_tools as irreps_tools
 if getattr(irreps_tools, "_chemtrain_mace_compat_mask", True):
     def new_mask_head(x: torch.Tensor, head: torch.Tensor, num_heads: int) -> torch.Tensor:
-        mask = x.new_zeros((x.shape[0], x.shape[1] // num_heads, num_heads))
-        idx = torch.arange(mask.shape[0])
-        mask[idx, :, head] = 1
-        mask = mask.permute(0, 2, 1).reshape(*x.shape)
+        """toJax-friendly replacement for MACE mask_head.
+
+        Assumes the last feature dimension is laid out as:
+
+            [head_0 features, head_1 features, ..., head_{H-1} features]
+        """
+        print(f"\n\n Called new mask head function \n\n")
+
+        if isinstance(x, TensorWrapper):
+            x_arr = unwrap(x)
+
+            width = x_arr.shape[-1]
+            if width % num_heads != 0:
+                raise ValueError(
+                    f"Feature dimension {width} is not divisible by num_heads={num_heads}."
+                )
+
+            features_per_head = width // num_heads
+
+            h = unwrap(head) if isinstance(head, TensorWrapper) else head
+            if isinstance(h, torch.Tensor):
+                h = int(h.reshape(-1)[0].item())
+            elif hasattr(h, "shape"):
+                h = jnp.ravel(h)[0]
+
+            channel_heads = jnp.arange(width, dtype=jnp.int32) // features_per_head
+            mask = (channel_heads == h).astype(x_arr.dtype)
+
+            broadcast_shape = (1,) * (x_arr.ndim - 1) + (width,)
+            mask = jnp.reshape(mask, broadcast_shape)
+
+            print(f"Masking head with mask {mask.shape} for input x with shape {x.shape}")
+
+            return TensorWrapper(x_arr * mask)
+
+        width = x.shape[-1]
+        if width % num_heads != 0:
+            raise ValueError(
+                f"Feature dimension {width} is not divisible by num_heads={num_heads}."
+            )
+
+        features_per_head = width // num_heads
+
+        if isinstance(head, torch.Tensor):
+            head_scalar = head.reshape(-1)[0].to(device=x.device)
+        else:
+            head_scalar = head
+
+        channel_heads = (
+            torch.arange(width, device=x.device, dtype=torch.long)
+            // features_per_head
+        )
+
+        mask = (channel_heads == head_scalar).to(dtype=x.dtype)
+        mask = mask.reshape((1,) * (x.dim() - 1) + (width,))
+
+        print(f"Masking head with mask {mask.shape} for input x with shape {x.shape}")
+
         return x * mask
     irreps_tools.mask_head = new_mask_head
     import mace.modules.blocks as blocks
@@ -277,7 +331,7 @@ def tojax_neighborlist_from_torch(
             neighbor,
             species,
             mask,
-            edges_per_particle=edges_per_particle,
+            edges_per_particle=None, # edges_per_particle,
             sort=True,
             **dynamic_kwargs,
         )
