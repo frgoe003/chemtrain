@@ -19,6 +19,8 @@ from mace_jax.cli import mace_jax_from_torch
 from mace_jax.modules.wrapper_ops import CuEquivarianceConfig
 
 from tojax import tojax
+from tojax.data import tojax_data
+import tojax.patches as tojax_patches
 from tojax.patches import patch_module
 from tojax.wrapper import TensorWrapper, jax_dtype, unwrap, wrap
 
@@ -27,9 +29,107 @@ from .mace_jax import AtomicNumberMapping, SpeciesMapping
 os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
 
 import e3nn.nn._extract as e3nn_extract
+import e3nn.o3 as e3nn_o3
 import mace.modules.models as mace_models
 import mace.modules.utils as mace_utils
 import torch
+
+
+def _to_jax_array(value):
+    if isinstance(value, TensorWrapper):
+        return unwrap(value)
+    if isinstance(value, torch.Tensor):
+        return tojax_data(value)
+    return value
+
+
+class _RankPreservingE3nnLinear(torch.nn.Module):
+    """JAX path for e3nn Linear that avoids flattening dynamic leading axes."""
+
+    def __init__(self, module: e3nn_o3.Linear, fallback: torch.nn.Module):
+        super().__init__()
+        self.irreps_in = module.irreps_in
+        self.irreps_out = module.irreps_out
+        self.instructions = tuple(module.instructions)
+        self.shared_weights = module.shared_weights
+        self.fallback = fallback
+
+    def forward(self, features, weight=None, bias=None):
+        if not isinstance(features, TensorWrapper):
+            return self.fallback(features, weight, bias)
+
+        if not self.shared_weights:
+            raise NotImplementedError(
+                "toJAX rank-preserving e3nn Linear currently requires shared weights."
+            )
+
+        x = unwrap(features)
+        w_flat = _to_jax_array(weight)
+        b_flat = None if bias is None else _to_jax_array(bias)
+        leading_shape = x.shape[:-1]
+
+        x_blocks = []
+        for segment, mul_ir in zip(self.irreps_in.slices(), self.irreps_in):
+            block = x[..., segment.start : segment.stop]
+            if mul_ir.ir.dim == 1:
+                x_blocks.append(block)
+            else:
+                x_blocks.append(
+                    block.reshape(leading_shape + (mul_ir.mul, mul_ir.ir.dim))
+                )
+
+        out_blocks = [[] for _ in self.irreps_out]
+        flat_weight_index = 0
+        flat_bias_index = 0
+        for ins in self.instructions:
+            out_ir = self.irreps_out[ins.i_out]
+            if ins.i_in == -1:
+                if b_flat is None:
+                    continue
+                block_size = out_ir.dim
+                b = b_flat[flat_bias_index : flat_bias_index + block_size]
+                flat_bias_index += block_size
+                out = ins.path_weight * b.reshape((1,) * len(leading_shape) + (block_size,))
+                out_blocks[ins.i_out].append(jnp.broadcast_to(out, leading_shape + (block_size,)))
+                continue
+
+            in_ir = self.irreps_in[ins.i_in]
+            path_nweight = int(np.prod(ins.path_shape))
+            w = w_flat[flat_weight_index : flat_weight_index + path_nweight]
+            w = w.reshape(ins.path_shape)
+            flat_weight_index += path_nweight
+
+            if in_ir.ir.dim == 1:
+                out = jnp.einsum("uw,...u->...w", w, x_blocks[ins.i_in])
+                out_blocks[ins.i_out].append(ins.path_weight * out)
+            else:
+                out = jnp.einsum("uw,...ui->...wi", w, x_blocks[ins.i_in])
+                out = ins.path_weight * out
+                out_blocks[ins.i_out].append(out.reshape(leading_shape + (out_ir.dim,)))
+
+        outputs = []
+        for pieces, out_ir in zip(out_blocks, self.irreps_out):
+            if out_ir.mul == 0:
+                continue
+            if pieces:
+                total = pieces[0]
+                for piece in pieces[1:]:
+                    total = total + piece
+            else:
+                total = jnp.zeros(leading_shape + (out_ir.dim,), dtype=x.dtype)
+            outputs.append(total)
+
+        if len(outputs) == 1:
+            return TensorWrapper(outputs[0])
+        return TensorWrapper(jnp.concatenate(outputs, axis=-1))
+
+
+def _patch_e3nn_linear_rank_preserving(module: e3nn_o3.Linear):
+    module._compiled_main = _RankPreservingE3nnLinear(module, module._compiled_main)
+    return module
+
+
+tojax_patches._PATCHES[e3nn_o3.Linear] = _patch_e3nn_linear_rank_preserving
 
 
 if not getattr(TensorWrapper, "_chemtrain_mace_compat", False):
@@ -99,65 +199,36 @@ if not getattr(e3nn_extract.Extract, "_chemtrain_mace_compat", False):
 import mace.modules.irreps_tools as irreps_tools
 if getattr(irreps_tools, "_chemtrain_mace_compat_mask", True):
     def new_mask_head(x: torch.Tensor, head: torch.Tensor, num_heads: int) -> torch.Tensor:
-        """toJax-friendly replacement for MACE mask_head.
-
-        Assumes the last feature dimension is laid out as:
-
-            [head_0 features, head_1 features, ..., head_{H-1} features]
-        """
-        print(f"\n\n Called new mask head function \n\n")
+        """Memory-light mirror of MACE's torch mask_head implementation."""
 
         if isinstance(x, TensorWrapper):
             x_arr = unwrap(x)
-
-            width = x_arr.shape[-1]
-            if width % num_heads != 0:
-                raise ValueError(
-                    f"Feature dimension {width} is not divisible by num_heads={num_heads}."
-                )
-
-            features_per_head = width // num_heads
-
+            width = x_arr.shape[1]
             h = unwrap(head) if isinstance(head, TensorWrapper) else head
-            if isinstance(h, torch.Tensor):
-                h = int(h.reshape(-1)[0].item())
-            elif hasattr(h, "shape"):
-                h = jnp.ravel(h)[0]
+            h = jnp.asarray(unwrap(h), dtype=jnp.int32)
 
-            channel_heads = jnp.arange(width, dtype=jnp.int32) // features_per_head
-            mask = (channel_heads == h).astype(x_arr.dtype)
+            grouped = jnp.reshape(x_arr, (x_arr.shape[0], num_heads, width // num_heads))
+            head_ids = jnp.arange(num_heads, dtype=jnp.int32)
+            if h.ndim == 0 or h.size == 1:
+                head_mask = head_ids == jnp.reshape(h, ())[None]
+                head_mask = jnp.reshape(head_mask, (1, num_heads, 1))
+            else:
+                head_mask = head_ids[None, :] == jnp.reshape(h, (-1, 1))
+                head_mask = head_mask[:, :, None]
 
-            broadcast_shape = (1,) * (x_arr.ndim - 1) + (width,)
-            mask = jnp.reshape(mask, broadcast_shape)
+            grouped = grouped * head_mask.astype(x_arr.dtype)
+            return TensorWrapper(jnp.reshape(grouped, x_arr.shape))
 
-            print(f"Masking head with mask {mask.shape} for input x with shape {x.shape}")
-
-            return TensorWrapper(x_arr * mask)
-
-        width = x.shape[-1]
-        if width % num_heads != 0:
-            raise ValueError(
-                f"Feature dimension {width} is not divisible by num_heads={num_heads}."
-            )
-
-        features_per_head = width // num_heads
-
-        if isinstance(head, torch.Tensor):
-            head_scalar = head.reshape(-1)[0].to(device=x.device)
+        width = x.shape[1]
+        grouped = x.reshape(x.shape[0], num_heads, width // num_heads)
+        head_ids = torch.arange(num_heads, device=x.device)
+        if isinstance(head, torch.Tensor) and head.numel() != 1:
+            head_mask = head_ids[None, :] == head.reshape(-1, 1).to(device=x.device)
+            head_mask = head_mask[:, :, None]
         else:
-            head_scalar = head
-
-        channel_heads = (
-            torch.arange(width, device=x.device, dtype=torch.long)
-            // features_per_head
-        )
-
-        mask = (channel_heads == head_scalar).to(dtype=x.dtype)
-        mask = mask.reshape((1,) * (x.dim() - 1) + (width,))
-
-        print(f"Masking head with mask {mask.shape} for input x with shape {x.shape}")
-
-        return x * mask
+            head_scalar = head.reshape(()) if isinstance(head, torch.Tensor) else head
+            head_mask = (head_ids == head_scalar).reshape(1, num_heads, 1)
+        return (grouped * head_mask.to(dtype=x.dtype)).reshape(x.shape)
     irreps_tools.mask_head = new_mask_head
     import mace.modules.blocks as blocks
     blocks.mask_head = new_mask_head
@@ -169,6 +240,7 @@ def load_foundational_model(family: str = "mp", version: str = "medium-0b3"):
     torch_model = mace_jax_from_torch._load_torch_model_from_foundations(
         family, version
     )
+    torch_model = torch_model.to(dtype=torch.float32)
     torch_model.eval()
 
     config = mace_jax_from_torch.extract_config_mace_model(torch_model)
@@ -193,7 +265,8 @@ def tojax_vectors_from_torch(
 
     del cueq_config, use_custom_batch_fn
 
-    torch_model = patch_module(deepcopy(torch_model))
+    torch_model = patch_module(deepcopy(torch_model).to(dtype=torch.float32))
+    torch_model = torch_model.to(dtype=torch.float32)
     torch_model.eval()
 
     heads = tuple(str(h) for h in (config.get("heads") or ("Default",)))
