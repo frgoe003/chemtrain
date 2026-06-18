@@ -142,3 +142,21 @@ load(
 nvshmem_redist_init_repository(
     nvshmem_redistributions = NVSHMEM_REDISTRIBUTIONS,
 )
+
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+# Pin this to a known commit or release tarball.
+# Do not leave main floating for production builds.
+http_archive(
+    name = "openequivariance_src",
+    urls = [
+        "https://github.com/PASSIONLab/OpenEquivariance/archive/refs/tags/v0.6.8.tar.gz",
+    ],
+    sha256 = "118bb3346ae4a483eaad82e874a0b83359b448f27876491319307bf3488ecf7a",
+    strip_prefix = "OpenEquivariance-0.6.8",
+    build_file = "//third_party/openequivariance:BUILD.bazel",
+    patches = [
+        "//third_party/openequivariance/patches:0001-guard-python-module.patch",
+    ],
+    patch_args = ["-p1"],
+)

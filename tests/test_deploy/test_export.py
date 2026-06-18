@@ -114,6 +114,26 @@ class TestExport:
         model.export()
         model.save(tmp_path / "exported_no_max_edges.ptb")
 
+    def test_export_paths_scope_openequivariance_checks(
+            self, monkeypatch, setup_export):
+        model = setup_export(max_edges=None)
+        calls = []
+
+        monkeypatch.setattr(
+            model,
+            "_export",
+            lambda **kwargs: calls.append(kwargs.get("disabled_checks", ())),
+        )
+
+        model.export()
+        model.export_openequivariance()
+
+        assert calls[0] == ()
+        assert tuple(str(check) for check in calls[1]) == tuple(
+            f"custom_call:{target}"
+            for target in exporter.OPENEQUIVARIANCE_CUSTOM_CALLS
+        )
+
     def test_symbolic_max_edges(self, tmp_path, setup_export):
         class ExportedModelSymbolic(setup_export):
 

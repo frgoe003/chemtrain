@@ -29,6 +29,21 @@ from . import graphs, util
 from ._protobuf import model_pb2 as model_proto
 
 
+OPENEQUIVARIANCE_CUSTOM_CALLS = (
+    "conv_forward",
+    "conv_backward",
+    "conv_double_backward",
+)
+
+
+def _openequivariance_disabled_checks():
+    """Allow only the OpenEquivariance convolution FFI calls during export."""
+    return tuple(
+        export.DisabledSafetyCheck.custom_call(target)
+        for target in OPENEQUIVARIANCE_CUSTOM_CALLS
+    )
+
+
 class Exporter(metaclass=abc.ABCMeta):
     """Exports a potential model to an MLIR module.
 
@@ -220,6 +235,21 @@ class Exporter(metaclass=abc.ABCMeta):
     def export(self) -> None:
         """Exports the potential model to an MLIR module."""
 
+        self._export()
+
+    def export_openequivariance(self) -> None:
+        """Export a model containing OpenEquivariance convolution FFI calls.
+
+        The regular :meth:`export` path intentionally retains JAX's strict
+        custom-call safety checks. This opt-in path permits only the three
+        OpenEquivariance convolution targets registered by chemtrain-deploy.
+        """
+
+        self._export(disabled_checks=_openequivariance_disabled_checks())
+
+    def _export(self, *, disabled_checks=()) -> None:
+        """Shared export implementation with explicitly scoped safety checks."""
+
         # Create a new context for each export
         self._symbols: List[str] = []
         self._constraints: List[str] = []
@@ -248,7 +278,11 @@ class Exporter(metaclass=abc.ABCMeta):
 
         shapes = self._create_shapes()
 
-        exp: export.Exported = export.export(export_fn, platforms=["cuda"])(*shapes)
+        exp: export.Exported = export.export(
+            export_fn,
+            platforms=["cuda"],
+            disabled_checks=disabled_checks,
+        )(*shapes)
 
         # Reconstruct the output to save the returned statistics and...
         predictions, statistics = exp.out_tree.unflatten(exp.out_avals)

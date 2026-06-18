@@ -33,6 +33,7 @@ limitations under the License.
 #include "connector/buffer.h"
 #include "connector/model.pb.h"
 #include "connector/utils.h"
+#include "connector/openequivariance.h"
 
 #include "xla/literal.h"
 #include "xla/literal_util.h"
@@ -69,6 +70,7 @@ namespace jcn {
         }
 
         std::string raw_path = std::string(raw_env) + "/pjrt";
+        const PJRT_Api* cuda_pjrt_api = nullptr;
 
         try {
             struct stat st;
@@ -105,6 +107,9 @@ namespace jcn {
 
                 if (status_or_api.ok()) {
                     logger.log(LogLevel::INFO, "Loaded PJRT plugin " + backend);
+                    if (backend == "cuda") {
+                        cuda_pjrt_api = status_or_api.value();
+                    }
                 } else {
                     std::cerr << "Failed to load PJRT plugin " << backend
                             << ": " << status_or_api.status().ToString() << std::endl;
@@ -114,6 +119,15 @@ namespace jcn {
             closedir(dir);
         } catch (const std::exception& e) {
             std::cerr << "Failed to load PJRT plugins: " << e.what() << std::endl;
+        }
+
+        if (cuda_pjrt_api != nullptr) {
+            int oeq_rc = chemtrain_register_openequivariance_xla_ffi(
+                cuda_pjrt_api, "CUDA");
+            if (oeq_rc != 0) {
+                throw std::runtime_error(
+                    "Failed to register OpenEquivariance XLA FFI handlers for CUDA");
+            }
         }
 
     }

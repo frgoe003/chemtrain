@@ -14,6 +14,28 @@
 
 load("@xla//xla/tsl/platform:build_config.bzl", "tf_proto_library")
 
+cc_library(
+    name = "openequivariance",
+    srcs = [
+        "openequivariance.cpp",
+    ],
+    hdrs = [
+        "openequivariance.h",
+    ],
+    deps = [
+        "@openequivariance_src//:oeq_xla_ffi_handlers",
+
+        # Existing XLA/PJRT dependencies.
+        "@xla//xla/pjrt:pjrt_c_api_client",
+        "@xla//xla/pjrt:pjrt_client",
+
+        # Depending on your XLA revision, this may need adjustment.
+        # Query:
+        #   bazel query '@xla//xla/pjrt/c:*'
+    ],
+    alwayslink = True,
+)
+
 cc_binary(
     name = "libconnector.so",
     srcs = [
@@ -58,6 +80,7 @@ cc_library(
         ":model_proto_cc",
         ":utils",
         ":xla_call_module_loader",
+        ":openequivariance",
         "@com_google_absl//absl/log:initialize",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",

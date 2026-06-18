@@ -834,8 +834,25 @@ def main():
       shell(build_cpu_wheel_command)
       out_dir = pathlib.Path(args.install_location)
       out_dir.mkdir(exist_ok=True, parents=True)
-      (out_dir / "libconnector.so").write_bytes(
-          pathlib.Path("./bazel-bin/connector/libconnector.so").read_bytes()
+      source_library = pathlib.Path(
+          "./bazel-bin/connector/libconnector.so"
+      ).resolve()
+      dependency_dir = out_dir / "pjrt/cuda/deps"
+      allowed_roots = [
+          pathlib.Path("./out").resolve(),
+          pathlib.Path("./bazel-out").resolve(),
+          out_dir.resolve(),
+      ]
+
+      copy_and_patch_rpath(
+          source_library,
+          out_dir / "libconnector.so",
+          "$ORIGIN/pjrt/cuda/deps",
+      )
+      copy_deps(
+          source_library,
+          dependency_dir,
+          allowed_roots,
       )
 
 
