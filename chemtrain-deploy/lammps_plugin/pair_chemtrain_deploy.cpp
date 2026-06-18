@@ -36,6 +36,7 @@
 #include <chrono>
 #include <stdlib.h>
 #include <sstream>
+#include <algorithm>
 
 using namespace LAMMPS_NS;
 
@@ -71,19 +72,21 @@ bool ChemtrainDeploy::check_distance() {
   double deltasq = 2.0 * 2.0; // Hard coded skin distance
 
   int flag = 0;
+  double local_max_displacement_sq = 0.0;
   for (int i = 0; i < nlocal; i++) {
     double delx = x[i][0] - xold[i][0];
     double dely = x[i][1] - xold[i][1];
     double delz = x[i][2] - xold[i][2];
     double rsq = delx * delx + dely * dely + delz * delz;
+    local_max_displacement_sq = std::max(local_max_displacement_sq, rsq);
     if (rsq > deltasq) {
       flag = 1;
-      break;
     }
   }
 
   int flagall;
   MPI_Allreduce(&flag, &flagall, 1, MPI_INT, MPI_MAX, world);
+  MPI_Allreduce(&local_max_displacement_sq, &max_displacement_sq, 1, MPI_DOUBLE, MPI_MAX, world);
 
   bool update_list = (flagall > 0);
 
@@ -106,7 +109,9 @@ void ChemtrainDeploy::compute(int eflag, int vflag)
   auto start = std::chrono::high_resolution_clock::now();
 
   // Check if neighborlist was updated just in this timestep resulting in newly communicated atoms
-  bool update_list = check_distance() || (neighbor->ago == 0);
+  bool moved_beyond_skin = check_distance();
+  bool lammps_neighbor_rebuilt = (neighbor->ago == 0);
+  bool update_list = moved_beyond_skin || lammps_neighbor_rebuilt;
 
   // Number of sender atoms can change depending on the ghost setting of the
   // neighbor list

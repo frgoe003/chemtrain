@@ -298,7 +298,7 @@ namespace jcn {
             AtomShapes atoms = atom_builder->get_shapes(lnum, gnum, allow_recompile);
 
             NeighborListShapes neighbors = neighbor_list->get_neighbor_list_shapes(
-                atoms.n_atoms, inum, numneigh, allow_recompile);
+                atoms.n_atoms, inum, ilist, numneigh, allow_recompile);
 
             // Now we have all shapes setup to build the module if required.
             // If the module tried to recompile but failed due to disabled

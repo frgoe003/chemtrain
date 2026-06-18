@@ -50,6 +50,8 @@ class ChemtrainDeploy : public Pair {
 
   jcn::ModelProperties model_properties;
 
+  double max_displacement_sq = 0.0;
+
   bool check_distance();
 
   std::unique_ptr<jcn::Connector> connector;
@@ -60,4 +62,3 @@ class ChemtrainDeploy : public Pair {
 }    // namespace LAMMPS_NS
 
 #endif
-

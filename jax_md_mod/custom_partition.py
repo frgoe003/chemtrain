@@ -636,7 +636,7 @@ def readout_vectors(displacement_fn: space.DisplacementFn,
                     species: Array = None,
                     mask: Array = None,
                     max_edges = None,
-                    edges_per_particle: float = None,
+                    edges_per_particle: None | float = None,
                     **kwargs
                     ):
     """Computes neighbor list statistics for test conformation.

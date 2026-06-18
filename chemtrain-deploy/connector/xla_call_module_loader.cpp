@@ -20,15 +20,12 @@ Reproduced from https://github.com/tensorflow/tensorflow
 #include "xla_call_module_loader.h"
 
 #include <algorithm>
-#include <cstdlib>
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "llvm/ADT/DenseMap.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
@@ -49,7 +46,6 @@ Reproduced from https://github.com/tensorflow/tensorflow
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "mlir/IR/OperationSupport.h"  // from @llvm-project
-#include "mlir/IR/Operation.h"  // from @llvm-project
 #include "mlir/IR/TypeRange.h"  // from @llvm-project
 #include "mlir/IR/TypeUtilities.h"  // from @llvm-project
 #include "mlir/IR/Types.h"  // from @llvm-project
@@ -121,301 +117,6 @@ bool IsShapeAssertionsCheckDisabled(
 
 constexpr llvm::StringRef kUsesShapePolymorphismAttr =
     "jax.uses_shape_polymorphism";
-
-constexpr llvm::StringRef kStablehloConvert = "stablehlo.convert";
-constexpr llvm::StringRef kStablehloConstant = "stablehlo.constant";
-
-struct ShapePromotionStats {
-  int dynamic_reshape_i32_before = 0;
-  int dynamic_reshape_i64_before = 0;
-  int dynamic_broadcast_i32_before = 0;
-  int dynamic_broadcast_i64_before = 0;
-  int dynamic_iota_i32_before = 0;
-  int dynamic_iota_i64_before = 0;
-  int promoted_dynamic_operands = 0;
-  int bypassed_i64_to_i32_narrowings = 0;
-  int inserted_fallback_converts = 0;
-  int cloned_shape_ops = 0;
-};
-
-bool DebugShapePromotionEnabled() {
-  const char *value = std::getenv("CHEMTRAIN_DEBUG_SHAPE_PROMOTION");
-  return value != nullptr && llvm::StringRef(value) != "0" &&
-         llvm::StringRef(value).lower() != "false";
-}
-
-mlir::RankedTensorType RankedIntegerTensorType(mlir::Type type) {
-  auto ranked = mlir::dyn_cast<mlir::RankedTensorType>(type);
-  if (!ranked) return {};
-  if (!ranked.getElementType().isSignlessInteger()) return {};
-  return ranked;
-}
-
-bool IsRankedI32Tensor(mlir::Type type) {
-  auto ranked = RankedIntegerTensorType(type);
-  return ranked && ranked.getElementType().isSignlessInteger(32);
-}
-
-bool IsRankedI64Tensor(mlir::Type type) {
-  auto ranked = RankedIntegerTensorType(type);
-  return ranked && ranked.getElementType().isSignlessInteger(64);
-}
-
-mlir::RankedTensorType I64TensorLike(mlir::Type type) {
-  auto ranked = RankedIntegerTensorType(type);
-  if (!ranked) return {};
-  return mlir::RankedTensorType::get(
-      ranked.getShape(), mlir::IntegerType::get(type.getContext(), 64));
-}
-
-std::optional<int> DynamicShapeOperandIndex(mlir::Operation *op) {
-  llvm::StringRef name = op->getName().getStringRef();
-  if (name == "stablehlo.dynamic_reshape") return 1;
-  if (name == "stablehlo.dynamic_broadcast_in_dim") return 1;
-  if (name == "stablehlo.dynamic_iota") return 0;
-  return std::nullopt;
-}
-
-void CountDynamicShapeOperand(mlir::Operation *op, ShapePromotionStats *stats) {
-  std::optional<int> shape_operand_index = DynamicShapeOperandIndex(op);
-  if (!shape_operand_index) return;
-  if (op->getNumOperands() <= *shape_operand_index) return;
-
-  mlir::Type type = op->getOperand(*shape_operand_index).getType();
-  bool is_i32 = IsRankedI32Tensor(type);
-  bool is_i64 = IsRankedI64Tensor(type);
-  llvm::StringRef name = op->getName().getStringRef();
-  if (name == "stablehlo.dynamic_reshape") {
-    stats->dynamic_reshape_i32_before += is_i32 ? 1 : 0;
-    stats->dynamic_reshape_i64_before += is_i64 ? 1 : 0;
-  } else if (name == "stablehlo.dynamic_broadcast_in_dim") {
-    stats->dynamic_broadcast_i32_before += is_i32 ? 1 : 0;
-    stats->dynamic_broadcast_i64_before += is_i64 ? 1 : 0;
-  } else if (name == "stablehlo.dynamic_iota") {
-    stats->dynamic_iota_i32_before += is_i32 ? 1 : 0;
-    stats->dynamic_iota_i64_before += is_i64 ? 1 : 0;
-  }
-}
-
-mlir::Attribute PromoteIntegerConstantAttrToI64(mlir::Attribute attr,
-                                                mlir::RankedTensorType type) {
-  auto dense = mlir::dyn_cast<mlir::DenseIntElementsAttr>(attr);
-  if (!dense) return {};
-
-  mlir::RankedTensorType promoted_type = I64TensorLike(type);
-  if (!promoted_type) return {};
-
-  llvm::SmallVector<int64_t> values;
-  values.reserve(dense.getNumElements());
-  for (llvm::APInt value : dense.getValues<llvm::APInt>()) {
-    values.push_back(value.getSExtValue());
-  }
-  return mlir::DenseIntElementsAttr::get(promoted_type, values);
-}
-
-mlir::Value CreateConvertToI64(mlir::Value value, mlir::OpBuilder *builder,
-                               ShapePromotionStats *stats) {
-  mlir::RankedTensorType promoted_type = I64TensorLike(value.getType());
-  if (!promoted_type) return {};
-
-  mlir::OperationState state(value.getLoc(), kStablehloConvert);
-  state.addOperands(value);
-  state.addTypes(promoted_type);
-  mlir::Operation *converted = builder->create(state);
-  ++stats->inserted_fallback_converts;
-  return converted->getResult(0);
-}
-
-bool IsCloneableShapeOp(mlir::Operation *op) {
-  llvm::StringRef name = op->getName().getStringRef();
-  return name == "stablehlo.reshape" || name == "stablehlo.concatenate" ||
-         name == "stablehlo.add" || name == "stablehlo.multiply" ||
-         name == "stablehlo.subtract" || name == "stablehlo.maximum" ||
-         name == "stablehlo.minimum";
-}
-
-void DumpShapeProducerChain(mlir::Value value, int depth) {
-  if (depth > 8) {
-    LOG(ERROR) << "    ... producer chain truncated";
-    return;
-  }
-
-  mlir::Operation *producer = value.getDefiningOp();
-  if (producer == nullptr) {
-    LOG(ERROR) << "    depth=" << depth
-               << " block_argument type=" << mlir::debugString(value.getType())
-               << " loc=" << mlir::debugString(value.getLoc());
-    return;
-  }
-
-  LOG(ERROR) << "    depth=" << depth
-             << " op=" << producer->getName().getStringRef().str()
-             << " result_type=" << mlir::debugString(value.getType())
-             << " loc=" << mlir::debugString(producer->getLoc());
-  for (mlir::Value operand : producer->getOperands()) {
-    if (RankedIntegerTensorType(operand.getType())) {
-      DumpShapeProducerChain(operand, depth + 1);
-    }
-  }
-}
-
-mlir::Value PromoteShapeValueToI64(
-    mlir::Value value, mlir::OpBuilder *builder,
-    llvm::DenseMap<mlir::Value, mlir::Value> *cache,
-    ShapePromotionStats *stats) {
-  if (IsRankedI64Tensor(value.getType())) return value;
-  if (!IsRankedI32Tensor(value.getType())) return {};
-
-  auto cached = cache->find(value);
-  if (cached != cache->end()) return cached->second;
-
-  mlir::Operation *producer = value.getDefiningOp();
-  if (producer == nullptr) {
-    mlir::Value promoted = CreateConvertToI64(value, builder, stats);
-    (*cache)[value] = promoted;
-    return promoted;
-  }
-
-  llvm::StringRef name = producer->getName().getStringRef();
-  if (name == kStablehloConvert && producer->getNumOperands() == 1) {
-    mlir::Value source = producer->getOperand(0);
-    if (IsRankedI64Tensor(source.getType())) {
-      ++stats->bypassed_i64_to_i32_narrowings;
-      (*cache)[value] = source;
-      return source;
-    }
-    mlir::Value promoted_source =
-        PromoteShapeValueToI64(source, builder, cache, stats);
-    if (promoted_source) {
-      (*cache)[value] = promoted_source;
-      return promoted_source;
-    }
-  }
-
-  if (name == kStablehloConstant) {
-    mlir::RankedTensorType promoted_type = I64TensorLike(value.getType());
-    mlir::Attribute value_attr = producer->getAttr("value");
-    mlir::Attribute promoted_attr =
-        PromoteIntegerConstantAttrToI64(value_attr, promoted_type);
-    if (promoted_attr) {
-      mlir::OperationState state(producer->getLoc(), kStablehloConstant);
-      state.addAttribute("value", promoted_attr);
-      state.addTypes(promoted_type);
-      mlir::Operation *constant = builder->create(state);
-      ++stats->cloned_shape_ops;
-      (*cache)[value] = constant->getResult(0);
-      return constant->getResult(0);
-    }
-  }
-
-  if (IsCloneableShapeOp(producer)) {
-    llvm::SmallVector<mlir::Value> promoted_operands;
-    promoted_operands.reserve(producer->getNumOperands());
-    for (mlir::Value operand : producer->getOperands()) {
-      mlir::Value promoted_operand =
-          PromoteShapeValueToI64(operand, builder, cache, stats);
-      if (!promoted_operand) return CreateConvertToI64(value, builder, stats);
-      promoted_operands.push_back(promoted_operand);
-    }
-
-    mlir::RankedTensorType promoted_type = I64TensorLike(value.getType());
-    if (!promoted_type) return {};
-    mlir::OperationState state(producer->getLoc(),
-                               producer->getName().getStringRef());
-    state.addOperands(promoted_operands);
-    state.addAttributes(producer->getAttrs());
-    state.addTypes(promoted_type);
-    mlir::Operation *cloned = builder->create(state);
-    ++stats->cloned_shape_ops;
-    (*cache)[value] = cloned->getResult(0);
-    return cloned->getResult(0);
-  }
-
-  mlir::Value promoted = CreateConvertToI64(value, builder, stats);
-  (*cache)[value] = promoted;
-  return promoted;
-}
-
-ShapePromotionStats PromoteDynamicShapeOperandsToI64(mlir::ModuleOp module) {
-  ShapePromotionStats stats;
-  module.walk([&](mlir::Operation *op) { CountDynamicShapeOperand(op, &stats); });
-
-  const bool verbose = DebugShapePromotionEnabled();
-  llvm::SmallVector<mlir::Operation *> dynamic_ops;
-  module.walk([&](mlir::Operation *op) {
-    if (DynamicShapeOperandIndex(op)) dynamic_ops.push_back(op);
-  });
-
-  for (mlir::Operation *op : dynamic_ops) {
-    std::optional<int> shape_operand_index = DynamicShapeOperandIndex(op);
-    if (!shape_operand_index || op->getNumOperands() <= *shape_operand_index) {
-      continue;
-    }
-    mlir::Value shape_operand = op->getOperand(*shape_operand_index);
-    if (!IsRankedI32Tensor(shape_operand.getType())) continue;
-
-    mlir::OpBuilder builder(op);
-    llvm::DenseMap<mlir::Value, mlir::Value> cache;
-    mlir::Value promoted =
-        PromoteShapeValueToI64(shape_operand, &builder, &cache, &stats);
-    if (!promoted || !IsRankedI64Tensor(promoted.getType())) continue;
-
-    op->setOperand(*shape_operand_index, promoted);
-    ++stats.promoted_dynamic_operands;
-
-    if (verbose) {
-      LOG(INFO) << "Promoted StableHLO dynamic shape operand: op="
-                << op->getName().getStringRef().str()
-                << " loc=" << mlir::debugString(op->getLoc())
-                << " old_type=" << mlir::debugString(shape_operand.getType())
-                << " new_type=" << mlir::debugString(promoted.getType());
-    } else {
-      VLOG(2) << "Promoted StableHLO dynamic shape operand: op="
-              << op->getName().getStringRef().str()
-              << " loc=" << mlir::debugString(op->getLoc())
-              << " old_type=" << mlir::debugString(shape_operand.getType())
-              << " new_type=" << mlir::debugString(promoted.getType());
-    }
-  }
-
-  std::string summary = absl::StrCat(
-      "StableHLO dynamic shape promotion summary: promoted=",
-      stats.promoted_dynamic_operands, " cloned_shape_ops=",
-      stats.cloned_shape_ops, " bypassed_i64_to_i32_narrowings=",
-      stats.bypassed_i64_to_i32_narrowings, " fallback_converts=",
-      stats.inserted_fallback_converts, " dynamic_reshape_i32_before=",
-      stats.dynamic_reshape_i32_before, " dynamic_reshape_i64_before=",
-      stats.dynamic_reshape_i64_before, " dynamic_broadcast_i32_before=",
-      stats.dynamic_broadcast_i32_before, " dynamic_broadcast_i64_before=",
-      stats.dynamic_broadcast_i64_before, " dynamic_iota_i32_before=",
-      stats.dynamic_iota_i32_before, " dynamic_iota_i64_before=",
-      stats.dynamic_iota_i64_before);
-  if (verbose) {
-    LOG(INFO) << summary;
-  } else {
-    VLOG(1) << summary;
-  }
-  return stats;
-}
-
-void DumpRemainingI32DynamicShapeOperands(mlir::ModuleOp module) {
-  int remaining = 0;
-  module.walk([&](mlir::Operation *op) {
-    std::optional<int> shape_operand_index = DynamicShapeOperandIndex(op);
-    if (!shape_operand_index || op->getNumOperands() <= *shape_operand_index) {
-      return;
-    }
-    mlir::Value shape_operand = op->getOperand(*shape_operand_index);
-    if (!IsRankedI32Tensor(shape_operand.getType())) return;
-    ++remaining;
-    LOG(ERROR) << "Remaining i32 StableHLO dynamic shape operand: op="
-               << op->getName().getStringRef().str()
-               << " loc=" << mlir::debugString(op->getLoc())
-               << " shape_type=" << mlir::debugString(shape_operand.getType());
-    DumpShapeProducerChain(shape_operand, 0);
-  });
-  LOG(ERROR) << "Remaining i32 StableHLO dynamic shape operands: " << remaining;
-}
 
 }  // namespace
 
@@ -642,14 +343,6 @@ absl::Status XlaCallModuleLoader::RefineDynamicShapes(
     }
   }
 
-  PromoteDynamicShapeOperandsToI64(*module_);
-  if (mlir::failed(mlir::verify(*module_))) {
-    DumpRemainingI32DynamicShapeOperands(*module_);
-    return absl::InvalidArgumentError(
-        absl::StrCat("Error verifying module after promoting StableHLO dynamic "
-                     "shape operands to i64."));
-  }
-
   bool enable_shape_assertions =
       (version_ >= kVersionStartSupportShapeAssertions &&
        !IsShapeAssertionsCheckDisabled(loading_disabled_checks_));
@@ -659,12 +352,8 @@ absl::Status XlaCallModuleLoader::RefineDynamicShapes(
 
   // RefinePolymorphicShapes will refine using the new static types and clean up
   // the shape_refinement_operand_wrapper custom calls.
-  absl::Status refine_status =
-      xla::RefinePolymorphicShapes(*module_, enable_shape_assertions);
-  if (!refine_status.ok()) {
-    DumpRemainingI32DynamicShapeOperands(*module_);
-    return refine_status;
-  }
+  TF_RETURN_IF_ERROR(
+      xla::RefinePolymorphicShapes(*module_, enable_shape_assertions));
 
   // Mark the output types as refined if they are different from the original
   // output types.
