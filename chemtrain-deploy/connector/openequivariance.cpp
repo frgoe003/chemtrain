@@ -7,10 +7,6 @@
 #include "xla/pjrt/c/pjrt_c_api_ffi_extension.h"
 
 // Exported by the patched OpenEquivariance source.
-extern "C" void* oeq_tp_forward_handler();
-extern "C" void* oeq_tp_backward_handler();
-extern "C" void* oeq_tp_double_backward_handler();
-
 extern "C" void* oeq_conv_forward_handler();
 extern "C" void* oeq_conv_backward_handler();
 extern "C" void* oeq_conv_double_backward_handler();
@@ -77,13 +73,6 @@ extern "C" int chemtrain_register_openequivariance_xla_ffi(
   }
 
   int rc = 0;
-
-  rc |= RegisterOrFail(
-      ffi, "tp_forward", oeq_tp_forward_handler(), platform_name);
-  rc |= RegisterOrFail(
-      ffi, "tp_backward", oeq_tp_backward_handler(), platform_name);
-  rc |= RegisterOrFail(
-      ffi, "tp_double_backward", oeq_tp_double_backward_handler(), platform_name);
 
   rc |= RegisterOrFail(
       ffi, "conv_forward", oeq_conv_forward_handler(), platform_name);

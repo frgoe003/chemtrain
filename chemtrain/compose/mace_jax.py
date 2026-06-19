@@ -33,7 +33,11 @@ from e3nn_jax import Irreps
 from jax_md_mod import custom_partition
 from jax_md import space, partition
 
-from mace_jax.modules.wrapper_ops import CuEquivarianceConfig
+from mace_jax.modules.wrapper_ops import (
+    CuEquivarianceConfig,
+    EquivarianceConfig,
+    resolve_equivariance_config,
+)
 from mace_jax.modules import models as mace_jax_models
 
 from mace_jax.cli import mace_jax_from_torch
@@ -130,6 +134,7 @@ def mace_jax_neighborlist_from_torch(
     scale_pos: float = 0.1,
     scale_pot: float = 96.485,
     species_mapping: SpeciesMapping = SpeciesMapping(),
+    equivariance_config: EquivarianceConfig = None,
     cueq_config: CuEquivarianceConfig = None,
     use_custom_batch_fn: bool = False,
 ) -> Tuple[Any, Callable]:
@@ -145,7 +150,8 @@ def mace_jax_neighborlist_from_torch(
         scale_pos: Scaling factor for positions, i.e., to convert units.
         scale_pot: Scaling factor for potentials, i.e., to convert units.
         species_mapping: Mapping for species to model-compatible indices.
-        cueq_config: Configuration for CuEquivariance optimizations.
+        equivariance_config: Backend-neutral equivariance configuration.
+        cueq_config: Deprecated alias for a CuEquivariance-only configuration.
         use_custom_batch_fn: Whether to use custom batch function.
             Required when cueq_config is enabled, optional otherwise.
 
@@ -154,11 +160,17 @@ def mace_jax_neighborlist_from_torch(
 
     """
 
+    equivariance_config = resolve_equivariance_config(
+        equivariance_config, cueq_config=cueq_config
+    )
     jax_model, variables, template_data = mace_jax_from_torch.convert_model(
-        torch_model, config, cueq_config=cueq_config
+        torch_model, config, equivariance_config=equivariance_config
     )
 
-    cueq_enabled = False if cueq_config is None else cueq_config.enabled
+    cueq = (
+        None if equivariance_config is None else equivariance_config.cueq_config
+    )
+    cueq_enabled = False if cueq is None else cueq.enabled
 
     del template_data  # Unused
 
@@ -251,6 +263,7 @@ def mace_jax_neighborlist(
     avg_num_neighbors: float = None,
     mode: str = "energy",
     per_particle: bool = False,
+    equivariance_config: EquivarianceConfig = None,
     cueq_config: CuEquivarianceConfig = None,
     use_custom_batch_fn: bool = False,
     mace_config: Dict[str, Any] = None,
@@ -282,6 +295,9 @@ def mace_jax_neighborlist(
         Returns a tuple of parameters and an apply function.
 
     """
+    equivariance_config = resolve_equivariance_config(
+        equivariance_config, cueq_config=cueq_config
+    )
     species_mapping = AtomicNumberMapping(n_species)
 
     # Keys based on MACE JAX
@@ -313,20 +329,20 @@ def mace_jax_neighborlist(
     print("-" * 50)
     for key, value in config.items():
         print(f"Using MACE config: {key}: {value}")
-    if cueq_config is not None:
+    if equivariance_config is not None:
         print("-" * 50)
-        for key, value in cueq_config.items():
-            print(f"Using CuEquivariance config: {key}: {value}")
+        for key, value in equivariance_config.to_dict().items():
+            print(f"Using equivariance config: {key}: {value}")
     print("-" * 50)
 
     try:
         jax_model = _build_jax_model(
             config,
-            cueq_config=cueq_config,
+            equivariance_config=equivariance_config,
             init_normalize2mom_consts=False,
         )
     except TypeError as exc:
-        if "cueq_config" in str(exc):
+        if "equivariance_config" in str(exc):
             jax_model = _build_jax_model(
                 config,
                 init_normalize2mom_consts=False,
@@ -339,7 +355,10 @@ def mace_jax_neighborlist(
     template_vars = jax_model.init(jax.random.PRNGKey(0), template_data)
     del template_data  # Unused
 
-    cueq_enabled = False if cueq_config is None else cueq_config.enabled
+    cueq = (
+        None if equivariance_config is None else equivariance_config.cueq_config
+    )
+    cueq_enabled = False if cueq is None else cueq.enabled
 
     # We need a different __call__ method
     jax_model.__class__ = JaxMACE

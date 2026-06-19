@@ -112,6 +112,9 @@ class TestExport:
         model = setup_export(max_edges=None)
 
         model.export()
+        targets = exporter.stablehlo_custom_call_targets(model._proto.mlir_module)
+        assert "shape_assertion" in targets
+        assert "stablehlo.dynamic_top_k" in targets
         model.save(tmp_path / "exported_no_max_edges.ptb")
 
     def test_export_paths_scope_openequivariance_checks(
@@ -133,6 +136,27 @@ class TestExport:
             f"custom_call:{target}"
             for target in exporter.OPENEQUIVARIANCE_CUSTOM_CALLS
         )
+
+    def test_openequivariance_custom_call_validation(self):
+        mlir = """
+          %0 = stablehlo.custom_call @shape_assertion(%arg0)
+          %1 = stablehlo.custom_call @stablehlo.dynamic_top_k(%arg0)
+          %2 = stablehlo.custom_call @conv_forward(%arg0)
+        """
+        exporter.validate_openequivariance_custom_calls(mlir)
+        assert exporter.stablehlo_custom_call_targets(mlir) == {
+            "shape_assertion", "stablehlo.dynamic_top_k",
+            "conv_forward",
+        }
+
+    @pytest.mark.parametrize(
+        "target", ["tp_forward", "tp_backward", "tp_double_backward",
+                   "cuequivariance_tp", "unknown_ffi"]
+    )
+    def test_openequivariance_custom_call_validation_rejects_unknown(self, target):
+        mlir = f"stablehlo.custom_call @{target}(%arg0)"
+        with pytest.raises(ValueError, match=target):
+            exporter.validate_openequivariance_custom_calls(mlir)
 
     def test_symbolic_max_edges(self, tmp_path, setup_export):
         class ExportedModelSymbolic(setup_export):

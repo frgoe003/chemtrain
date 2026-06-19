@@ -1,28 +1,40 @@
 Bootstrap: docker
-From: tensorflow/build:2.17-python3.11
+From: ubuntu:24.04
 
 %files
     # Copy necessary files
-    ./connector /chemsim/connector
-    ./lammps_plugin /chemsim/lammps_plugin
-    ./third_party /chemsim/third_party
-    ./.bazelversion /chemsim/.bazelversion
-    ./build.py /chemsim/build.py
-    ./jax.bazelrc /chemsim/jax.bazelrc
-    ./WORKSPACE /chemsim/WORKSPACE
+    ./connector /chemtrain_deploy/connector
+    ./lammps_plugin /chemtrain_deploy/lammps_plugin
+    ./third_party /chemtrain_deploy/third_party
+    ./.bazelversion /chemtrain_deploy/.bazelversion
+    ./build.py /chemtrain_deploy/build.py
+    ./jax.bazelrc /chemtrain_deploy/jax.bazelrc
+    ./WORKSPACE /chemtrain_deploy/WORKSPACE
+
+
+%environment
+
+
+%environment
+    export PATH="/chemtrain_deploy/lammps/build:$PATH"
+    export LAMMPS_PLUGIN_PATH="/chemtrain_deploy/build/"
+    export JCN_PJRT_PATH="/chemtrain_deploy/lib"
+
+    # Point to OPENMPI binaries, libraries man pages
+    export OPENMPI_DIR=/opt/openmpi-4.1.2
+    export PATH="$OPENMPI_DIR/bin:$PATH"
+    export LD_LIBRARY_PATH="$OPENMPI_DIR/lib:$LD_LIBRARY_PATH"
+    export MANPATH=$OPENMPI_DIR/share/man:$MANPATH
 
 %post
-    export CUDA_COMPUTE_CAPABILITIES="8.6,8.0"
-    export CUDA_CUDNN_VERSION="8.9.6"
-    export CUDA_VERSION="12.3.1"
-
-    echo "Installing required packages..."
 
     # Update and install required packages
     apt-get update && apt-get install -y \
         bash \
         build-essential \
         cmake \
+        clang \
+        libstdc++-dev \
         gcc \
         gfortran \
         git \
@@ -48,29 +60,45 @@ From: tensorflow/build:2.17-python3.11
         && apt-get clean \
         && rm -rf /var/lib/apt/lists/*
 
-    echo "Installing Open MPI"
-    export OMPI_DIR=/opt/ompi
-    export OMPI_VERSION=4.0.5
-    export OMPI_URL="https://download.open-mpi.org/release/open-mpi/v4.0/openmpi-$OMPI_VERSION.tar.bz2"
-    mkdir -p /tmp/ompi
+    # Information about the version of OPENMPI to use
+    export OPENMPI_VERSION=4.1.2
+    export OPENMPI_MINOR=4.1
+    export OPENMPI_URL="https://download.open-mpi.org/release/open-mpi/v$OPENMPI_MINOR/openmpi-$OPENMPI_VERSION.tar.gz"
+    export OPENMPI_DIR=/opt/openmpi-$OPENMPI_VERSION
+
+    echo "Installing OPENMPI..."
+    mkdir -p /tmp/openmpi
     mkdir -p /opt
     # Download
-    cd /tmp/ompi && wget -O openmpi-$OMPI_VERSION.tar.bz2 $OMPI_URL && tar -xjf openmpi-$OMPI_VERSION.tar.bz2
+    cd /tmp/openmpi && wget -O openmpi-$OPENMPI_VERSION.tar.gz $OPENMPI_URL && tar xzf openmpi-$OPENMPI_VERSION.tar.gz
     # Compile and install
-    cd /tmp/ompi/openmpi-$OMPI_VERSION && ./configure --prefix=$OMPI_DIR && make -j8 install
+    cd /tmp/openmpi/openmpi-$OPENMPI_VERSION && ./configure --prefix=$OPENMPI_DIR && make install
 
     # Set env variables so we can compile our application
-    export PATH=$OMPI_DIR/bin:$PATH
-    export LD_LIBRARY_PATH=$OMPI_DIR/lib:$LD_LIBRARY_PATH
+    export PATH=$OPENMPI_DIR/bin:$PATH
+    export LD_LIBRARY_PATH=$OPENMPI_DIR/lib:$LD_LIBRARY_PATH
 
+
+    export CUDA_COMPUTE_CAPABILITIES="sm_90"
+    export CUDA_CUDNN_VERSION="9.5.0"
+    export CUDA_VERSION="12.9.2"
 
     # Compile the connector
-    cd /chemsim && \
-        python build.py --build_gpu_pjrt_plugin --enable_cuda --cuda_version $CUDA_VERSION --cuda_compute_capabilities $CUDA_COMPUTE_CAPABILITIES --cudnn_version $CUDA_CUDNN_VERSION && \
-        python build.py
+    cd /chemtrain-deploy && \
+        python build.py \
+            --build_gpu_pjrt_plugin \
+            --enable_cuda \
+            --cuda_version $CUDA_VERSION \
+            --cuda_compute_capabilities $CUDA_COMPUTE_CAPABILITIES \
+            --cudnn_version $CUDA_CUDNN_VERSION && \
+        python build.py \
+            --enable_cuda \
+            --cuda_version $CUDA_VERSION \
+            --cuda_compute_capabilities $CUDA_COMPUTE_CAPABILITIES \
+            --cudnn_version $CUDA_CUDNN_VERSION && \
 
     # Fetch LAMMPS and build the plugin
-    cd /chemsim && \
+    cd /chemtrain-deploy && \
         git clone https://github.com/lammps/lammps.git && \
         cd lammps && \
         git checkout stable_29Aug2024 && \
@@ -79,22 +107,12 @@ From: tensorflow/build:2.17-python3.11
         cmake -D PKG_PLUGIN=yes ../cmake && \
         cmake --build . -j $(nproc)
 
-    cd /chemsim && \
+    cd /chemtrain-deploy && \
         mkdir build && \
         cd build && \
         cmake -D LAMMPS_HEADER_DIR=/chemsim/lammps/src ../lammps_plugin && \
         cmake --build . -j $(nproc)
 
-%environment
-    export PATH="/chemsim/lammps/build:$PATH"
-    export LAMMPS_PLUGIN_PATH="/chemsim/build/"
-    export JCN_PJRT_PATH="/chemsim/lib"
-
-    # Point to OMPI binaries, libraries, man pages
-    export OMPI_DIR=/opt/ompi
-    export PATH="$OMPI_DIR/bin:$PATH"
-    export LD_LIBRARY_PATH="$OMPI_DIR/lib:$LD_LIBRARY_PATH"
-    export MANPATH="$OMPI_DIR/share/man:$MANPATH"
 
 %labels
     Author Paul Fuchs

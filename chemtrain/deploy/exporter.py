@@ -16,6 +16,7 @@
 
 import abc
 import functools
+import re
 
 import jax
 from jax import numpy as jnp, export, lax
@@ -34,6 +35,35 @@ OPENEQUIVARIANCE_CUSTOM_CALLS = (
     "conv_backward",
     "conv_double_backward",
 )
+
+_JAX_INTERNAL_CUSTOM_CALLS = frozenset(
+    {"shape_assertion", "stablehlo.dynamic_top_k"}
+)
+_CUSTOM_CALL_RE = re.compile(
+    r'\bstablehlo\.custom_call\s+(?:@(?:"([^"]+)"|([\w.$-]+))|"([^"]+)")'
+)
+
+
+def stablehlo_custom_call_targets(module: bytes | str) -> frozenset[str]:
+    """Return exact custom-call target names from a StableHLO module."""
+    if isinstance(module, bytes):
+        module = module.decode("utf-8")
+    return frozenset(
+        next(value for value in match if value)
+        for match in _CUSTOM_CALL_RE.findall(module)
+    )
+
+
+def validate_openequivariance_custom_calls(module: bytes | str) -> None:
+    """Reject cuEquivariance and unapproved external calls in an OEQ export."""
+    targets = stablehlo_custom_call_targets(module)
+    allowed = frozenset(OPENEQUIVARIANCE_CUSTOM_CALLS) | _JAX_INTERNAL_CUSTOM_CALLS
+    unknown = targets - allowed
+    if unknown:
+        raise ValueError(
+            "OpenEquivariance export contains unsupported custom-call targets: "
+            + ", ".join(sorted(unknown))
+        )
 
 
 def _openequivariance_disabled_checks():
@@ -226,7 +256,7 @@ class Exporter(metaclass=abc.ABCMeta):
 
         for key, value in predictions.items():
             assert value.shape[0] == local_mask.size, (
-                f"Wrong shape for prediction {value}. All model outputs "
+                f"Wrong shape for prediction {key}. All model outputs "
                 f"must be per-atom quantities."
             )
 
@@ -245,9 +275,14 @@ class Exporter(metaclass=abc.ABCMeta):
         OpenEquivariance convolution targets registered by chemtrain-deploy.
         """
 
-        self._export(disabled_checks=_openequivariance_disabled_checks())
+        self._export(
+            disabled_checks=_openequivariance_disabled_checks(),
+            validate_openequivariance=True,
+        )
 
-    def _export(self, *, disabled_checks=()) -> None:
+    def _export(
+        self, *, disabled_checks=(), validate_openequivariance: bool = False
+    ) -> None:
         """Shared export implementation with explicitly scoped safety checks."""
 
         # Create a new context for each export
@@ -290,7 +325,10 @@ class Exporter(metaclass=abc.ABCMeta):
         proto.neighbor_list.statistics_keys.extend(statistics.keys())
         proto.quantities.extend(predictions.keys())
 
-        proto.mlir_module = exp.mlir_module()
+        mlir_module = exp.mlir_module()
+        if validate_openequivariance:
+            validate_openequivariance_custom_calls(mlir_module)
+        proto.mlir_module = mlir_module
 
         self._proto = proto
 
