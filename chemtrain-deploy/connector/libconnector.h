@@ -21,10 +21,24 @@ limitations under the License.
 #include <memory>
 #include <string>
 #include <exception>
+#include <cstdint>
 
 #define EXPORT __attribute__((visibility("default")))
 
 namespace jcn {
+
+    enum class CommunicationScalarType {
+        F32,
+        F64,
+    };
+
+    struct CommunicationCallbacks {
+        void* context = nullptr;
+        std::int64_t (*active_rows)(void* context) = nullptr;
+        int (*exchange)(void* context, void* data, std::int64_t rows,
+                        std::int64_t cols, CommunicationScalarType type,
+                        bool reverse, const char** error) = nullptr;
+    };
 
     /**
      * Exception to indicate that the model must be recompiled du to a change
@@ -89,6 +103,9 @@ namespace jcn {
          */
         bool newton;
 
+        /** Optional host communication implementation for embedded gathers. */
+        CommunicationCallbacks communication;
+
     };
 
     /**
@@ -103,6 +120,9 @@ namespace jcn {
         /** Minimum distance to local atoms for which ghost atoms must be
         communicated. */
         double comm_dist = 0.0;
+
+        /** Maximum number of packed scalars communicated for each atom. */
+        int communication_buffer_width = 0;
 
         /** The unit style of the model. */
         const char* unit_style;

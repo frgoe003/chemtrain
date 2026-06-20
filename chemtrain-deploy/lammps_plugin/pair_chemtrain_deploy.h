@@ -21,6 +21,7 @@
 #include "pair.h"
 #include "libconnector.h"
 
+
 namespace LAMMPS_NS {
 
 class ChemtrainDeploy : public Pair {
@@ -35,6 +36,10 @@ class ChemtrainDeploy : public Pair {
   double init_one(int, int) override;
   void finish() override;
   void *extract(const char *, int &) override;
+  int pack_forward_comm(int, int *, double *, int, int *) override;
+  void unpack_forward_comm(int, int, double *) override;
+  int pack_reverse_comm(int, int, double *) override;
+  void unpack_reverse_comm(int, int *, double *) override;
 
  protected:
 //  bool allocated;
@@ -55,6 +60,23 @@ class ChemtrainDeploy : public Pair {
   bool check_distance();
 
   std::unique_ptr<jcn::Connector> connector;
+
+  void *communication_data = nullptr;
+  std::int64_t communication_rows = 0;
+  std::int64_t communication_cols = 0;
+  jcn::CommunicationScalarType communication_type =
+      jcn::CommunicationScalarType::F32;
+  std::string communication_error;
+
+  static int exchange_callback(void *, void *, std::int64_t, std::int64_t,
+                               jcn::CommunicationScalarType, bool,
+                               const char **);
+  static std::int64_t active_rows_callback(void *);
+  int exchange(void *, std::int64_t, std::int64_t,
+               jcn::CommunicationScalarType, bool);
+  double communication_get(std::int64_t, std::int64_t) const;
+  void communication_set(std::int64_t, std::int64_t, double);
+  void communication_add(std::int64_t, std::int64_t, double);
 
   virtual void allocate();
 };

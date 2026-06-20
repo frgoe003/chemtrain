@@ -75,6 +75,7 @@ cc_library(
     deps = [
         ":buffer",
         ":compiler",
+        ":communication",
         ":domain",
         ":graph_builder",
         ":model_proto_cc",
@@ -95,6 +96,29 @@ cc_library(
         "@xla//xla/pjrt:pjrt_stream_executor_client",
         "@xla//xla/pjrt:tfrt_cpu_pjrt_client",
     ],
+)
+
+cc_library(
+    name = "communication",
+    srcs = ["communication.cpp"],
+    hdrs = [
+        "communication.h",
+        "libconnector.h",
+    ],
+    deps = [
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@xla//xla/backends/gpu:ffi",
+        "@xla//xla/ffi:ffi",
+        "@xla//xla/ffi:type_registry",
+        "@xla//xla/pjrt:pjrt_executable",
+        "@xla//xla/pjrt/c:pjrt_c_api_hdrs",
+        "@xla//xla/pjrt/c:pjrt_c_api_ffi_extension_hdrs",
+        "@xla//xla/stream_executor:device_memory",
+        "@xla//xla/stream_executor:memory_allocation",
+        "@xla//xla/stream_executor:stream",
+        "@xla//xla/stream_executor:stream_executor_h",
+    ]
 )
 
 cc_library(

@@ -18,6 +18,7 @@ limitations under the License.
 #include "connector/graph_builder.h"
 #include "connector/libconnector.h"
 #include "connector/domain.h"
+#include "connector/communication.h"
 #include "connector/model.pb.h"
 
 #include "xla/literal.h"
@@ -89,6 +90,9 @@ namespace jcn {
         float flops_;
 
         bool newton;
+
+        CommunicationCallbacks communication_callbacks;
+        CommunicationWorkspace communication_workspace_;
 
     };
 

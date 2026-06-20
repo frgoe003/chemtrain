@@ -52,4 +52,10 @@ message Model {
 
   repeated string quantities = 6;
 
+  // The exported module contains ordered feature-communication FFI calls.
+  bool uses_communication = 7;
+
+  // Maximum number of scalar features packed by a communication call.
+  int32 communication_buffer_width = 8;
+
 }

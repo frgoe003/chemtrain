@@ -23,6 +23,7 @@ limitations under the License.
 #include <bitset>
 #include <iostream>
 #include <algorithm>
+#include <cstdlib>
 #include <limits>
 
 #include "connector/graph_builder.h"
@@ -166,11 +167,16 @@ namespace jcn {
                     throw std::runtime_error("Exceeded maximum number of receivers");
                 }
 
-                // Copy the actual atom index from ilist to senders_data.
-                std::fill(senders_data + edge_counter, senders_data + edge_counter + num_neighbors, i);
+                // LAMMPS stores a neighbor list as central atom i followed by
+                // its neighbors j. MACE uses edge_index[0] as the message
+                // source and edge_index[1] as the receiving central atom, so
+                // the deployed edge must be j -> i (not i -> j).
+                std::fill(receivers_data + edge_counter,
+                          receivers_data + edge_counter + num_neighbors, i);
 
                 for (int jj = 0; jj < num_neighbors; jj++) {
-                    receivers_data[edge_counter + jj] = firstneigh_ptr[jj] & kLammpsNeighborMask;
+                    senders_data[edge_counter + jj] =
+                        firstneigh_ptr[jj] & kLammpsNeighborMask;
                 }
 
                 edge_counter += num_neighbors;
@@ -179,6 +185,21 @@ namespace jcn {
             // Fill in the invalid values
             std::fill(senders_data + edge_counter, senders_data + edge_buffer_size, fill_value);
             std::fill(receivers_data + edge_counter, receivers_data + edge_buffer_size, fill_value);
+
+            if (std::getenv("JCN_COMM_DEBUG") != nullptr && edge_counter > 0) {
+                int ghost_sources = 0;
+                int ghost_receivers = 0;
+                for (int edge = 0; edge < edge_counter; ++edge) {
+                    ghost_sources += senders_data[edge] >= inum;
+                    ghost_receivers += receivers_data[edge] >= inum;
+                }
+                std::cerr << "[COMM GRAPH] edges=" << edge_counter
+                          << " first=" << senders_data[0] << "->"
+                          << receivers_data[0]
+                          << " ghost_sources=" << ghost_sources
+                          << " ghost_receivers=" << ghost_receivers
+                          << std::endl;
+            }
 
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double> duration = end - start;

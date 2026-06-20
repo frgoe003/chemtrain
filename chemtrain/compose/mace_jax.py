@@ -137,6 +137,7 @@ def mace_jax_neighborlist_from_torch(
     equivariance_config: EquivarianceConfig = None,
     cueq_config: CuEquivarianceConfig = None,
     use_custom_batch_fn: bool = False,
+    comm: Any = None,
 ) -> Tuple[Any, Callable]:
     """MACE model for property prediction.
 
@@ -154,6 +155,8 @@ def mace_jax_neighborlist_from_torch(
         cueq_config: Deprecated alias for a CuEquivariance-only configuration.
         use_custom_batch_fn: Whether to use custom batch function.
             Required when cueq_config is enabled, optional otherwise.
+        comm: Optional deployment communication interface. It must provide a
+            ``gather`` method used between message-passing blocks.
 
     Returns:
         Returns a tuple of parameters and an apply function.
@@ -203,7 +206,7 @@ def mace_jax_neighborlist_from_torch(
         }
 
         out, _ = jax_model.apply(params)(
-            data, compute_force=False, compute_stress=False)
+            data, compute_force=False, compute_stress=False, comm=comm)
         return out["node_energy"] * mask
 
     # Apply custom batch function if enabled via cueq or explicitly requested

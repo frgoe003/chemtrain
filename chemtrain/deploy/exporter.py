@@ -26,7 +26,7 @@ from typing import Dict, NamedTuple, Any, List, Tuple, Callable, NoReturn
 import jax_md_mod
 from jax_md import util as md_util, space
 
-from . import graphs, util
+from . import comm, graphs, util
 from ._protobuf import model_pb2 as model_proto
 
 
@@ -35,6 +35,8 @@ OPENEQUIVARIANCE_CUSTOM_CALLS = (
     "conv_backward",
     "conv_double_backward",
 )
+
+COMMUNICATION_CUSTOM_CALLS = comm.CUSTOM_CALL_TARGETS
 
 _JAX_INTERNAL_CUSTOM_CALLS = frozenset(
     {"shape_assertion", "stablehlo.dynamic_top_k"}
@@ -54,16 +56,23 @@ def stablehlo_custom_call_targets(module: bytes | str) -> frozenset[str]:
     )
 
 
-def validate_openequivariance_custom_calls(module: bytes | str) -> None:
-    """Reject cuEquivariance and unapproved external calls in an OEQ export."""
+def validate_custom_calls(
+    module: bytes | str, allowed_external_calls=()
+) -> None:
+    """Reject external calls not explicitly enabled for this export path."""
     targets = stablehlo_custom_call_targets(module)
-    allowed = frozenset(OPENEQUIVARIANCE_CUSTOM_CALLS) | _JAX_INTERNAL_CUSTOM_CALLS
+    allowed = frozenset(allowed_external_calls) | _JAX_INTERNAL_CUSTOM_CALLS
     unknown = targets - allowed
     if unknown:
         raise ValueError(
-            "OpenEquivariance export contains unsupported custom-call targets: "
+            "Export contains unsupported custom-call targets: "
             + ", ".join(sorted(unknown))
         )
+
+
+def validate_openequivariance_custom_calls(module: bytes | str) -> None:
+    """Reject cuEquivariance and unapproved external calls in an OEQ export."""
+    validate_custom_calls(module, OPENEQUIVARIANCE_CUSTOM_CALLS)
 
 
 def _openequivariance_disabled_checks():
@@ -71,6 +80,13 @@ def _openequivariance_disabled_checks():
     return tuple(
         export.DisabledSafetyCheck.custom_call(target)
         for target in OPENEQUIVARIANCE_CUSTOM_CALLS
+    )
+
+
+def _communication_disabled_checks():
+    return tuple(
+        export.DisabledSafetyCheck.custom_call(target)
+        for target in COMMUNICATION_CUSTOM_CALLS
     )
 
 
@@ -213,7 +229,7 @@ class Exporter(metaclass=abc.ABCMeta):
         local_mask = jnp.arange(position.shape[0]) < n_local
 
         graph, build_statistics = self.graph_type.create_from_args(
-            self.r_cutoff, self.nbr_order, position, species,
+            self.r_cutoff, self._neighbor_orders(), position, species,
             local_mask, valid_mask, newton, *graph_args)
         graph = lax.stop_gradient(graph)
 
@@ -262,6 +278,10 @@ class Exporter(metaclass=abc.ABCMeta):
 
         return predictions, build_statistics
 
+    def _neighbor_orders(self):
+        """Return neighbor orders used to construct and serialize the graph."""
+        return self.nbr_order
+
     def export(self) -> None:
         """Exports the potential model to an MLIR module."""
 
@@ -295,11 +315,12 @@ class Exporter(metaclass=abc.ABCMeta):
         proto.neighbor_list.cutoff = self.r_cutoff
         proto.unit_style = self.unit_style
 
-        assert len(self.nbr_order) == 2, (
+        neighbor_orders = self._neighbor_orders()
+        assert len(neighbor_orders) == 2, (
             "The nbr_order must contain the order of required neighbors for "
             "the newton and non-newton setting."
         )
-        proto.neighbor_list.nbr_order.extend(self.nbr_order)
+        proto.neighbor_list.nbr_order.extend(neighbor_orders)
         self.graph_type.set_properties(proto)
 
         # Using the ghost mask in the last layer we can compute correct forces
@@ -340,16 +361,164 @@ class Exporter(metaclass=abc.ABCMeta):
         return str(self._proto)
 
     def save(self, file: str) -> None:
-        """Saves the exported protobuffer to a file.
-
-        Args:
-            file: Path to the file where the model should be saved.
-
-        """
-
+        """Save the exported protocol buffer to ``file``."""
         assert self._proto is not None, (
             "Model has not been exported yet. Please call `export()` first."
         )
 
         with open(file, "wb") as f:
             f.write(self._proto.SerializeToString())
+
+
+def stablehlo_custom_call_count(module: bytes | str, target: str) -> int:
+    """Count StableHLO custom calls by target name."""
+    if isinstance(module, bytes):
+        module = module.decode("utf-8")
+
+    count = 0
+
+    count += len(re.findall(
+        rf'call_target_name\s*=\s*"{re.escape(target)}"',
+        module,
+    ))
+
+    count += len(re.findall(
+        rf'\bstablehlo\.custom_call\s+@(?:"{re.escape(target)}"|{re.escape(target)})\b',
+        module,
+    ))
+
+    return count
+
+
+def infer_communication_buffer_width(module: bytes | str) -> int:
+    """Infer the packed communication buffer width from StableHLO text."""
+    if isinstance(module, bytes):
+        module = module.decode("utf-8")
+
+    targets = "|".join(
+        re.escape(target) for target in COMMUNICATION_CUSTOM_CALLS
+    )
+
+    widths: list[int] = []
+
+    quoted_blocks = re.findall(
+        rf'(?s)'
+        rf'"stablehlo\.custom_call"\(.*?'
+        rf'call_target_name\s*=\s*"({targets})".*?'
+        rf'\)\s*:\s*\((.*?)\)\s*->\s*(?:\((.*?)\)|(tensor<[^>]+>))',
+        module,
+    )
+
+    for _, operand_types, result_tuple_types, result_single_type in quoted_blocks:
+        block = " ".join(
+            part for part in (
+                operand_types,
+                result_tuple_types,
+                result_single_type,
+            )
+            if part
+        )
+        widths.extend(
+            int(width)
+            for width in re.findall(
+                r'tensor<[^>]*x(\d+)xf(?:32|64)>',
+                block,
+            )
+        )
+
+    direct_blocks = re.findall(
+        rf'(?s)'
+        rf'stablehlo\.custom_call\s+@(?:"(?:{targets})"|(?:{targets}))'
+        rf'.*?'
+        rf'\)\s*:\s*\((.*?)\)\s*->\s*(?:\((.*?)\)|(tensor<[^>]+>))',
+        module,
+    )
+
+    for operand_types, result_tuple_types, result_single_type in direct_blocks:
+        block = " ".join(
+            part for part in (
+                operand_types,
+                result_tuple_types,
+                result_single_type,
+            )
+            if part
+        )
+        widths.extend(
+            int(width)
+            for width in re.findall(
+                r'tensor<[^>]*x(\d+)xf(?:32|64)>',
+                block,
+            )
+        )
+
+    if not widths:
+        raise ValueError(
+            "Could not infer the packed communication width from the "
+            "exported module"
+        )
+
+    return max(widths)
+
+
+class CommunicationExporter(Exporter):
+    """Exporter for models containing :func:`chemtrain.deploy.comm.gather`.
+
+    Communication synchronizes ghost features at message-passing boundaries.
+    Newton-on requires a one-cutoff halo because forces are reverse summed;
+    Newton-off computes all influencing ghost energies locally and retains the
+    communication-free ``2 * num_interactions`` halo. A provisional export
+    counts communication sites to infer the latter order.
+    """
+
+    def export(self) -> None:
+        self._export_communicating()
+
+    def export_openequivariance(self) -> None:
+        self._export_communicating(openequivariance=True)
+
+    def _neighbor_orders(self):
+        return self._inferred_neighbor_orders
+
+    def _export_communicating(self, openequivariance: bool = False) -> None:
+        communication_checks = _communication_disabled_checks()
+        oeq_checks = (
+            _openequivariance_disabled_checks() if openequivariance else ()
+        )
+        checks = communication_checks + oeq_checks
+
+        self._inferred_neighbor_orders = [1, 1]
+        super()._export(disabled_checks=checks)
+
+        provisional_module = self._proto.mlir_module
+        gather_count = stablehlo_custom_call_count(
+            provisional_module, comm.FORWARD_TARGET
+        )
+
+        # A gather is inserted before every interaction after the first, so
+        # num_interactions = gather_count + 1 for this interface.
+        self._inferred_neighbor_orders = [1, 2 * (gather_count + 1)]
+        super()._export(disabled_checks=checks)
+
+        final_module = self._proto.mlir_module
+        final_gather_count = stablehlo_custom_call_count(
+            final_module, comm.FORWARD_TARGET
+        )
+
+        if final_gather_count != gather_count:
+            raise ValueError(
+                "Communication structure changed while inferring neighbor "
+                f"orders: provisional gather_count={gather_count}, "
+                f"final_gather_count={final_gather_count}"
+            )
+
+        allowed = set(COMMUNICATION_CUSTOM_CALLS)
+        if openequivariance:
+            allowed.update(OPENEQUIVARIANCE_CUSTOM_CALLS)
+
+        validate_custom_calls(final_module, allowed)
+
+        self._proto.uses_communication = True
+        self._proto.communication_buffer_width = (
+            infer_communication_buffer_width(final_module)
+        )
+        self.gather_count = gather_count

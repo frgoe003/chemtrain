@@ -16,7 +16,7 @@ import itertools
 import jax
 from jax import numpy as jnp, Array
 
-from chemtrain.deploy import graphs, exporter
+from chemtrain.deploy import comm, graphs, exporter
 
 from jax_md_mod import custom_partition
 from jax_md import space, partition, util as md_util
@@ -185,3 +185,20 @@ class TestExport:
 
         with pytest.raises(AssertionError, match="has not been exported yet"):
             model.save(tmp_path / "exported_no_max_edges.ptb")
+
+    def test_communication_export_infers_neighbor_orders(self, setup_export):
+        class CommunicatingModel(exporter.CommunicationExporter, setup_export):
+            def energy_fn(self, pos, species, graph):
+                energy = super().energy_fn(pos, species, graph)
+                return comm.gather(comm.gather(energy))
+
+        model = CommunicatingModel(max_edges=None)
+        model.export()
+
+        assert model.gather_count == 2
+        assert list(model._proto.neighbor_list.nbr_order) == [1, 6]
+        assert model._proto.uses_communication
+        targets = exporter.stablehlo_custom_call_targets(
+            model._proto.mlir_module
+        )
+        assert set(comm.CUSTOM_CALL_TARGETS) <= targets

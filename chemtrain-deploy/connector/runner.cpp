@@ -34,6 +34,7 @@ limitations under the License.
 #include "connector/model.pb.h"
 #include "connector/utils.h"
 #include "connector/openequivariance.h"
+#include "connector/communication.h"
 
 #include "xla/literal.h"
 #include "xla/literal_util.h"
@@ -127,6 +128,10 @@ namespace jcn {
             if (oeq_rc != 0) {
                 throw std::runtime_error(
                     "Failed to register OpenEquivariance XLA FFI handlers for CUDA");
+            }
+            if (RegisterCommunicationFfi(cuda_pjrt_api, "CUDA") != 0) {
+                throw std::runtime_error(
+                    "Failed to register chemtrain communication XLA FFI handlers for CUDA");
             }
         }
 
@@ -225,6 +230,7 @@ namespace jcn {
         Logger logger = Logger::getlogger();
 
         newton = config.newton;
+        communication_callbacks = config.communication;
 
         model = std::make_unique<jcn::Model>();
 
@@ -237,8 +243,26 @@ namespace jcn {
             throw std::runtime_error("Cannot load model: Model file is invalid or corrupted.");
         }
 
+        logger.log(
+            LogLevel::DEBUG,
+            "Model communication: enabled=" +
+                std::to_string(model->uses_communication()) +
+                ", width=" +
+                std::to_string(model->communication_buffer_width()) +
+                ", newton=" + std::to_string(newton) +
+                ", neighbor_orders=[" +
+                (model->neighbor_list().nbr_order_size() > 0
+                     ? std::to_string(model->neighbor_list().nbr_order(0))
+                     : "missing") +
+                ", " +
+                (model->neighbor_list().nbr_order_size() > 1
+                     ? std::to_string(model->neighbor_list().nbr_order(1))
+                     : "missing") +
+                "]");
+
         // Pass the mlir module to the compiler
-        compiler = std::make_unique<Compiler>(model->mlir_module());
+        compiler = std::make_unique<Compiler>(model->mlir_module(),
+                                              false);
 
         // Extract exported quantity keys from the model proto and pass to atom_builder
         std::vector<std::string> quantities;
@@ -396,18 +420,52 @@ namespace jcn {
                 throw std::runtime_error("arg_handles is empty or not properly populated");
             }
 
+            xla::ExecuteContext execute_context;
+            CommunicationContext communication_context(
+                communication_callbacks, model->uses_communication(),
+                &communication_workspace_);
+
+            absl::Status context_status =
+                AddCommunicationContextToExecuteContext(
+                    &execute_context, &communication_context);
+
+            if (!context_status.ok()) {
+                throw std::runtime_error(
+                    "Failed to initialize communication execution context: " +
+                    context_status.ToString());
+            }
+
             xla::ExecuteOptions execute_options;
+            execute_options.context = &execute_context;
 
             start = std::chrono::high_resolution_clock::now();
 
             // Use std::async to execute the function asynchronously
             std::future<absl::StatusOr<std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>>> future_results =
                 std::async(std::launch::async, [&]() {
-                    return executable->Execute(
+                    auto results = executable->Execute(
                         absl::Span<const std::vector<xla::PjRtBuffer*>>(arg_handles),
                         execute_options
                     );
+                    if (!results.ok()) return results;
+                    // Execute only enqueues GPU work. Keep the rendezvous loop
+                    // alive until the FFI calls and all dependent work finish.
+                    for (const auto& replica : results.value()) {
+                        for (const auto& buffer : replica) {
+                            absl::Status ready = buffer->GetReadyFuture().Await();
+                            if (!ready.ok()) return decltype(results)(ready);
+                        }
+                    }
+                    return results;
                 });
+
+            // PJRT invokes FFI handlers on its worker. Service their staged
+            // requests here so LAMMPS and MPI are entered only by this thread.
+            while (future_results.wait_for(std::chrono::milliseconds(1)) !=
+                   std::future_status::ready) {
+                communication_context.ServiceOne();
+            }
+            while (communication_context.ServiceOne()) {}
 
             // Wait for the results to be ready
             absl::StatusOr<std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>> results = future_results.get();
@@ -484,6 +542,8 @@ namespace jcn {
             multiplier = model->neighbor_list().nbr_order()[1];
         }
         properties.comm_dist = multiplier * model->neighbor_list().cutoff();
+        properties.communication_buffer_width =
+            model->communication_buffer_width();
 
         if (model->has_unit_style()) {
             properties.unit_style = model->unit_style().c_str();
