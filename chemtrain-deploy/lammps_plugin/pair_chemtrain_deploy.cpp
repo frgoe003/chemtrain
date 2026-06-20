@@ -363,6 +363,7 @@ void ChemtrainDeploy::coeff(int narg, char **arg)
     // The selected graph contains FFI gathers; bind them to LAMMPS's normal
     // forward/reverse pair communication for this pair instance.
     config.communication.context = this;
+    config.communication.owned_rows = &ChemtrainDeploy::owned_rows_callback;
     config.communication.active_rows = &ChemtrainDeploy::active_rows_callback;
     config.communication.exchange = &ChemtrainDeploy::exchange_callback;
   }
@@ -414,6 +415,11 @@ int ChemtrainDeploy::exchange_callback(
 std::int64_t ChemtrainDeploy::active_rows_callback(void *context) {
   auto *self = static_cast<ChemtrainDeploy *>(context);
   return static_cast<std::int64_t>(self->atom->nlocal) + self->atom->nghost;
+}
+
+std::int64_t ChemtrainDeploy::owned_rows_callback(void *context) {
+  auto *self = static_cast<ChemtrainDeploy *>(context);
+  return static_cast<std::int64_t>(self->atom->nlocal);
 }
 
 /* ---------------------------------------------------------------------- */

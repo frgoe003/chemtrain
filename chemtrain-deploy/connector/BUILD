@@ -115,6 +115,7 @@ cc_library(
         "@xla//xla/pjrt/c:pjrt_c_api_hdrs",
         "@xla//xla/pjrt/c:pjrt_c_api_ffi_extension_hdrs",
         "@xla//xla/stream_executor:device_memory",
+        "@xla//xla/stream_executor:event",
         "@xla//xla/stream_executor:memory_allocation",
         "@xla//xla/stream_executor:stream",
         "@xla//xla/stream_executor:stream_executor_h",

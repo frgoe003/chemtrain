@@ -83,6 +83,7 @@ class CommunicationContext {
   void ServiceUntilExecutionComplete();
   absl::Status ValidateExecution() const;
   bool enabled() const { return enabled_; }
+  std::int64_t OwnedRows(std::int64_t capacity) const;
   std::int64_t ActiveRows(std::int64_t capacity) const;
   CommunicationWorkspace* workspace() const { return workspace_; }
 

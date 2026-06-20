@@ -13,6 +13,7 @@
 #include "xla/pjrt/c/pjrt_c_api.h"
 #include "xla/pjrt/c/pjrt_c_api_ffi_extension.h"
 #include "xla/stream_executor/device_memory.h"
+#include "xla/stream_executor/event.h"
 #include "xla/stream_executor/memory_allocation.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_executor.h"
@@ -113,6 +114,14 @@ std::int64_t CommunicationContext::ActiveRows(std::int64_t capacity) const {
   // the complete static-capacity buffer on a specific system.
   if (std::getenv("JCN_COMM_STAGE_FULL_BUFFER") != nullptr) return capacity;
   const std::int64_t rows = callbacks_.active_rows(callbacks_.context);
+  return rows >= 0 && rows <= capacity ? rows : capacity;
+}
+
+std::int64_t CommunicationContext::OwnedRows(std::int64_t capacity) const {
+  if (!enabled_ || callbacks_.owned_rows == nullptr) return capacity;
+  // Preserve the old symmetric staging path as a runtime A/B fallback.
+  if (std::getenv("JCN_COMM_STAGE_FULL_BUFFER") != nullptr) return capacity;
+  const std::int64_t rows = callbacks_.owned_rows(callbacks_.context);
   return rows >= 0 && rows <= capacity ? rows : capacity;
 }
 
@@ -345,12 +354,18 @@ tsl::AsyncValueRef<tsl::Chain> RunExchange(
   const std::int64_t cols = input.dimensions()[1];
   const std::size_t bytes = input.size_bytes();
   const std::int64_t active_rows = context->ActiveRows(rows);
+  const std::int64_t owned_rows = context->OwnedRows(active_rows);
   const std::size_t element_bytes =
       scalar_type == CommunicationScalarType::F32 ? sizeof(float)
                                                    : sizeof(double);
+  const std::size_t owned_bytes =
+      static_cast<std::size_t>(owned_rows) *
+      static_cast<std::size_t>(cols) * element_bytes;
   const std::size_t active_bytes =
       static_cast<std::size_t>(active_rows) *
       static_cast<std::size_t>(cols) * element_bytes;
+  const std::size_t ghost_bytes = active_bytes - owned_bytes;
+  const bool compact_staging = owned_rows < active_rows;
 
   void* input_data = input.untyped_data();
   void* output_data = output->untyped_data();
@@ -379,19 +394,68 @@ tsl::AsyncValueRef<tsl::Chain> RunExchange(
           return absl::OkStatus();
         }
 
-        // Communicating path: only active rows are valid in the output.
-        // The padded tail is intentionally left undefined.
-        status = stream->Memcpy(host, src, active_bytes);
+        // Compact staging preserves the complete device result with a cheap
+        // D2D identity copy, then crosses the host boundary only for the row
+        // ranges needed by the direction-specific LAMMPS exchange.
+        if (compact_staging) {
+          status = stream->Memcpy(&dst, src, bytes);
+          if (!status.ok()) return status;
+        }
+
+        const std::size_t inbound_bytes =
+            compact_staging ? (reverse ? active_bytes : owned_bytes)
+                            : active_bytes;
+        se::DeviceAddressBase inbound_src(input_data, inbound_bytes);
+        status = stream->Memcpy(host, inbound_src, inbound_bytes);
         if (!status.ok()) return status;
-        status = stream->BlockHostUntilDone();
+
+        // Synchronize an event recorded immediately after the D2H transfer,
+        // rather than draining the whole XLA stream with BlockHostUntilDone.
+        // Only this workspace worker waits; the FFI remains asynchronous.
+        // Keep the old behavior as an explicit profiling fallback.
+        if (std::getenv("JCN_COMM_BLOCK_STREAM") != nullptr) {
+          status = stream->BlockHostUntilDone();
+        } else {
+          auto copy_ready = stream->parent()->CreateEvent();
+          if (!copy_ready.ok()) return copy_ready.status();
+          std::unique_ptr<se::Event> event = std::move(copy_ready).value();
+          status = stream->RecordEvent(event.get());
+          if (!status.ok()) return status;
+          status = event->Synchronize();
+        }
         if (!status.ok()) return status;
 
         status = context->Exchange(host, active_rows, cols, scalar_type,
                                    reverse);
         if (!status.ok()) return status;
 
-        status = stream->Memcpy(&dst, host, active_bytes);
-        if (!status.ok()) return status;
+        if (compact_staging) {
+          if (reverse) {
+            // Reverse communication changes owned cotangents and defines
+            // ghost cotangents as zero after their contribution was returned.
+            se::DeviceAddressBase owned_dst(output_data, owned_bytes);
+            status = stream->Memcpy(&owned_dst, host, owned_bytes);
+            if (!status.ok()) return status;
+            if (ghost_bytes > 0) {
+              se::DeviceAddressBase ghost_dst(
+                  static_cast<char*>(output_data) + owned_bytes, ghost_bytes);
+              status = stream->MemZero(&ghost_dst, ghost_bytes);
+              if (!status.ok()) return status;
+            }
+          } else if (ghost_bytes > 0) {
+            // Owned rows already came from the D2D identity copy. LAMMPS has
+            // overwritten every active ghost row during forward exchange.
+            se::DeviceAddressBase ghost_dst(
+                static_cast<char*>(output_data) + owned_bytes, ghost_bytes);
+            status = stream->Memcpy(
+                &ghost_dst, static_cast<char*>(host) + owned_bytes,
+                ghost_bytes);
+            if (!status.ok()) return status;
+          }
+        } else {
+          status = stream->Memcpy(&dst, host, active_bytes);
+          if (!status.ok()) return status;
+        }
         // The token copy is deliberately enqueued last. Its output cannot
         // become ready until LAMMPS communication and the feature copy-back
         // finish, so the next FFI site has an ordinary XLA data dependency.
