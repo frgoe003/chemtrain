@@ -10,6 +10,7 @@
 #include <queue>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "connector/libconnector.h"
 
@@ -63,15 +64,24 @@ class CommunicationWorkspace {
   std::unique_ptr<stream_executor::MemoryAllocation> buffer_;
 };
 
+// Per-execution rendezvous between PJRT's asynchronous FFI worker and the
+// caller thread that owns LAMMPS/MPI. It also checks that runtime calls still
+// match the static communication structure stored by the exporter.
 class CommunicationContext {
  public:
   CommunicationContext(CommunicationCallbacks callbacks, bool enabled,
-                       CommunicationWorkspace* workspace);
+                       CommunicationWorkspace* workspace,
+                       int expected_forward_sites = 0,
+                       std::vector<int> expected_widths = {});
 
   absl::Status Exchange(void* data, std::int64_t rows, std::int64_t cols,
                         CommunicationScalarType type, bool reverse);
   bool ServiceOne();
   bool HasPending() const;
+  void BeginExecution();
+  void NotifyExecutionComplete();
+  void ServiceUntilExecutionComplete();
+  absl::Status ValidateExecution() const;
   bool enabled() const { return enabled_; }
   std::int64_t ActiveRows(std::int64_t capacity) const;
   CommunicationWorkspace* workspace() const { return workspace_; }
@@ -88,6 +98,11 @@ class CommunicationContext {
   bool pending_ = false;
   bool servicing_ = false;
   bool completed_ = false;
+  bool execution_complete_ = false;
+  int expected_forward_sites_ = 0;
+  std::vector<int> expected_widths_;
+  int forward_sites_ = 0;
+  int reverse_sites_ = 0;
 
   void* data_ = nullptr;
   std::int64_t rows_ = 0;

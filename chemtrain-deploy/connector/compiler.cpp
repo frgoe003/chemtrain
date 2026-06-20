@@ -44,10 +44,8 @@ limitations under the License.
 
 namespace jcn {
 
-    Compiler::Compiler(const std::string& mlir_module,
-                       bool main_has_token_input_output)
-        : mlir_module(mlir_module),
-          main_has_token_input_output(main_has_token_input_output) {
+    Compiler::Compiler(const std::string& mlir_module)
+        : mlir_module(mlir_module) {
 
         // We add some dialects to interpret the MLIR module from JAX
 
@@ -107,7 +105,7 @@ namespace jcn {
 
         std::unique_ptr<XlaCallModuleLoader> module_loader = XlaCallModuleLoader::Create(
             &context, 10, mlir_module, disabled_checks, platforms, input_args,
-            main_has_token_input_output, false).value();
+            false, false).value();
 
         // We now follow the steps as in the XLACallModuleLoader from tensorflow
         absl::Status status;

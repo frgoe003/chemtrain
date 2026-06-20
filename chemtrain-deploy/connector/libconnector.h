@@ -103,6 +103,9 @@ namespace jcn {
          */
         bool newton;
 
+        /** Select the exported distributed-communication model variant. */
+        bool use_communication = false;
+
         /** Optional host communication implementation for embedded gathers. */
         CommunicationCallbacks communication;
 

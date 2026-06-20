@@ -1,5 +1,6 @@
 #include "connector/communication.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
@@ -17,6 +18,11 @@
 #include "xla/stream_executor/stream_executor.h"
 
 namespace jcn {
+
+// XLA's internal C++ FFI and TSL async types are intentionally confined to
+// this translation unit. The rest of the connector sees only the execution
+// context adapter declared in communication.h, which limits coupling to the
+// pinned XLA revision used to build libconnector.
 
 CommunicationWorkspace::CommunicationWorkspace()
     : worker_(&CommunicationWorkspace::WorkerLoop, this) {}
@@ -57,15 +63,19 @@ void CommunicationWorkspace::WorkerLoop() {
         status = absl::InternalError(
             "communication job has no StreamExecutor");
       } else {
+        const std::size_t allocation_bytes = std::max<std::size_t>(job.bytes, 1);
         if (buffer_ == nullptr || buffer_executor_ != job.executor ||
-            buffer_capacity_ < job.bytes) {
-          auto allocation = job.executor->HostMemoryAllocate(job.bytes);
+            buffer_capacity_ < allocation_bytes) {
+          // Jobs are serialized by this one worker, so a pinned allocation can
+          // be reused safely. Keep a non-null one-byte allocation for empty
+          // MPI ranks, which still participate in LAMMPS communication.
+          auto allocation = job.executor->HostMemoryAllocate(allocation_bytes);
           if (!allocation.ok()) {
             status = allocation.status();
           } else {
             buffer_ = std::move(allocation).value();
             buffer_executor_ = job.executor;
-            buffer_capacity_ = job.bytes;
+            buffer_capacity_ = allocation_bytes;
           }
         }
         if (status.ok()) status = job.task(buffer_->address().opaque());
@@ -81,8 +91,14 @@ void CommunicationWorkspace::WorkerLoop() {
 
 CommunicationContext::CommunicationContext(CommunicationCallbacks callbacks,
                                            bool enabled,
-                                           CommunicationWorkspace* workspace)
-    : callbacks_(callbacks), enabled_(enabled), workspace_(workspace) {}
+                                           CommunicationWorkspace* workspace,
+                                           int expected_forward_sites,
+                                           std::vector<int> expected_widths)
+    : callbacks_(callbacks),
+      enabled_(enabled),
+      workspace_(workspace),
+      expected_forward_sites_(expected_forward_sites),
+      expected_widths_(std::move(expected_widths)) {}
 
 std::int64_t CommunicationContext::ActiveRows(std::int64_t capacity) const {
   if (!enabled_ || callbacks_.active_rows == nullptr) return capacity;
@@ -101,6 +117,33 @@ absl::Status CommunicationContext::Exchange(
   if (callbacks_.exchange == nullptr) {
     return absl::FailedPreconditionError(
         "communicating model executed without LAMMPS communication callbacks");
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    int& sites = reverse ? reverse_sites_ : forward_sites_;
+    if (cols <= 0) {
+      return absl::InvalidArgumentError(
+          "communication site width must be positive");
+    }
+    if (!expected_widths_.empty()) {
+      if (!reverse &&
+          (sites >= static_cast<int>(expected_widths_.size()) ||
+           expected_widths_[sites] != cols)) {
+        return absl::InvalidArgumentError(
+            "communication site width does not match exported metadata");
+      }
+      if (reverse) {
+        const int maximum_width = *std::max_element(
+            expected_widths_.begin(), expected_widths_.end());
+        if (sites >= static_cast<int>(expected_widths_.size()) ||
+            cols > maximum_width) {
+          return absl::InvalidArgumentError(
+              "reverse communication exceeds exported communication bounds");
+        }
+      }
+    }
+    ++sites;
   }
 
   std::unique_lock<std::mutex> lock(mutex_);
@@ -175,6 +218,57 @@ bool CommunicationContext::HasPending() const {
   return pending_ && !completed_;
 }
 
+void CommunicationContext::BeginExecution() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  execution_complete_ = false;
+  forward_sites_ = 0;
+  reverse_sites_ = 0;
+}
+
+absl::Status CommunicationContext::ValidateExecution() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (enabled_ && expected_forward_sites_ > 0 &&
+      forward_sites_ != expected_forward_sites_) {
+    return absl::FailedPreconditionError(
+        "executed " + std::to_string(forward_sites_) +
+        " forward communication sites; exported metadata requires " +
+        std::to_string(expected_forward_sites_));
+  }
+  return absl::OkStatus();
+}
+
+void CommunicationContext::NotifyExecutionComplete() {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    execution_complete_ = true;
+  }
+  request_ready_.notify_all();
+}
+
+void CommunicationContext::ServiceUntilExecutionComplete() {
+  while (true) {
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      // PJRT executes on a worker, but LAMMPS and MPI must remain on the
+      // caller thread. Wake this thread only for one of those callbacks or
+      // when all device work has completed; no periodic polling is needed.
+      request_ready_.wait(lock, [this] {
+        return execution_complete_ ||
+               (pending_ && !servicing_ && !completed_);
+      });
+
+      // A communication request takes priority over execution completion.
+      // In practice PJRT cannot finish while an async FFI result is pending,
+      // but this ordering also makes shutdown robust to future FFI changes.
+      if (!(pending_ && !servicing_ && !completed_) &&
+          execution_complete_) {
+        return;
+      }
+    }
+    ServiceOne();
+  }
+}
+
 namespace {
 
 namespace ffi = xla::ffi;
@@ -189,7 +283,9 @@ xla::ffi::TypeRegistry::TypeId g_communication_context_type_id =
     xla::ffi::TypeRegistry::kUnknownTypeId;
 
 tsl::AsyncValueRef<tsl::Chain> RunExchange(
-    ffi::AnyBuffer input, ffi::Result<ffi::AnyBuffer> output,
+    ffi::AnyBuffer input, ffi::AnyBuffer token_input,
+    ffi::Result<ffi::AnyBuffer> output,
+    ffi::Result<ffi::AnyBuffer> token_output,
     se::Stream* stream, CommunicationContext* context, bool reverse) {
   auto done = tsl::MakeConstructedAsyncValueRef<tsl::Chain>();
 
@@ -220,6 +316,16 @@ tsl::AsyncValueRef<tsl::Chain> RunExchange(
     return done;
   }
 
+  if (token_input.element_type() != xla::F32 ||
+      token_output->element_type() != xla::F32 ||
+      token_input.dimensions().size() != 1 ||
+      token_output->dimensions().size() != 1 ||
+      token_input.dimensions()[0] != 1 ||
+      token_output->dimensions()[0] != 1) {
+    fail("chemtrain gather expects a matching float32[1] ordering token");
+    return done;
+  }
+
   CommunicationScalarType scalar_type;
   if (input.element_type() == xla::F32) {
     scalar_type = CommunicationScalarType::F32;
@@ -243,19 +349,27 @@ tsl::AsyncValueRef<tsl::Chain> RunExchange(
 
   void* input_data = input.untyped_data();
   void* output_data = output->untyped_data();
+  void* token_input_data = token_input.untyped_data();
+  void* token_output_data = token_output->untyped_data();
   CommunicationWorkspace* workspace = context->workspace();
   workspace->Schedule(
       stream->parent(), active_bytes,
       [=](void* host) -> absl::Status {
         se::DeviceAddressBase src(input_data, bytes);
         se::DeviceAddressBase dst(output_data, bytes);
+        se::DeviceAddressBase token_src(token_input_data, sizeof(float));
+        se::DeviceAddressBase token_dst(token_output_data, sizeof(float));
 
         // Preserve the inactive padded tail on device and stage only atom rows
         // that LAMMPS can access. This trades one D2D copy for less PCIe data.
         absl::Status status = stream->Memcpy(&dst, src, bytes);
         if (!status.ok()) return status;
 
-        if (!context->enabled()) return stream->BlockHostUntilDone();
+        if (!context->enabled()) {
+          status = stream->Memcpy(&token_dst, token_src, sizeof(float));
+          if (!status.ok()) return status;
+          return stream->BlockHostUntilDone();
+        }
 
         status = stream->Memcpy(host, src, active_bytes);
         if (!status.ok()) return status;
@@ -268,9 +382,17 @@ tsl::AsyncValueRef<tsl::Chain> RunExchange(
 
         status = stream->Memcpy(&dst, host, active_bytes);
         if (!status.ok()) return status;
+        // The token copy is deliberately enqueued last. Its output cannot
+        // become ready until LAMMPS communication and the feature copy-back
+        // finish, so the next FFI site has an ordinary XLA data dependency.
+        status = stream->Memcpy(&token_dst, token_src, sizeof(float));
+        if (!status.ok()) return status;
         return stream->BlockHostUntilDone();
       },
       [done](absl::Status status) mutable {
+        // Completing this async value tells XLA that both the host callback
+        // and the final host-to-device copy are finished. Dependent kernels
+        // must not consume the output before this point.
         if (status.ok()) {
           done.SetStateConcrete();
         } else {
@@ -281,21 +403,29 @@ tsl::AsyncValueRef<tsl::Chain> RunExchange(
 }
 
 tsl::AsyncValueRef<tsl::Chain> GatherForward(
-    ffi::AnyBuffer input, ffi::Result<ffi::AnyBuffer> output,
+    ffi::AnyBuffer input, ffi::AnyBuffer token_input,
+    ffi::Result<ffi::AnyBuffer> output,
+    ffi::Result<ffi::AnyBuffer> token_output,
     se::Stream* stream, CommunicationContext* context) {
-  return RunExchange(input, output, stream, context, false);
+  return RunExchange(input, token_input, output, token_output, stream, context,
+                     false);
 }
 
 tsl::AsyncValueRef<tsl::Chain> GatherReverse(
-    ffi::AnyBuffer input, ffi::Result<ffi::AnyBuffer> output,
+    ffi::AnyBuffer input, ffi::AnyBuffer token_input,
+    ffi::Result<ffi::AnyBuffer> output,
+    ffi::Result<ffi::AnyBuffer> token_output,
     se::Stream* stream, CommunicationContext* context) {
-  return RunExchange(input, output, stream, context, true);
+  return RunExchange(input, token_input, output, token_output, stream, context,
+                     true);
 }
 
 XLA_FFI_DEFINE_HANDLER(
     kGatherForward, GatherForward,
     ffi::Ffi::Bind()
         .Arg<ffi::AnyBuffer>()
+        .Arg<ffi::AnyBuffer>()
+        .Ret<ffi::AnyBuffer>()
         .Ret<ffi::AnyBuffer>()
         .Ctx<ffi::Stream>()
         .Ctx<ffi::UserData<CommunicationContext>>());
@@ -304,6 +434,8 @@ XLA_FFI_DEFINE_HANDLER(
     kGatherReverse, GatherReverse,
     ffi::Ffi::Bind()
         .Arg<ffi::AnyBuffer>()
+        .Arg<ffi::AnyBuffer>()
+        .Ret<ffi::AnyBuffer>()
         .Ret<ffi::AnyBuffer>()
         .Ctx<ffi::Stream>()
         .Ctx<ffi::UserData<CommunicationContext>>());

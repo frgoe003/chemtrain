@@ -67,6 +67,7 @@ class ChemtrainDeploy : public Pair {
   jcn::CommunicationScalarType communication_type =
       jcn::CommunicationScalarType::F32;
   std::string communication_error;
+  bool communication_enabled = false;
 
   static int exchange_callback(void *, void *, std::int64_t, std::int64_t,
                                jcn::CommunicationScalarType, bool,

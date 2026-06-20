@@ -231,6 +231,18 @@ namespace jcn {
 
         newton = config.newton;
         communication_callbacks = config.communication;
+        communication_forward_sites_ = 0;
+        communication_widths_.clear();
+
+        // The communication variant uses explicit reverse halo exchange and
+        // currently implements only LAMMPS's Newton-on force convention.
+        // Never silently substitute the default executable for an explicit
+        // `comm on` request.
+        if (config.use_communication && !config.newton) {
+            throw std::runtime_error(
+                "Communication requires Newton pair forces. Use 'newton on' "
+                "or select 'comm off' for the standard Newton-off model.");
+        }
 
         model = std::make_unique<jcn::Model>();
 
@@ -241,6 +253,87 @@ namespace jcn {
 
         if (!model->ParseFromString(config.model)) {
             throw std::runtime_error("Cannot load model: Model file is invalid or corrupted.");
+        }
+
+        // Resolve the executable before constructing the compiler and graph.
+        // Legacy top-level fields remain the compatibility view for comm off.
+        if (model->variants_size() == 0) {
+            if (config.use_communication) {
+                throw std::runtime_error(
+                    "Communication was requested, but this is a legacy model "
+                    "without a named 'comm' variant. Re-export the model.");
+            }
+            if (model->uses_communication()) {
+                throw std::runtime_error(
+                    "Legacy communication model cannot be used with 'comm "
+                    "off'. Re-export it with named variants.");
+            }
+        } else {
+            const char* requested_name =
+                config.use_communication ? "comm" : "default";
+            const jcn::Model::ModelVariant* selected = nullptr;
+            for (const auto& variant : model->variants()) {
+                if (variant.name() == requested_name) {
+                    if (selected != nullptr) {
+                        throw std::runtime_error(
+                            "Model contains duplicate '" +
+                            std::string(requested_name) + "' variants.");
+                    }
+                    selected = &variant;
+                }
+            }
+            if (selected == nullptr) {
+                throw std::runtime_error(
+                    "Model does not contain the requested '" +
+                    std::string(requested_name) + "' variant.");
+            }
+            if (selected->uses_communication() != config.use_communication) {
+                throw std::runtime_error(
+                    "Model variant '" + std::string(requested_name) +
+                    "' has inconsistent communication metadata.");
+            }
+            if (selected->uses_communication()) {
+                if (selected->communication_forward_sites() <= 0 ||
+                    selected->communication_widths_size() !=
+                        selected->communication_forward_sites()) {
+                    throw std::runtime_error(
+                        "Communication variant has inconsistent site metadata.");
+                }
+                for (int width : selected->communication_widths()) {
+                    if (width <= 0 ||
+                        width > selected->communication_buffer_width()) {
+                        throw std::runtime_error(
+                            "Communication site width exceeds the exported "
+                            "buffer capacity.");
+                    }
+                }
+            }
+
+            // The runtime below consumes the historical top-level view. Copy
+            // the selected variant into it so all compiler and graph setup is
+            // driven by one coherent set of metadata.
+            model->set_mlir_module(selected->mlir_module());
+            model->mutable_neighbor_list()->CopyFrom(selected->neighbor_list());
+            model->set_uses_communication(selected->uses_communication());
+            model->set_communication_buffer_width(
+                selected->communication_buffer_width());
+            communication_forward_sites_ =
+                selected->communication_forward_sites();
+            communication_widths_.assign(selected->communication_widths().begin(),
+                                         selected->communication_widths().end());
+        }
+
+        if (model->uses_communication() &&
+            model->communication_buffer_width() <= 0) {
+            throw std::runtime_error(
+                "Communication model has no positive buffer width.");
+        }
+        if (model->mlir_module().empty()) {
+            throw std::runtime_error("Selected model variant has no MLIR module.");
+        }
+        if (model->neighbor_list().nbr_order_size() < 2) {
+            throw std::runtime_error(
+                "Selected model variant must provide Newton on/off neighbor orders.");
         }
 
         logger.log(
@@ -261,8 +354,7 @@ namespace jcn {
                 "]");
 
         // Pass the mlir module to the compiler
-        compiler = std::make_unique<Compiler>(model->mlir_module(),
-                                              false);
+        compiler = std::make_unique<Compiler>(model->mlir_module());
 
         // Extract exported quantity keys from the model proto and pass to atom_builder
         std::vector<std::string> quantities;
@@ -423,7 +515,8 @@ namespace jcn {
             xla::ExecuteContext execute_context;
             CommunicationContext communication_context(
                 communication_callbacks, model->uses_communication(),
-                &communication_workspace_);
+                &communication_workspace_, communication_forward_sites_,
+                communication_widths_);
 
             absl::Status context_status =
                 AddCommunicationContextToExecuteContext(
@@ -440,32 +533,52 @@ namespace jcn {
 
             start = std::chrono::high_resolution_clock::now();
 
-            // Use std::async to execute the function asynchronously
+            communication_context.BeginExecution();
+
+            // PJRT execution runs separately because this caller thread is
+            // the only thread allowed to enter the LAMMPS/MPI callbacks.
             std::future<absl::StatusOr<std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>>> future_results =
                 std::async(std::launch::async, [&]() {
-                    auto results = executable->Execute(
-                        absl::Span<const std::vector<xla::PjRtBuffer*>>(arg_handles),
-                        execute_options
-                    );
-                    if (!results.ok()) return results;
-                    // Execute only enqueues GPU work. Keep the rendezvous loop
-                    // alive until the FFI calls and all dependent work finish.
-                    for (const auto& replica : results.value()) {
-                        for (const auto& buffer : replica) {
-                            absl::Status ready = buffer->GetReadyFuture().Await();
-                            if (!ready.ok()) return decltype(results)(ready);
+                    try {
+                        auto results = executable->Execute(
+                            absl::Span<const std::vector<xla::PjRtBuffer*>>(arg_handles),
+                            execute_options
+                        );
+                        if (results.ok()) {
+                            // Execute only enqueues GPU work. Awaiting output
+                            // readiness keeps the rendezvous alive through all
+                            // async FFI calls and their dependent device work.
+                            for (const auto& replica : results.value()) {
+                                for (const auto& buffer : replica) {
+                                    absl::Status ready =
+                                        buffer->GetReadyFuture().Await();
+                                    if (!ready.ok()) {
+                                        results = decltype(results)(ready);
+                                        break;
+                                    }
+                                }
+                                if (!results.ok()) break;
+                            }
                         }
+                        communication_context.NotifyExecutionComplete();
+                        return results;
+                    } catch (...) {
+                        // Ensure the main thread cannot remain asleep if PJRT
+                        // reports an exception instead of an error Status.
+                        communication_context.NotifyExecutionComplete();
+                        throw;
                     }
-                    return results;
                 });
 
-            // PJRT invokes FFI handlers on its worker. Service their staged
-            // requests here so LAMMPS and MPI are entered only by this thread.
-            while (future_results.wait_for(std::chrono::milliseconds(1)) !=
-                   std::future_status::ready) {
-                communication_context.ServiceOne();
+            communication_context.ServiceUntilExecutionComplete();
+
+            absl::Status communication_status =
+                communication_context.ValidateExecution();
+            if (!communication_status.ok()) {
+                throw std::runtime_error(
+                    "Communication execution validation failed: " +
+                    communication_status.ToString());
             }
-            while (communication_context.ServiceOne()) {}
 
             // Wait for the results to be ready
             absl::StatusOr<std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>> results = future_results.get();

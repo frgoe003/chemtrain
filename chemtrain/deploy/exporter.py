@@ -16,7 +16,7 @@
 
 import abc
 import functools
-import re
+import inspect
 
 import jax
 from jax import numpy as jnp, export, lax
@@ -38,56 +38,36 @@ OPENEQUIVARIANCE_CUSTOM_CALLS = (
 
 COMMUNICATION_CUSTOM_CALLS = comm.CUSTOM_CALL_TARGETS
 
-_JAX_INTERNAL_CUSTOM_CALLS = frozenset(
-    {"shape_assertion", "stablehlo.dynamic_top_k"}
-)
-_CUSTOM_CALL_RE = re.compile(
-    r'\bstablehlo\.custom_call\s+(?:@(?:"([^"]+)"|([\w.$-]+))|"([^"]+)")'
-)
 
+class _ExportComputation:
+    """Create fresh communication state for every JAX trace.
 
-def stablehlo_custom_call_targets(module: bytes | str) -> frozenset[str]:
-    """Return exact custom-call target names from a StableHLO module."""
-    if isinstance(module, bytes):
-        module = module.decode("utf-8")
-    return frozenset(
-        next(value for value in match if value)
-        for match in _CUSTOM_CALL_RE.findall(module)
-    )
+    The callable may be retraced, so each invocation replaces ``widths``
+    instead of appending metadata to state left by an earlier trace.
+    """
 
+    def __init__(self, owner, neighbor_orders, enabled=None, expected=None):
+        self.owner = owner
+        self.neighbor_orders = neighbor_orders
+        self.enabled = enabled
+        self.expected = expected
+        self.widths = None
 
-def validate_custom_calls(
-    module: bytes | str, allowed_external_calls=()
-) -> None:
-    """Reject external calls not explicitly enabled for this export path."""
-    targets = stablehlo_custom_call_targets(module)
-    allowed = frozenset(allowed_external_calls) | _JAX_INTERNAL_CUSTOM_CALLS
-    unknown = targets - allowed
-    if unknown:
-        raise ValueError(
-            "Export contains unsupported custom-call targets: "
-            + ", ".join(sorted(unknown))
+    def __call__(self, *args):
+        communication = None
+        if self.enabled is not None:
+            communication = comm.ExportCommunication(
+                enabled=self.enabled, expected_widths=self.expected
+            )
+        result = self.owner._energy_fn(
+            *args,
+            communication=communication,
+            neighbor_orders=self.neighbor_orders,
         )
-
-
-def validate_openequivariance_custom_calls(module: bytes | str) -> None:
-    """Reject cuEquivariance and unapproved external calls in an OEQ export."""
-    validate_custom_calls(module, OPENEQUIVARIANCE_CUSTOM_CALLS)
-
-
-def _openequivariance_disabled_checks():
-    """Allow only the OpenEquivariance convolution FFI calls during export."""
-    return tuple(
-        export.DisabledSafetyCheck.custom_call(target)
-        for target in OPENEQUIVARIANCE_CUSTOM_CALLS
-    )
-
-
-def _communication_disabled_checks():
-    return tuple(
-        export.DisabledSafetyCheck.custom_call(target)
-        for target in COMMUNICATION_CUSTOM_CALLS
-    )
+        if communication is not None:
+            communication.validate()
+            self.widths = tuple(communication.widths)
+        return result
 
 
 class Exporter(metaclass=abc.ABCMeta):
@@ -174,7 +154,7 @@ class Exporter(metaclass=abc.ABCMeta):
     _proto: model_proto.Model = None
 
     @abc.abstractmethod
-    def energy_fn(self, position, species, graph):
+    def energy_fn(self, position, species, graph, comm=None):
         """Computes the energy for positions and a graph representation.
 
         Args:
@@ -182,6 +162,10 @@ class Exporter(metaclass=abc.ABCMeta):
                 atoms that are not within the local domain.
             species: (N) Array of atoms species.
             graph: Graph representation of the neighborhood around atoms.
+            comm: Optional feature-communication interface. Models that use
+                communication call ``comm.gather(features)`` at their message
+                passing boundaries. Existing three-argument implementations
+                remain valid for ordinary exports.
 
         Returns:
             Must return an energy contribution associated to each particle.
@@ -222,20 +206,26 @@ class Exporter(metaclass=abc.ABCMeta):
         return shapes
 
 
-    def _energy_fn(self, position, species, n_local, n_ghost, newton, *graph_args):
+    def _energy_fn(
+        self, position, species, n_local, n_ghost, newton, *graph_args,
+        communication=None, neighbor_orders=None,
+    ):
         # Expects particles to be sorted by local, ghost, and padding atoms
 
         valid_mask = jnp.arange(position.shape[0]) < (n_local + n_ghost)
         local_mask = jnp.arange(position.shape[0]) < n_local
 
         graph, build_statistics = self.graph_type.create_from_args(
-            self.r_cutoff, self._neighbor_orders(), position, species,
+            self.r_cutoff, neighbor_orders, position, species,
             local_mask, valid_mask, newton, *graph_args)
         graph = lax.stop_gradient(graph)
 
         @functools.partial(jax.grad, has_aux=True)
         def force_and_aux(pos):
-            out = self.energy_fn(pos, species, graph)
+            if communication is None:
+                out = self.energy_fn(pos, species, graph)
+            else:
+                out = self.energy_fn(pos, species, graph, comm=communication)
             if self.has_aux:
                 per_atom_energies, aux = out
             else:
@@ -278,50 +268,92 @@ class Exporter(metaclass=abc.ABCMeta):
 
         return predictions, build_statistics
 
-    def _neighbor_orders(self):
-        """Return neighbor orders used to construct and serialize the graph."""
-        return self.nbr_order
+    def export(self, *, communication=False, custom_calls=()) -> None:
+        """Export default and, optionally, communicating model variants.
 
-    def export(self) -> None:
-        """Exports the potential model to an MLIR module."""
+        A communicating ``energy_fn`` accepts the exporter-supplied
+        ``comm=None`` argument and calls ``comm.gather`` at every required
+        message-passing boundary. Communication sites and their packed widths
+        must be structurally fixed across JAX traces; data-dependent gather
+        sequences are unsupported.
 
-        self._export()
+        The communicating variant uses one-hop neighbor orders ``[1, 1]`` and
+        is supported by chemtrain-deploy only with LAMMPS Newton pair forces
+        enabled. Newton-off simulations must select the default variant, whose
+        neighbor orders remain ``self.nbr_order``.
 
-    def export_openequivariance(self) -> None:
-        """Export a model containing OpenEquivariance convolution FFI calls.
-
-        The regular :meth:`export` path intentionally retains JAX's strict
-        custom-call safety checks. This opt-in path permits only the three
-        OpenEquivariance convolution targets registered by chemtrain-deploy.
+        ``custom_calls`` is an explicit allowlist for model-specific FFI
+        targets such as OpenEquivariance. Communication targets are added only
+        to the communication variant. Existing exporters need no changes when
+        calling ``export()`` without arguments.
         """
-
-        self._export(
-            disabled_checks=_openequivariance_disabled_checks(),
-            validate_openequivariance=True,
+        # Quantities describe one export transaction. A failed or repeated
+        # export must not compare new variants with metadata from an earlier
+        # invocation on the same exporter instance.
+        self._export_quantities = None
+        custom_calls = tuple(custom_calls)
+        signature = inspect.signature(self.energy_fn)
+        supports_comm = "comm" in signature.parameters or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
         )
+        if communication and not supports_comm:
+            raise TypeError(
+                "communication=True requires energy_fn(..., comm=None)"
+            )
 
-    def _export(
-        self, *, disabled_checks=(), validate_openequivariance: bool = False
-    ) -> None:
-        """Shared export implementation with explicitly scoped safety checks."""
+        proto = model_proto.Model()
+        proto.unit_style = self.unit_style
 
-        # Create a new context for each export
+        default = self._export_variant(
+            name="default",
+            neighbor_orders=self.nbr_order,
+            communication_widths=None,
+            custom_calls=custom_calls,
+        )
+        proto.variants.add().CopyFrom(default)
+
+        # Legacy readers see exactly the ordinary model. Variant selection is
+        # additive and therefore cannot silently enable communication.
+        proto.mlir_module = default.mlir_module
+        proto.neighbor_list.CopyFrom(default.neighbor_list)
+        proto.quantities.extend(self._export_quantities)
+        proto.uses_communication = False
+        proto.communication_buffer_width = 0
+
+        if communication:
+            communication_widths = self._trace_communication_widths([1, 1])
+            communicating = self._export_variant(
+                name="comm",
+                neighbor_orders=[1, 1],
+                communication_widths=communication_widths,
+                custom_calls=custom_calls + COMMUNICATION_CUSTOM_CALLS,
+            )
+            communicating.uses_communication = True
+            communicating.communication_forward_sites = len(
+                communication_widths
+            )
+            communicating.communication_widths.extend(communication_widths)
+            communicating.communication_buffer_width = max(
+                communication_widths, default=0
+            )
+            proto.variants.add().CopyFrom(communicating)
+
+        self._proto = proto
+
+    def _variant_inputs(self, neighbor_orders):
+        """Build graph metadata and symbolic inputs for one variant."""
         self._symbols: List[str] = []
         self._constraints: List[str] = []
         self._init_fns: List[Callable] = []
-
-        proto = model_proto.Model()
-
-        proto.neighbor_list.cutoff = self.r_cutoff
-        proto.unit_style = self.unit_style
-
-        neighbor_orders = self._neighbor_orders()
         assert len(neighbor_orders) == 2, (
             "The nbr_order must contain the order of required neighbors for "
             "the newton and non-newton setting."
         )
-        proto.neighbor_list.nbr_order.extend(neighbor_orders)
-        self.graph_type.set_properties(proto)
+        metadata = model_proto.Model()
+        metadata.neighbor_list.cutoff = self.r_cutoff
+        metadata.neighbor_list.nbr_order.extend(neighbor_orders)
+        self.graph_type.set_properties(metadata)
 
         # Using the ghost mask in the last layer we can compute correct forces
         # by accounting for their contribution to the gradient but
@@ -329,29 +361,73 @@ class Exporter(metaclass=abc.ABCMeta):
         # them double.
         self._add_shapes(self._define_position_shapes)
         self._add_shapes(self.graph_type.create_symbolic_input_format)
+        return metadata, self._create_shapes()
 
-        export_fn = jax.jit(self._energy_fn)
+    def _trace_communication_widths(self, neighbor_orders):
+        """Record widths in an isolated trace with communication disabled."""
+        _, shapes = self._variant_inputs(neighbor_orders)
+        computation = _ExportComputation(
+            self, neighbor_orders, enabled=False
+        )
+        jax.eval_shape(jax.jit(computation), *shapes)
+        if not computation.widths:
+            raise ValueError(
+                "communication=True was requested, but energy_fn did not "
+                "call comm.gather"
+            )
+        return computation.widths
 
-        shapes = self._create_shapes()
+    def _export_variant(
+        self, *, name, neighbor_orders, communication_widths, custom_calls
+    ):
+        """Trace one model variant and return its self-contained metadata."""
+        metadata, shapes = self._variant_inputs(neighbor_orders)
+
+        computation = _ExportComputation(
+            self,
+            neighbor_orders,
+            enabled=True if communication_widths is not None else None,
+            expected=communication_widths,
+        )
+        export_fn = jax.jit(computation)
 
         exp: export.Exported = export.export(
             export_fn,
             platforms=["cuda"],
-            disabled_checks=disabled_checks,
+            disabled_checks=tuple(
+                export.DisabledSafetyCheck.custom_call(target)
+                for target in custom_calls
+            ),
         )(*shapes)
+
+        if (communication_widths is not None and
+                computation.widths != communication_widths):
+            raise ValueError(
+                "Communication metadata changed during final export: "
+                f"{computation.widths} != {communication_widths}"
+            )
 
         # Reconstruct the output to save the returned statistics and...
         predictions, statistics = exp.out_tree.unflatten(exp.out_avals)
 
-        proto.neighbor_list.statistics_keys.extend(statistics.keys())
-        proto.quantities.extend(predictions.keys())
+        metadata.neighbor_list.statistics_keys.extend(statistics.keys())
+        quantities = list(predictions.keys())
+        if self._export_quantities is not None:
+            if quantities != self._export_quantities:
+                raise ValueError(
+                    "All exported variants must return the same quantities"
+                )
+        else:
+            self._export_quantities = quantities
 
-        mlir_module = exp.mlir_module()
-        if validate_openequivariance:
-            validate_openequivariance_custom_calls(mlir_module)
-        proto.mlir_module = mlir_module
-
-        self._proto = proto
+        variant = model_proto.Model.ModelVariant()
+        variant.name = name
+        # JAX structurally checks every StableHLO custom call against the
+        # target-specific DisabledSafetyCheck entries supplied above. Avoid
+        # duplicating that check with version-sensitive MLIR text parsing.
+        variant.mlir_module = exp.mlir_module()
+        variant.neighbor_list.CopyFrom(metadata.neighbor_list)
+        return variant
 
     def __str__(self):
         assert self._proto is not None, (
@@ -368,157 +444,3 @@ class Exporter(metaclass=abc.ABCMeta):
 
         with open(file, "wb") as f:
             f.write(self._proto.SerializeToString())
-
-
-def stablehlo_custom_call_count(module: bytes | str, target: str) -> int:
-    """Count StableHLO custom calls by target name."""
-    if isinstance(module, bytes):
-        module = module.decode("utf-8")
-
-    count = 0
-
-    count += len(re.findall(
-        rf'call_target_name\s*=\s*"{re.escape(target)}"',
-        module,
-    ))
-
-    count += len(re.findall(
-        rf'\bstablehlo\.custom_call\s+@(?:"{re.escape(target)}"|{re.escape(target)})\b',
-        module,
-    ))
-
-    return count
-
-
-def infer_communication_buffer_width(module: bytes | str) -> int:
-    """Infer the packed communication buffer width from StableHLO text."""
-    if isinstance(module, bytes):
-        module = module.decode("utf-8")
-
-    targets = "|".join(
-        re.escape(target) for target in COMMUNICATION_CUSTOM_CALLS
-    )
-
-    widths: list[int] = []
-
-    quoted_blocks = re.findall(
-        rf'(?s)'
-        rf'"stablehlo\.custom_call"\(.*?'
-        rf'call_target_name\s*=\s*"({targets})".*?'
-        rf'\)\s*:\s*\((.*?)\)\s*->\s*(?:\((.*?)\)|(tensor<[^>]+>))',
-        module,
-    )
-
-    for _, operand_types, result_tuple_types, result_single_type in quoted_blocks:
-        block = " ".join(
-            part for part in (
-                operand_types,
-                result_tuple_types,
-                result_single_type,
-            )
-            if part
-        )
-        widths.extend(
-            int(width)
-            for width in re.findall(
-                r'tensor<[^>]*x(\d+)xf(?:32|64)>',
-                block,
-            )
-        )
-
-    direct_blocks = re.findall(
-        rf'(?s)'
-        rf'stablehlo\.custom_call\s+@(?:"(?:{targets})"|(?:{targets}))'
-        rf'.*?'
-        rf'\)\s*:\s*\((.*?)\)\s*->\s*(?:\((.*?)\)|(tensor<[^>]+>))',
-        module,
-    )
-
-    for operand_types, result_tuple_types, result_single_type in direct_blocks:
-        block = " ".join(
-            part for part in (
-                operand_types,
-                result_tuple_types,
-                result_single_type,
-            )
-            if part
-        )
-        widths.extend(
-            int(width)
-            for width in re.findall(
-                r'tensor<[^>]*x(\d+)xf(?:32|64)>',
-                block,
-            )
-        )
-
-    if not widths:
-        raise ValueError(
-            "Could not infer the packed communication width from the "
-            "exported module"
-        )
-
-    return max(widths)
-
-
-class CommunicationExporter(Exporter):
-    """Exporter for models containing :func:`chemtrain.deploy.comm.gather`.
-
-    Communication synchronizes ghost features at message-passing boundaries.
-    Newton-on requires a one-cutoff halo because forces are reverse summed;
-    Newton-off computes all influencing ghost energies locally and retains the
-    communication-free ``2 * num_interactions`` halo. A provisional export
-    counts communication sites to infer the latter order.
-    """
-
-    def export(self) -> None:
-        self._export_communicating()
-
-    def export_openequivariance(self) -> None:
-        self._export_communicating(openequivariance=True)
-
-    def _neighbor_orders(self):
-        return self._inferred_neighbor_orders
-
-    def _export_communicating(self, openequivariance: bool = False) -> None:
-        communication_checks = _communication_disabled_checks()
-        oeq_checks = (
-            _openequivariance_disabled_checks() if openequivariance else ()
-        )
-        checks = communication_checks + oeq_checks
-
-        self._inferred_neighbor_orders = [1, 1]
-        super()._export(disabled_checks=checks)
-
-        provisional_module = self._proto.mlir_module
-        gather_count = stablehlo_custom_call_count(
-            provisional_module, comm.FORWARD_TARGET
-        )
-
-        # A gather is inserted before every interaction after the first, so
-        # num_interactions = gather_count + 1 for this interface.
-        self._inferred_neighbor_orders = [1, 2 * (gather_count + 1)]
-        super()._export(disabled_checks=checks)
-
-        final_module = self._proto.mlir_module
-        final_gather_count = stablehlo_custom_call_count(
-            final_module, comm.FORWARD_TARGET
-        )
-
-        if final_gather_count != gather_count:
-            raise ValueError(
-                "Communication structure changed while inferring neighbor "
-                f"orders: provisional gather_count={gather_count}, "
-                f"final_gather_count={final_gather_count}"
-            )
-
-        allowed = set(COMMUNICATION_CUSTOM_CALLS)
-        if openequivariance:
-            allowed.update(OPENEQUIVARIANCE_CUSTOM_CALLS)
-
-        validate_custom_calls(final_module, allowed)
-
-        self._proto.uses_communication = True
-        self._proto.communication_buffer_width = (
-            infer_communication_buffer_width(final_module)
-        )
-        self.gather_count = gather_count

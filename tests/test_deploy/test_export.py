@@ -112,51 +112,24 @@ class TestExport:
         model = setup_export(max_edges=None)
 
         model.export()
-        targets = exporter.stablehlo_custom_call_targets(model._proto.mlir_module)
-        assert "shape_assertion" in targets
-        assert "stablehlo.dynamic_top_k" in targets
         model.save(tmp_path / "exported_no_max_edges.ptb")
 
-    def test_export_paths_scope_openequivariance_checks(
-            self, monkeypatch, setup_export):
+    def test_export_custom_call_allowlist(self, setup_export):
         model = setup_export(max_edges=None)
-        calls = []
+        model.export(custom_calls=exporter.OPENEQUIVARIANCE_CUSTOM_CALLS)
+        assert [variant.name for variant in model._proto.variants] == [
+            "default"
+        ]
 
-        monkeypatch.setattr(
-            model,
-            "_export",
-            lambda **kwargs: calls.append(kwargs.get("disabled_checks", ())),
-        )
+    def test_export_resets_quantity_metadata(self, setup_export):
+        model = setup_export(max_edges=None)
+        model._export_quantities = ["stale_quantity"]
 
         model.export()
-        model.export_openequivariance()
 
-        assert calls[0] == ()
-        assert tuple(str(check) for check in calls[1]) == tuple(
-            f"custom_call:{target}"
-            for target in exporter.OPENEQUIVARIANCE_CUSTOM_CALLS
-        )
-
-    def test_openequivariance_custom_call_validation(self):
-        mlir = """
-          %0 = stablehlo.custom_call @shape_assertion(%arg0)
-          %1 = stablehlo.custom_call @stablehlo.dynamic_top_k(%arg0)
-          %2 = stablehlo.custom_call @conv_forward(%arg0)
-        """
-        exporter.validate_openequivariance_custom_calls(mlir)
-        assert exporter.stablehlo_custom_call_targets(mlir) == {
-            "shape_assertion", "stablehlo.dynamic_top_k",
-            "conv_forward",
-        }
-
-    @pytest.mark.parametrize(
-        "target", ["tp_forward", "tp_backward", "tp_double_backward",
-                   "cuequivariance_tp", "unknown_ffi"]
-    )
-    def test_openequivariance_custom_call_validation_rejects_unknown(self, target):
-        mlir = f"stablehlo.custom_call @{target}(%arg0)"
-        with pytest.raises(ValueError, match=target):
-            exporter.validate_openequivariance_custom_calls(mlir)
+        assert set(model._export_quantities) == {"U", "F"}
+        assert "stale_quantity" not in model._export_quantities
+        assert list(model._proto.quantities) == model._export_quantities
 
     def test_symbolic_max_edges(self, tmp_path, setup_export):
         class ExportedModelSymbolic(setup_export):
@@ -186,19 +159,37 @@ class TestExport:
         with pytest.raises(AssertionError, match="has not been exported yet"):
             model.save(tmp_path / "exported_no_max_edges.ptb")
 
-    def test_communication_export_infers_neighbor_orders(self, setup_export):
-        class CommunicatingModel(exporter.CommunicationExporter, setup_export):
-            def energy_fn(self, pos, species, graph):
+    def test_communication_export_records_variants_and_widths(self, setup_export):
+        class CommunicatingModel(setup_export):
+            def energy_fn(self, pos, species, graph, comm=None):
                 energy = super().energy_fn(pos, species, graph)
-                return comm.gather(comm.gather(energy))
+                if comm is not None:
+                    energy = comm.gather(comm.gather(energy))
+                return energy
 
         model = CommunicatingModel(max_edges=None)
-        model.export()
+        model.export(communication=True)
 
-        assert model.gather_count == 2
-        assert list(model._proto.neighbor_list.nbr_order) == [1, 6]
-        assert model._proto.uses_communication
-        targets = exporter.stablehlo_custom_call_targets(
-            model._proto.mlir_module
-        )
-        assert set(comm.CUSTOM_CALL_TARGETS) <= targets
+        assert [variant.name for variant in model._proto.variants] == [
+            "default", "comm"
+        ]
+        default, communicating = model._proto.variants
+        assert list(default.neighbor_list.nbr_order) == [1, 1]
+        assert list(communicating.neighbor_list.nbr_order) == [1, 1]
+        assert communicating.uses_communication
+        assert communicating.communication_forward_sites == 2
+        assert list(communicating.communication_widths) == [1, 1]
+        assert communicating.communication_buffer_width == 1
+        assert not model._proto.uses_communication
+
+        # A second export retraces the model. Site metadata must be replaced,
+        # not appended to state left by the first trace.
+        model.export(communication=True)
+        communicating = model._proto.variants[1]
+        assert communicating.communication_forward_sites == 2
+        assert list(communicating.communication_widths) == [1, 1]
+
+    def test_three_argument_model_rejects_communication(self, setup_export):
+        model = setup_export(max_edges=None)
+        with pytest.raises(TypeError, match="comm=None"):
+            model.export(communication=True)

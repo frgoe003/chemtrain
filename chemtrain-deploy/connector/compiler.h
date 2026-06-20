@@ -61,8 +61,7 @@ limitations under the License.
 namespace jcn {
     class Compiler {
     public:
-        Compiler(const std::string& mlir_module,
-                 bool main_has_token_input_output = false);
+        Compiler(const std::string& mlir_module);
         ~Compiler() = default;
 
         /**
@@ -90,8 +89,6 @@ namespace jcn {
         mlir::MLIRContext export_context;
 
         std::string mlir_module;
-        bool main_has_token_input_output;
-
         mlir::OwningOpRef<mlir::ModuleOp> module_ref;
     };
 }

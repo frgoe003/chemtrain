@@ -23,6 +23,8 @@
 
 """Loads a MACE model from PyTorch via MACE-JAX."""
 
+import functools
+
 from typing import Dict, Any, Tuple, Callable
 
 import jax
@@ -184,7 +186,11 @@ def mace_jax_neighborlist_from_torch(
         else None
     )
 
-    def _apply_fn(params, senders, receivers, edge_feats, node_feats):
+    default_comm = comm
+
+    def _apply_fn(
+        params, senders, receivers, edge_feats, node_feats, *, comm=None
+    ):
         (vectors,) = edge_feats
         species, mask = node_feats
 
@@ -209,9 +215,7 @@ def mace_jax_neighborlist_from_torch(
             data, compute_force=False, compute_stress=False, comm=comm)
         return out["node_energy"] * mask
 
-    # Apply custom batch function if enabled via cueq or explicitly requested
-    if cueq_enabled or use_custom_batch_fn:
-        _apply_fn = utils.batch_apply_fn(_apply_fn)
+    use_batched_apply = cueq_enabled or use_custom_batch_fn
 
     def apply_fn(
         params: Any,
@@ -219,6 +223,7 @@ def mace_jax_neighborlist_from_torch(
         neighbor: partition.NeighborList,
         species: jax.Array = None,
         mask: jax.Array = None,
+        comm: Any = default_comm,
         **dynamic_kwargs,
     ):
         assert species is not None, "Species must be provided."
@@ -241,9 +246,17 @@ def mace_jax_neighborlist_from_torch(
 
         vectors /= scale_pos
 
-        per_atom_energies = _apply_fn(
-            params, senders, receivers, (vectors,), (species, mask)
-        )
+        model_args = (params, senders, receivers, (vectors,), (species, mask))
+        if use_batched_apply:
+            # comm is a static JIT property. Specializing the general batching
+            # transform here lets the same composed model trace both the
+            # ordinary and communication-enabled deployment variants.
+            batched_apply = utils.batch_apply_fn(
+                functools.partial(_apply_fn, comm=comm)
+            )
+            per_atom_energies = batched_apply(*model_args)
+        else:
+            per_atom_energies = _apply_fn(*model_args, comm=comm)
         per_atom_energies *= scale_pot
 
         if per_particle:
@@ -251,7 +264,9 @@ def mace_jax_neighborlist_from_torch(
         else:
             return jnp.sum(per_atom_energies)
 
-    return jax.tree.map(jnp.asarray, variables), jax.jit(apply_fn)
+    return jax.tree.map(jnp.asarray, variables), jax.jit(
+        apply_fn, static_argnames=("comm",)
+    )
 
 
 def mace_jax_neighborlist(

@@ -51,6 +51,10 @@ class ProfileRange {
  public:
   explicit ProfileRange(const char *name) {
 #if defined(__linux__)
+    // Profiling is opt-in: resolving NVTX on every communication callback is
+    // useful under Nsight but is not part of the production data path.
+    static const bool enabled = std::getenv("JCN_COMM_PROFILE") != nullptr;
+    if (!enabled) return;
     using Push = int (*)(const char *);
     static auto push = reinterpret_cast<Push>(
         dlsym(RTLD_DEFAULT, "nvtxRangePushA"));
@@ -93,6 +97,16 @@ double debug_first_value(void *data,
   }
 
   return static_cast<double *>(data)[0];
+}
+
+int checked_communication_count(int n, std::int64_t cols) {
+  if (n < 0 || cols <= 0 ||
+      static_cast<std::int64_t>(n) >
+          std::numeric_limits<int>::max() / cols) {
+    throw std::runtime_error(
+        "LAMMPS communication buffer count exceeds the integer ABI limit");
+  }
+  return static_cast<int>(static_cast<std::int64_t>(n) * cols);
 }
 
 }  // namespace
@@ -247,6 +261,7 @@ void ChemtrainDeploy::settings(int narg, char **arg)
   if (narg < 1) error->all(FLERR, "Illegal jax_connect command");
 
   jcn::ConnectorConfig config;
+  communication_enabled = false;
 
   // Assign devices based on local rank.
   int device_id = 0;
@@ -276,8 +291,28 @@ void ChemtrainDeploy::settings(int narg, char **arg)
   config.backend = std::string(arg[0]);
   config.device = device_id;
 
-  if (narg > 1) {
-    config.memory_fraction = std::stof(arg[1]);
+  // Record which pre-exported model variant pair_coeff should load. The
+  // executable is selected later, after the model file has been read.
+  int option = 1;
+  if (option < narg && std::string(arg[option]) != "comm") {
+    config.memory_fraction = std::stof(arg[option++]);
+  }
+  while (option < narg) {
+    if (std::string(arg[option]) != "comm" || option + 1 >= narg) {
+      error->all(FLERR,
+                 "Expected 'comm on' or 'comm off' in pair_style "
+                 "chemtrain_deploy settings");
+    }
+    const std::string value = arg[option + 1];
+    if (value == "on") {
+      communication_enabled = true;
+    } else if (value == "off") {
+      communication_enabled = false;
+    } else {
+      error->all(FLERR,
+                 "The chemtrain/deploy comm setting must be on or off");
+    }
+    option += 2;
   }
 
   try {
@@ -323,9 +358,14 @@ void ChemtrainDeploy::coeff(int narg, char **arg)
   config.neighbor_list_multipliers = neighbor_list_multipliers;
   config.atom_multiplier = atom_multiplier;
   config.newton = force->newton_pair;
-  config.communication.context = this;
-  config.communication.active_rows = &ChemtrainDeploy::active_rows_callback;
-  config.communication.exchange = &ChemtrainDeploy::exchange_callback;
+  config.use_communication = communication_enabled;
+  if (communication_enabled) {
+    // The selected graph contains FFI gathers; bind them to LAMMPS's normal
+    // forward/reverse pair communication for this pair instance.
+    config.communication.context = this;
+    config.communication.active_rows = &ChemtrainDeploy::active_rows_callback;
+    config.communication.exchange = &ChemtrainDeploy::exchange_callback;
+  }
 
   int ilo, ihi, jlo, jhi;
   utils::bounds(FLERR, arg[0], 1, atom->ntypes, ilo, ihi, error);
@@ -414,6 +454,9 @@ int ChemtrainDeploy::exchange(void *data, std::int64_t rows,
 
   if (reverse) {
     ProfileRange range("chemtrain_comm.lammps_reverse");
+    // This is the transpose of the forward ghost overwrite: LAMMPS sends
+    // ghost cotangents back to their owning ranks, where unpack_reverse adds
+    // them to the local feature gradient.
     comm->reverse_comm(this);
 
     if (communication_debug_enabled()) {
@@ -443,6 +486,9 @@ int ChemtrainDeploy::exchange(void *data, std::int64_t rows,
     }
   } else {
     ProfileRange range("chemtrain_comm.lammps_forward");
+    // LAMMPS owns the domain decomposition, so its standard pair exchange is
+    // the source of truth for replacing each ghost feature with its owner's
+    // current value at this message-passing boundary.
     comm->forward_comm(this);
 
     if (communication_debug_enabled()) {
@@ -495,14 +541,19 @@ int ChemtrainDeploy::pack_forward_comm(int n, int *list, double *buf,
               << " cols=" << communication_cols << std::endl;
   }
 
+  // LAMMPS owns double-precision communication buffers. Preserve a bulk-copy
+  // path for f64 features and convert f32 only at this API boundary, keeping
+  // the model's packed representation unchanged everywhere else.
+  const int count = checked_communication_count(n, communication_cols);
+  const int width = static_cast<int>(communication_cols);
   int m = 0;
   if (communication_type == jcn::CommunicationScalarType::F64) {
     const auto *data = static_cast<const double *>(communication_data);
     for (int i = 0; i < n; ++i) {
       const double *row = data +
           static_cast<std::int64_t>(list[i]) * communication_cols;
-      std::copy_n(row, communication_cols, buf + m);
-      m += communication_cols;
+      std::copy_n(row, width, buf + m);
+      m += width;
     }
   } else {
     const auto *data = static_cast<const float *>(communication_data);
@@ -513,6 +564,9 @@ int ChemtrainDeploy::pack_forward_comm(int n, int *list, double *buf,
         buf[m++] = static_cast<double>(row[j]);
       }
     }
+  }
+  if (m != count) {
+    throw std::runtime_error("LAMMPS forward pack count is inconsistent");
   }
   return m;
 }
@@ -531,14 +585,14 @@ void ChemtrainDeploy::unpack_forward_comm(int n, int first, double *buf) {
               << " incoming=" << buf[0];
   }
 
-  const std::int64_t count = static_cast<std::int64_t>(n) * communication_cols;
+  const int count = checked_communication_count(n, communication_cols);
   const std::int64_t offset =
       static_cast<std::int64_t>(first) * communication_cols;
   int m = 0;
   if (communication_type == jcn::CommunicationScalarType::F64) {
     std::copy_n(buf, count,
                 static_cast<double *>(communication_data) + offset);
-    m = static_cast<int>(count);
+    m = count;
   } else {
     float *destination = static_cast<float *>(communication_data) + offset;
     for (std::int64_t j = 0; j < count; ++j) {
@@ -564,14 +618,14 @@ static double max_abs_double_buf(const double *buf, int n) {
 
 int ChemtrainDeploy::pack_reverse_comm(int n, int first, double *buf) {
   ProfileRange range("chemtrain_comm.pack_reverse");
-  const std::int64_t count = static_cast<std::int64_t>(n) * communication_cols;
+  const int count = checked_communication_count(n, communication_cols);
   const std::int64_t offset =
       static_cast<std::int64_t>(first) * communication_cols;
   int m = 0;
   if (communication_type == jcn::CommunicationScalarType::F64) {
     std::copy_n(static_cast<const double *>(communication_data) + offset,
                 count, buf);
-    m = static_cast<int>(count);
+    m = count;
   } else {
     const float *source = static_cast<const float *>(communication_data) + offset;
     for (std::int64_t j = 0; j < count; ++j) {
@@ -594,6 +648,7 @@ int ChemtrainDeploy::pack_reverse_comm(int n, int first, double *buf) {
 
 void ChemtrainDeploy::unpack_reverse_comm(int n, int *list, double *buf) {
   ProfileRange range("chemtrain_comm.unpack_reverse");
+  const int count = checked_communication_count(n, communication_cols);
   int first_atom = (n > 0 ? list[0] : -1);
   const bool debug = communication_debug_enabled();
   double before = 0.0;
@@ -620,6 +675,9 @@ void ChemtrainDeploy::unpack_reverse_comm(int n, int *list, double *buf) {
         row[j] += static_cast<float>(buf[m++]);
       }
     }
+  }
+  if (m != count) {
+    throw std::runtime_error("LAMMPS reverse unpack count is inconsistent");
   }
 
   double after = 0.0;

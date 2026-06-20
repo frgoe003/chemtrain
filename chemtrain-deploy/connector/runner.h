@@ -38,6 +38,8 @@ limitations under the License.
 #include "tsl/platform/path.h"
 #include "tsl/platform/protobuf.h"
 
+#include <vector>
+
 #ifndef RUNNER_H
 #define RUNNER_H
 
@@ -93,6 +95,8 @@ namespace jcn {
 
         CommunicationCallbacks communication_callbacks;
         CommunicationWorkspace communication_workspace_;
+        int communication_forward_sites_ = 0;
+        std::vector<int> communication_widths_;
 
     };
 
