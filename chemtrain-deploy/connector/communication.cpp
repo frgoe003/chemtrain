@@ -153,8 +153,6 @@ absl::Status CommunicationContext::Exchange(
 
   ++sites;
 
-  std::unique_lock<std::mutex> lock(mutex_);
-
   request_done_.wait(lock, [this] { return !pending_; });
 
   data_ = data;
