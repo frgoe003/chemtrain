@@ -39,9 +39,22 @@ limitations under the License.
 #include "tsl/platform/env.h"
 #include "tsl/platform/path.h"
 #include "tsl/platform/protobuf.h"
+#include "tsl/profiler/lib/nvtx_utils.h"
 
 
 namespace jcn {
+
+    bool PushCommunicationProfileRange(const char* name) {
+        auto domain = tsl::profiler::DefaultProfilerDomain();
+        if (domain == nullptr || name == nullptr) return false;
+        tsl::profiler::RangePush(domain, name);
+        return true;
+    }
+
+    void PopCommunicationProfileRange() {
+        auto domain = tsl::profiler::DefaultProfilerDomain();
+        if (domain != nullptr) tsl::profiler::RangePop(domain);
+    }
 
     bool Connector::initialized = false;
 

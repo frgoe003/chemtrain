@@ -54,6 +54,7 @@ cc_binary(
         "@com_google_absl//absl/status:statusor",
         "@tsl//tsl/platform:logging",
         "@tsl//tsl/platform:platform_port",
+        "@tsl//tsl/profiler/lib:nvtx_utils",
         "@xla//xla:literal",
         "@xla//xla:literal_util",
         "@xla//xla:shape_util",

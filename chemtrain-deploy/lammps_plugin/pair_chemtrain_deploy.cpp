@@ -39,10 +39,6 @@
 #include <sstream>
 #include <stdlib.h>
 
-#if defined(__linux__)
-#include <dlfcn.h>
-#endif
-
 using namespace LAMMPS_NS;
 
 namespace {
@@ -50,31 +46,16 @@ namespace {
 class ProfileRange {
  public:
   explicit ProfileRange(const char *name) {
-#if defined(__linux__)
-    // Profiling is opt-in: resolving NVTX on every communication callback is
-    // useful under Nsight but is not part of the production data path.
+    // XLA already initializes the NVTX domain used by Nsight. Route optional
+    // LAMMPS ranges through the connector so this plugin does not need XLA or
+    // NVTX headers and production callbacks retain only one cached branch.
     static const bool enabled = std::getenv("JCN_COMM_PROFILE") != nullptr;
     if (!enabled) return;
-    using Push = int (*)(const char *);
-    static auto push = reinterpret_cast<Push>(
-        dlsym(RTLD_DEFAULT, "nvtxRangePushA"));
-    if (push != nullptr) {
-      push(name);
-      active_ = true;
-    }
-#else
-    (void) name;
-#endif
+    active_ = jcn::PushCommunicationProfileRange(name);
   }
 
   ~ProfileRange() {
-#if defined(__linux__)
-    if (!active_) return;
-    using Pop = int (*)();
-    static auto pop = reinterpret_cast<Pop>(dlsym(RTLD_DEFAULT,
-                                                  "nvtxRangePop"));
-    if (pop != nullptr) pop();
-#endif
+    if (active_) jcn::PopCommunicationProfileRange();
   }
 
  private:

@@ -27,6 +27,14 @@ limitations under the License.
 
 namespace jcn {
 
+    /**
+     * Add an optional host range to the profiler domain already used by XLA.
+     * These functions are a small bridge for consumers such as the LAMMPS
+     * plugin, which should not depend directly on XLA or NVTX headers.
+     */
+    EXPORT bool PushCommunicationProfileRange(const char* name);
+    EXPORT void PopCommunicationProfileRange();
+
     enum class CommunicationScalarType {
         F32,
         F64,

@@ -297,6 +297,21 @@ bool CommunicationDebugEnabled() {
   return enabled;
 }
 
+class ScopedCommunicationProfileRange {
+ public:
+  explicit ScopedCommunicationProfileRange(const char* name) {
+    static const bool enabled = std::getenv("JCN_COMM_PROFILE") != nullptr;
+    if (enabled) active_ = PushCommunicationProfileRange(name);
+  }
+
+  ~ScopedCommunicationProfileRange() {
+    if (active_) PopCommunicationProfileRange();
+  }
+
+ private:
+  bool active_ = false;
+};
+
 xla::ffi::TypeRegistry::TypeId g_communication_context_type_id =
     xla::ffi::TypeRegistry::kUnknownTypeId;
 
@@ -417,20 +432,31 @@ tsl::AsyncValueRef<tsl::Chain> RunExchange(
         // rather than draining the whole XLA stream with BlockHostUntilDone.
         // Only this workspace worker waits; the FFI remains asynchronous.
         // Keep the old behavior as an explicit profiling fallback.
-        if (std::getenv("JCN_COMM_BLOCK_STREAM") != nullptr) {
-          status = stream->BlockHostUntilDone();
-        } else {
-          auto copy_ready = stream->parent()->CreateEvent();
-          if (!copy_ready.ok()) return copy_ready.status();
-          std::unique_ptr<se::Event> event = std::move(copy_ready).value();
-          status = stream->RecordEvent(event.get());
-          if (!status.ok()) return status;
-          status = event->Synchronize();
+        {
+          ScopedCommunicationProfileRange range(
+              "chemtrain_comm.device_to_host_wait");
+          if (std::getenv("JCN_COMM_BLOCK_STREAM") != nullptr) {
+            status = stream->BlockHostUntilDone();
+          } else {
+            auto copy_ready = stream->parent()->CreateEvent();
+            if (!copy_ready.ok()) return copy_ready.status();
+            std::unique_ptr<se::Event> event = std::move(copy_ready).value();
+            status = stream->RecordEvent(event.get());
+            if (!status.ok()) return status;
+            status = event->Synchronize();
+          }
         }
         if (!status.ok()) return status;
 
-        status = context->Exchange(host, active_rows, cols, scalar_type,
-                                   reverse);
+        {
+          // This range covers the worker-to-caller rendezvous as well as the
+          // LAMMPS callback. Main-thread LAMMPS and pack/unpack ranges nested
+          // in the same interval identify how much of the wait is useful work.
+          ScopedCommunicationProfileRange range(
+              "chemtrain_comm.host_exchange_wait");
+          status = context->Exchange(host, active_rows, cols, scalar_type,
+                                     reverse);
+        }
         if (!status.ok()) return status;
 
         if (compact_staging) {
