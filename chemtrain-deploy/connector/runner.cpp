@@ -513,9 +513,13 @@ namespace jcn {
             }
 
             xla::ExecuteContext execute_context;
+            // AtomBuilder already receives `lnum`, the number of owned atoms,
+            // from LAMMPS. Pass that same prefix length to the FFI context so
+            // communication can stage owned and ghost rows separately without
+            // extending the public plugin callback ABI or querying LAMMPS again.
             CommunicationContext communication_context(
                 communication_callbacks, model->uses_communication(),
-                &communication_workspace_, communication_forward_sites_,
+                &communication_workspace_, lnum, communication_forward_sites_,
                 communication_widths_);
 
             absl::Status context_status =

@@ -93,11 +93,13 @@ void CommunicationWorkspace::WorkerLoop() {
 CommunicationContext::CommunicationContext(CommunicationCallbacks callbacks,
                                            bool enabled,
                                            CommunicationWorkspace* workspace,
+                                           std::int64_t owned_rows,
                                            int expected_forward_sites,
                                            std::vector<int> expected_widths)
     : callbacks_(callbacks),
       enabled_(enabled),
       workspace_(workspace),
+      owned_rows_(owned_rows),
       expected_forward_sites_(expected_forward_sites),
       expected_widths_(std::move(expected_widths)),
       validate_communication_sites_(
@@ -118,11 +120,13 @@ std::int64_t CommunicationContext::ActiveRows(std::int64_t capacity) const {
 }
 
 std::int64_t CommunicationContext::OwnedRows(std::int64_t capacity) const {
-  if (!enabled_ || callbacks_.owned_rows == nullptr) return capacity;
+  if (!enabled_) return capacity;
   // Preserve the old symmetric staging path as a runtime A/B fallback.
   if (std::getenv("JCN_COMM_STAGE_FULL_BUFFER") != nullptr) return capacity;
-  const std::int64_t rows = callbacks_.owned_rows(callbacks_.context);
-  return rows >= 0 && rows <= capacity ? rows : capacity;
+  // LAMMPS stores owned atoms first and ghosts directly afterward. Runner
+  // supplies the owned prefix from its existing `lnum` argument, allowing the
+  // FFI to reduce host transfers without adding another runtime callback.
+  return owned_rows_ >= 0 && owned_rows_ <= capacity ? owned_rows_ : capacity;
 }
 
 absl::Status CommunicationContext::Exchange(

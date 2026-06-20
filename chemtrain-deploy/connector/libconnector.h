@@ -39,8 +39,6 @@ namespace jcn {
         int (*exchange)(void* context, void* data, std::int64_t rows,
                         std::int64_t cols, CommunicationScalarType type,
                         bool reverse, const char** error) = nullptr;
-        /** Number of owned rows at the start of the packed atom buffer. */
-        std::int64_t (*owned_rows)(void* context) = nullptr;
     };
 
     /**

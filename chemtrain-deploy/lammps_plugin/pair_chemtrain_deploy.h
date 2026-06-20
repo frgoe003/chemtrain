@@ -72,7 +72,6 @@ class ChemtrainDeploy : public Pair {
   static int exchange_callback(void *, void *, std::int64_t, std::int64_t,
                                jcn::CommunicationScalarType, bool,
                                const char **);
-  static std::int64_t owned_rows_callback(void *);
   static std::int64_t active_rows_callback(void *);
   int exchange(void *, std::int64_t, std::int64_t,
                jcn::CommunicationScalarType, bool);
