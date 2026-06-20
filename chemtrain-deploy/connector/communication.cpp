@@ -98,7 +98,14 @@ CommunicationContext::CommunicationContext(CommunicationCallbacks callbacks,
       enabled_(enabled),
       workspace_(workspace),
       expected_forward_sites_(expected_forward_sites),
-      expected_widths_(std::move(expected_widths)) {}
+      expected_widths_(std::move(expected_widths)),
+      validate_communication_sites_(
+          std::getenv("JCN_VALIDATE_COMMUNICATION") != nullptr) {
+  if (!expected_widths_.empty()) {
+    maximum_expected_width_ = *std::max_element(
+        expected_widths_.begin(), expected_widths_.end());
+  }
+}
 
 std::int64_t CommunicationContext::ActiveRows(std::int64_t capacity) const {
   if (!enabled_ || callbacks_.active_rows == nullptr) return capacity;
@@ -119,32 +126,32 @@ absl::Status CommunicationContext::Exchange(
         "communicating model executed without LAMMPS communication callbacks");
   }
 
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    int& sites = reverse ? reverse_sites_ : forward_sites_;
-    if (cols <= 0) {
-      return absl::InvalidArgumentError(
-          "communication site width must be positive");
-    }
-    if (!expected_widths_.empty()) {
-      if (!reverse &&
-          (sites >= static_cast<int>(expected_widths_.size()) ||
-           expected_widths_[sites] != cols)) {
-        return absl::InvalidArgumentError(
-            "communication site width does not match exported metadata");
-      }
-      if (reverse) {
-        const int maximum_width = *std::max_element(
-            expected_widths_.begin(), expected_widths_.end());
-        if (sites >= static_cast<int>(expected_widths_.size()) ||
-            cols > maximum_width) {
-          return absl::InvalidArgumentError(
-              "reverse communication exceeds exported communication bounds");
-        }
-      }
-    }
-    ++sites;
+  std::unique_lock<std::mutex> lock(mutex_);
+
+  int& sites = reverse ? reverse_sites_ : forward_sites_;
+
+  if (cols <= 0) {
+    return absl::InvalidArgumentError(
+        "communication site width must be positive");
   }
+
+  if (validate_communication_sites_ && !expected_widths_.empty()) {
+    if (!reverse &&
+        (sites >= static_cast<int>(expected_widths_.size()) ||
+        expected_widths_[sites] != cols)) {
+      return absl::InvalidArgumentError(
+          "communication site width does not match exported metadata");
+    }
+
+    if (reverse &&
+        (sites >= static_cast<int>(expected_widths_.size()) ||
+        cols > maximum_expected_width_)) {
+      return absl::InvalidArgumentError(
+          "reverse communication exceeds exported communication bounds");
+    }
+  }
+
+  ++sites;
 
   std::unique_lock<std::mutex> lock(mutex_);
 
@@ -360,17 +367,22 @@ tsl::AsyncValueRef<tsl::Chain> RunExchange(
         se::DeviceAddressBase token_src(token_input_data, sizeof(float));
         se::DeviceAddressBase token_dst(token_output_data, sizeof(float));
 
-        // Preserve the inactive padded tail on device and stage only atom rows
-        // that LAMMPS can access. This trades one D2D copy for less PCIe data.
-        absl::Status status = stream->Memcpy(&dst, src, bytes);
-        if (!status.ok()) return status;
+        absl::Status status;
 
+        // Identity/no-communication path: preserve exact identity semantics.
+        // This path is not the performance-critical communicating path.
         if (!context->enabled()) {
+          status = stream->Memcpy(&dst, src, bytes);
+          if (!status.ok()) return status;
+
           status = stream->Memcpy(&token_dst, token_src, sizeof(float));
           if (!status.ok()) return status;
-          return stream->BlockHostUntilDone();
+
+          return absl::OkStatus();
         }
 
+        // Communicating path: only active rows are valid in the output.
+        // The padded tail is intentionally left undefined.
         status = stream->Memcpy(host, src, active_bytes);
         if (!status.ok()) return status;
         status = stream->BlockHostUntilDone();
@@ -387,7 +399,7 @@ tsl::AsyncValueRef<tsl::Chain> RunExchange(
         // finish, so the next FFI site has an ordinary XLA data dependency.
         status = stream->Memcpy(&token_dst, token_src, sizeof(float));
         if (!status.ok()) return status;
-        return stream->BlockHostUntilDone();
+        return absl::OkStatus();
       },
       [done](absl::Status status) mutable {
         // Completing this async value tells XLA that both the host callback

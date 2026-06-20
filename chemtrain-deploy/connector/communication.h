@@ -101,6 +101,8 @@ class CommunicationContext {
   bool execution_complete_ = false;
   int expected_forward_sites_ = 0;
   std::vector<int> expected_widths_;
+  int maximum_expected_width_ = 0;
+  bool validate_communication_sites_ = false;
   int forward_sites_ = 0;
   int reverse_sites_ = 0;
 
