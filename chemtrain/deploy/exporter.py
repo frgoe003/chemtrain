@@ -46,7 +46,9 @@ class _ExportComputation:
     instead of appending metadata to state left by an earlier trace.
     """
 
-    def __init__(self, owner, neighbor_orders, enabled=None, expected=None):
+    def __init__(
+        self, owner, neighbor_orders, enabled=None, expected=None,
+    ):
         self.owner = owner
         self.neighbor_orders = neighbor_orders
         self.enabled = enabled
@@ -57,7 +59,8 @@ class _ExportComputation:
         communication = None
         if self.enabled is not None:
             communication = comm.ExportCommunication(
-                enabled=self.enabled, expected_widths=self.expected
+                enabled=self.enabled,
+                expected_widths=self.expected,
             )
         result = self.owner._energy_fn(
             *args,
@@ -286,6 +289,7 @@ class Exporter(metaclass=abc.ABCMeta):
         targets such as OpenEquivariance. Communication targets are added only
         to the communication variant. Existing exporters need no changes when
         calling ``export()`` without arguments.
+
         """
         # Quantities describe one export transaction. A failed or repeated
         # export must not compare new variants with metadata from an earlier
@@ -367,7 +371,7 @@ class Exporter(metaclass=abc.ABCMeta):
         """Record widths in an isolated trace with communication disabled."""
         _, shapes = self._variant_inputs(neighbor_orders)
         computation = _ExportComputation(
-            self, neighbor_orders, enabled=False
+            self, neighbor_orders, enabled=False,
         )
         jax.eval_shape(jax.jit(computation), *shapes)
         if not computation.widths:
@@ -378,7 +382,8 @@ class Exporter(metaclass=abc.ABCMeta):
         return computation.widths
 
     def _export_variant(
-        self, *, name, neighbor_orders, communication_widths, custom_calls
+        self, *, name, neighbor_orders, communication_widths,
+        custom_calls,
     ):
         """Trace one model variant and return its self-contained metadata."""
         metadata, shapes = self._variant_inputs(neighbor_orders)

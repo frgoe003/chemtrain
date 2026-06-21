@@ -485,6 +485,15 @@ tsl::AsyncValueRef<tsl::Chain> RunExchange(
         } else {
           status = stream->Memcpy(&dst, host, active_bytes);
           if (!status.ok()) return status;
+          if (reverse && ghost_bytes > 0) {
+            // The LAMMPS callback deliberately leaves staged ghost rows
+            // untouched. Define the transpose result on the device in both
+            // compact and full-staging modes without an extra host traversal.
+            se::DeviceAddressBase ghost_dst(
+                static_cast<char*>(output_data) + owned_bytes, ghost_bytes);
+            status = stream->MemZero(&ghost_dst, ghost_bytes);
+            if (!status.ok()) return status;
+          }
         }
         // The token copy is deliberately enqueued last. Its output cannot
         // become ready until LAMMPS communication and the feature copy-back

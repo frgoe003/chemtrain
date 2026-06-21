@@ -39,6 +39,10 @@
 #include <sstream>
 #include <stdlib.h>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 using namespace LAMMPS_NS;
 
 namespace {
@@ -446,25 +450,9 @@ int ChemtrainDeploy::exchange(void *data, std::int64_t rows,
                 << std::endl;
     }
 
-    // After reverse accumulation, ghost cotangents should not contribute further
-    // on this rank.
-    ProfileRange zero_range("chemtrain_comm.zero_ghosts");
-    const std::int64_t begin = static_cast<std::int64_t>(atom->nlocal) * cols;
-    const std::int64_t end =
-        static_cast<std::int64_t>(atom->nlocal + atom->nghost) * cols;
-    if (communication_type == jcn::CommunicationScalarType::F64) {
-      std::fill(static_cast<double *>(communication_data) + begin,
-                static_cast<double *>(communication_data) + end, 0.0);
-    } else {
-      std::fill(static_cast<float *>(communication_data) + begin,
-                static_cast<float *>(communication_data) + end, 0.0f);
-    }
-
-    if (communication_debug_enabled()) {
-      std::cerr << "[COMM] REV after_zero first="
-                << debug_first_value(data, type, rows, cols)
-                << std::endl;
-    }
+    // The connector copies back only owner rows and zeros ghost rows directly
+    // on the device. Clearing the staged host ghosts here would traverse the
+    // same large buffer without producing data that is subsequently consumed.
   } else {
     ProfileRange range("chemtrain_comm.lammps_forward");
     // LAMMPS owns the domain decomposition, so its standard pair exchange is
@@ -527,29 +515,34 @@ int ChemtrainDeploy::pack_forward_comm(int n, int *list, double *buf,
   // the model's packed representation unchanged everywhere else.
   const int count = checked_communication_count(n, communication_cols);
   const int width = static_cast<int>(communication_cols);
-  int m = 0;
+  const int nthreads = comm->nthreads;
   if (communication_type == jcn::CommunicationScalarType::F64) {
     const auto *data = static_cast<const double *>(communication_data);
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) num_threads(nthreads) \
+    if(nthreads > 1 && count >= 65536)
+#endif
     for (int i = 0; i < n; ++i) {
       const double *row = data +
           static_cast<std::int64_t>(list[i]) * communication_cols;
-      std::copy_n(row, width, buf + m);
-      m += width;
+      std::copy_n(row, width, buf + static_cast<std::int64_t>(i) * width);
     }
   } else {
     const auto *data = static_cast<const float *>(communication_data);
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) num_threads(nthreads) \
+    if(nthreads > 1 && count >= 65536)
+#endif
     for (int i = 0; i < n; ++i) {
       const float *row = data +
           static_cast<std::int64_t>(list[i]) * communication_cols;
-      for (std::int64_t j = 0; j < communication_cols; ++j) {
-        buf[m++] = static_cast<double>(row[j]);
+      double *packed = buf + static_cast<std::int64_t>(i) * width;
+      for (int j = 0; j < width; ++j) {
+        packed[j] = static_cast<double>(row[j]);
       }
     }
   }
-  if (m != count) {
-    throw std::runtime_error("LAMMPS forward pack count is inconsistent");
-  }
-  return m;
+  return count;
 }
 
 void ChemtrainDeploy::unpack_forward_comm(int n, int first, double *buf) {
@@ -569,16 +562,22 @@ void ChemtrainDeploy::unpack_forward_comm(int n, int first, double *buf) {
   const int count = checked_communication_count(n, communication_cols);
   const std::int64_t offset =
       static_cast<std::int64_t>(first) * communication_cols;
-  int m = 0;
+  const int nthreads = comm->nthreads;
   if (communication_type == jcn::CommunicationScalarType::F64) {
-    std::copy_n(buf, count,
-                static_cast<double *>(communication_data) + offset);
-    m = count;
+    auto *destination = static_cast<double *>(communication_data) + offset;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) num_threads(nthreads) \
+    if(nthreads > 1 && count >= 65536)
+#endif
+    for (int j = 0; j < count; ++j) destination[j] = buf[j];
   } else {
     float *destination = static_cast<float *>(communication_data) + offset;
-    for (std::int64_t j = 0; j < count; ++j) {
-      destination[j] = static_cast<float>(buf[m++]);
-    }
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) num_threads(nthreads) \
+    if(nthreads > 1 && count >= 65536)
+#endif
+    for (int j = 0; j < count; ++j)
+      destination[j] = static_cast<float>(buf[j]);
   }
 
   if (debug && n > 0 && communication_cols > 0) {
@@ -602,28 +601,34 @@ int ChemtrainDeploy::pack_reverse_comm(int n, int first, double *buf) {
   const int count = checked_communication_count(n, communication_cols);
   const std::int64_t offset =
       static_cast<std::int64_t>(first) * communication_cols;
-  int m = 0;
+  const int nthreads = comm->nthreads;
   if (communication_type == jcn::CommunicationScalarType::F64) {
-    std::copy_n(static_cast<const double *>(communication_data) + offset,
-                count, buf);
-    m = count;
+    const auto *source = static_cast<const double *>(communication_data) + offset;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) num_threads(nthreads) \
+    if(nthreads > 1 && count >= 65536)
+#endif
+    for (int j = 0; j < count; ++j) buf[j] = source[j];
   } else {
     const float *source = static_cast<const float *>(communication_data) + offset;
-    for (std::int64_t j = 0; j < count; ++j) {
-      buf[m++] = static_cast<double>(source[j]);
-    }
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) num_threads(nthreads) \
+    if(nthreads > 1 && count >= 65536)
+#endif
+    for (int j = 0; j < count; ++j)
+      buf[j] = static_cast<double>(source[j]);
   }
 
   if (communication_debug_enabled()) {
     std::cerr << "[COMM] pack_reverse n=" << n
               << " first=" << first
               << " cols=" << communication_cols
-              << " first_val=" << (m > 0 ? buf[0] : 0.0)
-              << " maxabs=" << max_abs_double_buf(buf, m)
+              << " first_val=" << (count > 0 ? buf[0] : 0.0)
+              << " maxabs=" << max_abs_double_buf(buf, count)
               << std::endl;
   }
 
-  return m;
+  return count;
 }
 
 
@@ -637,28 +642,53 @@ void ChemtrainDeploy::unpack_reverse_comm(int n, int *list, double *buf) {
     before = communication_get(first_atom, 0);
   }
 
-  int m = 0;
+  const int width = static_cast<int>(communication_cols);
+  const int nthreads = comm->nthreads;
   if (communication_type == jcn::CommunicationScalarType::F64) {
     auto *data = static_cast<double *>(communication_data);
-    for (int i = 0; i < n; ++i) {
-      double *row = data +
-          static_cast<std::int64_t>(list[i]) * communication_cols;
-      for (std::int64_t j = 0; j < communication_cols; ++j) {
-        row[j] += buf[m++];
+#ifdef _OPENMP
+#pragma omp parallel num_threads(nthreads) \
+    if(nthreads > 1 && count >= 65536)
+#endif
+    {
+      int begin = 0;
+      int end = width;
+#ifdef _OPENMP
+      const int team_size = omp_get_num_threads();
+      const int tid = omp_get_thread_num();
+      begin = width * tid / team_size;
+      end = width * (tid + 1) / team_size;
+#endif
+      for (int i = 0; i < n; ++i) {
+        double *row = data +
+            static_cast<std::int64_t>(list[i]) * width;
+        const double *packed = buf + static_cast<std::int64_t>(i) * width;
+        for (int j = begin; j < end; ++j) row[j] += packed[j];
       }
     }
   } else {
     auto *data = static_cast<float *>(communication_data);
-    for (int i = 0; i < n; ++i) {
-      float *row = data +
-          static_cast<std::int64_t>(list[i]) * communication_cols;
-      for (std::int64_t j = 0; j < communication_cols; ++j) {
-        row[j] += static_cast<float>(buf[m++]);
+#ifdef _OPENMP
+#pragma omp parallel num_threads(nthreads) \
+    if(nthreads > 1 && count >= 65536)
+#endif
+    {
+      int begin = 0;
+      int end = width;
+#ifdef _OPENMP
+      const int team_size = omp_get_num_threads();
+      const int tid = omp_get_thread_num();
+      begin = width * tid / team_size;
+      end = width * (tid + 1) / team_size;
+#endif
+      for (int i = 0; i < n; ++i) {
+        float *row = data +
+            static_cast<std::int64_t>(list[i]) * width;
+        const double *packed = buf + static_cast<std::int64_t>(i) * width;
+        for (int j = begin; j < end; ++j)
+          row[j] += static_cast<float>(packed[j]);
       }
     }
-  }
-  if (m != count) {
-    throw std::runtime_error("LAMMPS reverse unpack count is inconsistent");
   }
 
   double after = 0.0;
@@ -670,8 +700,8 @@ void ChemtrainDeploy::unpack_reverse_comm(int n, int *list, double *buf) {
     std::cerr << "[COMM] unpack_reverse n=" << n
               << " cols=" << communication_cols
               << " target=" << first_atom
-              << " first_in=" << (m > 0 ? buf[0] : 0.0)
-              << " maxabs_in=" << max_abs_double_buf(buf, m)
+              << " first_in=" << (count > 0 ? buf[0] : 0.0)
+              << " maxabs_in=" << max_abs_double_buf(buf, count)
               << " before=" << before
               << " after=" << after
               << std::endl;

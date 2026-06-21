@@ -15,6 +15,16 @@ message("Source dir: ${CMAKE_SOURCE_DIR}\nBinary dir: ${CMAKE_BINARY_DIR}")
 
 project(plugins VERSION 1.0 LANGUAGES CXX)
 
+# Standalone plugin builds are performance builds unless the caller selects a
+# configuration explicitly.  The communication callbacks contain large
+# conversion/copy loops, so an unconfigured CMake build (which otherwise uses
+# no optimization) is not a useful default.
+if(NOT LAMMPS_DIR AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+option(CHEMTRAIN_DEPLOY_NATIVE_ARCH
+  "Optimize the plugin for the CPU architecture used to build it" ON)
+
 # when this file is included as subdirectory in the LAMMPS build, many settings are directly imported
 if(LAMMPS_DIR)
   set(LAMMPS_HEADER_DIR ${LAMMPS_SOURCE_DIR})
@@ -85,6 +95,11 @@ add_library(chemtrain_deploy MODULE
         ${SOURCE_DIR}/chemtrain_deploy.cpp
         ${SOURCE_DIR}/pair_chemtrain_deploy.cpp
         ${INCLUDE_DIR}/libconnector.h)
+
+if(CHEMTRAIN_DEPLOY_NATIVE_ARCH AND
+   CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+  target_compile_options(chemtrain_deploy PRIVATE -march=native)
+endif()
 
 find_library(CHEMTRAIN_DEPLOY_CONNECTOR_LIB
   NAMES connector libconnector

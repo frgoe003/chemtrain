@@ -247,15 +247,20 @@ def mace_jax_neighborlist_from_torch(
         vectors /= scale_pos
 
         model_args = (params, senders, receivers, (vectors,), (species, mask))
-        if use_batched_apply:
-            # comm is a static JIT property. Specializing the general batching
-            # transform here lets the same composed model trace both the
-            # ordinary and communication-enabled deployment variants.
+        if use_batched_apply and comm is None:
+            # Construct the batching transform only for the ordinary model;
+            # ``comm`` is a static JIT property, so this branch is specialized
+            # independently from the communicating deployment variant.
             batched_apply = utils.batch_apply_fn(
                 functools.partial(_apply_fn, comm=comm)
             )
             per_atom_energies = batched_apply(*model_args)
         else:
+            # Deployment passes one already flattened graph, so feature
+            # communication does not need the custom batching transform. Its
+            # backward rule intentionally recomputes the model from its inputs;
+            # bypassing it lets JAX retain the communicated primal features and
+            # avoids a second forward halo exchange before the reverse one.
             per_atom_energies = _apply_fn(*model_args, comm=comm)
         per_atom_energies *= scale_pot
 

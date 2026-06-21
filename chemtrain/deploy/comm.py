@@ -41,7 +41,9 @@ class ExportCommunication:
     """
 
     def __init__(
-        self, enabled: bool = False, expected_widths: tuple[int, ...] | None = None
+        self,
+        enabled: bool = False,
+        expected_widths: tuple[int, ...] | None = None,
     ):
         self.enabled = enabled
         self.widths: list[int] = []
