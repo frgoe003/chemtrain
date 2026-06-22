@@ -416,7 +416,10 @@ namespace jcn {
         Logger logger = Logger::getlogger();
 
         int max_trials = 10;
-        bool recompiled = false;
+        int compilations = 0;
+        int initial_compilations = 0;
+        int atom_recompilations = 0;
+        int edge_recompilations = 0;
 
         for (int i = 0; i < max_trials; i++) {
 
@@ -430,6 +433,9 @@ namespace jcn {
             NeighborListShapes neighbors = neighbor_list->get_neighbor_list_shapes(
                 atoms.n_atoms, inum, ilist, numneigh, allow_recompile);
 
+            atom_recompilation_required_ |= atoms.reallocate;
+            edge_recompilation_required_ |= neighbors.reallocate;
+
             // Now we have all shapes setup to build the module if required.
             // If the module tried to recompile but failed due to disabled
             // recompilation, it will try again in the next call due to the
@@ -438,7 +444,21 @@ namespace jcn {
             // on how much the buffers are filled.
             recompilation_required |= !executable || atoms.reallocate || neighbors.reallocate;
             if (recompilation_required && allow_recompile) {
-                recompiled |= true; // Track for statistics whether recompilation was necessary
+                // Shape discovery can need more than one compile before the
+                // first successful evaluation (for example, after observing
+                // the valid-edge mask). Treat that whole bootstrap as initial
+                // compilation rather than reporting a runtime regression.
+                const bool compiling_initial_shapes =
+                    !has_successful_execution_;
+                ++compilations;
+                if (compiling_initial_shapes) {
+                    ++initial_compilations;
+                } else {
+                    atom_recompilations +=
+                        static_cast<int>(atom_recompilation_required_);
+                    edge_recompilations +=
+                        static_cast<int>(edge_recompilation_required_);
+                }
 
                 logger.log(LogLevel::INFO, "Recompilation necessary");
 
@@ -478,6 +498,8 @@ namespace jcn {
                 }
 
                 recompilation_required = false; // Reset the recompilation flag
+                atom_recompilation_required_ = false;
+                edge_recompilation_required_ = false;
 
             } else if (recompilation_required) {
                 throw jcn::RecompilationRequired(
@@ -487,7 +509,7 @@ namespace jcn {
             auto start = std::chrono::high_resolution_clock::now();
 
             // Only transfer new data to the GPU if necessary
-            bool update = (recompiled || list_changed);
+            bool update = (compilations > 0 || list_changed);
 
             // Now we have to create the buffers, i.e., copy the data onto
             // the device
@@ -608,6 +630,11 @@ namespace jcn {
 
             bool success = neighbor_list->evaluate_statistics(
                 std::move(statistics), allow_recompile);
+            if (!success) {
+                // Runtime graph statistics can discover that the compiled
+                // valid-edge mask is too small. The next trial recompiles it.
+                edge_recompilation_required_ = true;
+            }
 
             end = std::chrono::high_resolution_clock::now();
             duration = end - start;
@@ -615,8 +642,10 @@ namespace jcn {
             logger.log(LogLevel::DEBUG, "Time taken for computation: " + std::to_string(duration.count()) + " seconds");
 
             // Write back the results
+            std::vector<double> per_atom_potential;
             double potential = atom_builder->evaluate_domain(
-                success, lnum, gnum, f, results_buffers);
+                success, lnum, gnum, f, results_buffers,
+                per_atom_potential);
 
             auto trial_end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double> trial_duration = trial_end - trial_start;
@@ -627,11 +656,18 @@ namespace jcn {
 
             Results compute_results;
             compute_results.potential = potential;
+            compute_results.per_atom_potential = std::move(per_atom_potential);
             compute_results.stats.flops = flops_;
-            compute_results.stats.recompiled = recompiled;
+            compute_results.stats.compilations = compilations;
+            compute_results.stats.initial_compilations = initial_compilations;
+            compute_results.stats.atom_recompilations = atom_recompilations;
+            compute_results.stats.edge_recompilations = edge_recompilations;
 
             // Finished
-            if (success) return compute_results;
+            if (success) {
+                has_successful_execution_ = true;
+                return compute_results;
+            }
 
         }
 

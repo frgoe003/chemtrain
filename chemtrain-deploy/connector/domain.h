@@ -102,12 +102,16 @@ namespace jcn {
          * @param success True if the computation was successful, i.e., the
          *     neighbor list did not overflow.
          * @param inum Number of local atoms
+         * @param gnum Number of ghost atoms
          * @param f Pointer to target force array
          * @param results Vector of vector of pointers to the result buffers.
+         * @param per_atom_potential Receives the local per-atom energies.
          *
          * @return The potential energy of the system
          */
-        double evaluate_domain(bool success, int inum, int gnum, double **f, std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results);
+        double evaluate_domain(bool success, int inum, int gnum, double **f,
+            std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results,
+            std::vector<double>& per_atom_potential);
 
         const std::vector<std::string>& get_quantities() const { return quantities; }
 

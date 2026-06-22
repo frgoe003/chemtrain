@@ -88,6 +88,12 @@ namespace jcn {
          * recompiled.
          */
         bool recompilation_required = false;
+        bool has_successful_execution_ = false;
+
+        // Shape discovery can request a collective retry before compilation is
+        // allowed. Preserve its causes until the retry actually compiles them.
+        bool atom_recompilation_required_ = false;
+        bool edge_recompilation_required_ = false;
 
         float flops_;
 

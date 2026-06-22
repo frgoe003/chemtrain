@@ -94,6 +94,13 @@ int checked_communication_count(int n, std::int64_t cols) {
   return static_cast<int>(static_cast<std::int64_t>(n) * cols);
 }
 
+struct CountSummary {
+  int minimum;
+  double average;
+  int maximum;
+  int total;
+};
+
 }  // namespace
 
 /* ---------------------------------------------------------------------- */
@@ -207,9 +214,25 @@ void ChemtrainDeploy::compute(int eflag, int vflag)
   if (eflag) {
     eng_vdwl = scale * results.potential;
   }
+  if (eflag_atom) {
+    if (results.per_atom_potential.size() !=
+        static_cast<std::size_t>(atom->nlocal)) {
+      error->all(
+          FLERR, "Chemtrain per-atom energy count does not match local atoms");
+    }
+    // ev_init() allocated and cleared eatom for this force evaluation. Add the
+    // model's local atomic contributions so standard LAMMPS consumers such as
+    // compute pe/atom and custom dumps can inspect the unsummed predictions.
+    for (int i = 0; i < atom->nlocal; ++i) {
+      eatom[i] += scale * results.per_atom_potential[i];
+    }
+  }
 
   flops += static_cast<double>(results.stats.flops);
-  recompilations += static_cast<int>(results.stats.recompiled);
+  compilations += results.stats.compilations;
+  initial_compilations += results.stats.initial_compilations;
+  atom_recompilations += results.stats.atom_recompilations;
+  edge_recompilations += results.stats.edge_recompilations;
 
   auto end = std::chrono::high_resolution_clock::now();
   std::chrono::duration<double> duration = end - start;
@@ -742,8 +765,11 @@ void ChemtrainDeploy::unpack_reverse_comm(int n, int *list, double *buf) {
 
 void ChemtrainDeploy::init_style()
 {
-  recompilations = 0;
-  flops = 0;
+  compilations = 0;
+  initial_compilations = 0;
+  atom_recompilations = 0;
+  edge_recompilations = 0;
+  flops = 0.0;
 
   // The exported model is authoritative for the halo depth. Include the
   // LAMMPS neighbor skin so users do not need a matching comm_modify command.
@@ -792,26 +818,58 @@ double ChemtrainDeploy::init_one(int i, int j)
 
 void ChemtrainDeploy::finish()
 {
-  int min_comp, max_comp, sum_comp, num_procs;
+  int num_procs;
   double min_flops, max_flops, sum_flops;
-
-  MPI_Allreduce(&recompilations, &min_comp, 1, MPI_INT, MPI_MIN, world);
-  MPI_Allreduce(&recompilations, &max_comp, 1, MPI_INT, MPI_MAX, world);
-  MPI_Allreduce(&recompilations, &sum_comp, 1, MPI_INT, MPI_SUM, world);
   MPI_Allreduce(&flops, &min_flops, 1, MPI_DOUBLE, MPI_MIN, world);
   MPI_Allreduce(&flops, &max_flops, 1, MPI_DOUBLE, MPI_MAX, world);
   MPI_Allreduce(&flops, &sum_flops, 1, MPI_DOUBLE, MPI_SUM, world);
   MPI_Comm_size(world, &num_procs);
 
-  double avg_comp = static_cast<double>(sum_comp) / static_cast<double>(num_procs);
   double avg_flops = sum_flops / static_cast<double>(num_procs);
+
+  auto reduce_counts = [this, num_procs](int local) {
+    int minimum, maximum, total;
+    MPI_Allreduce(&local, &minimum, 1, MPI_INT, MPI_MIN, world);
+    MPI_Allreduce(&local, &maximum, 1, MPI_INT, MPI_MAX, world);
+    MPI_Allreduce(&local, &total, 1, MPI_INT, MPI_SUM, world);
+    return CountSummary{
+        minimum,
+        static_cast<double>(total) / num_procs,
+        maximum,
+        total,
+    };
+  };
+
+  const auto compile_stats = reduce_counts(compilations);
+  const auto initial_stats = reduce_counts(initial_compilations);
+  const auto atom_stats = reduce_counts(atom_recompilations);
+  const auto edge_stats = reduce_counts(edge_recompilations);
 
   utils::logmesg(
       lmp, "\n==== JaxConnect Summary =========.\n"
-           "- Recompilations: {:d} min / {:.2f} avg / {:d} max. / {:d} total \n"
-           "- Estimated FLOP: {:.2e} min / {:.2e} avg / {:.2e} max. / {:.2e total\n\n",
-      min_comp, avg_comp, max_comp, sum_comp,
+           "- Compilations: {:d} min / {:.2f} avg / {:d} max / {:d} total\n"
+           "- Initial compilations: {:d} min / {:.2f} avg / {:d} max / {:d} total\n"
+           "- Atom recompilations: {:d} min / {:.2f} avg / {:d} max / {:d} total\n"
+           "- Edge recompilations: {:d} min / {:.2f} avg / {:d} max / {:d} total\n"
+           "- Estimated FLOP: {:.2e} min / {:.2e} avg / {:.2e} max / {:.2e} total\n\n",
+      compile_stats.minimum, compile_stats.average, compile_stats.maximum,
+      compile_stats.total,
+      initial_stats.minimum, initial_stats.average, initial_stats.maximum,
+      initial_stats.total,
+      atom_stats.minimum, atom_stats.average, atom_stats.maximum,
+      atom_stats.total,
+      edge_stats.minimum, edge_stats.average, edge_stats.maximum,
+      edge_stats.total,
       min_flops, avg_flops, max_flops, sum_flops);
+
+  // This stable record is consumed by regression tooling; the readable table
+  // above may evolve without turning wording changes into test failures.
+  utils::logmesg(
+      lmp,
+      "JCN_STATS compilations_total={:d} initial_total={:d} "
+      "atom_total={:d} edge_total={:d}\n",
+      compile_stats.total, initial_stats.total, atom_stats.total,
+      edge_stats.total);
 }
 
 /* ---------------------------------------------------------------------- */

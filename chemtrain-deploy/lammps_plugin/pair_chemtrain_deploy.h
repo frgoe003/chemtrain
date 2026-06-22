@@ -50,8 +50,11 @@ class ChemtrainDeploy : public Pair {
   double scale = 1.0;
 
   // Statistics
-  int recompilations;
-  double flops;
+  int compilations = 0;
+  int initial_compilations = 0;
+  int atom_recompilations = 0;
+  int edge_recompilations = 0;
+  double flops = 0.0;
 
   jcn::ModelProperties model_properties;
 

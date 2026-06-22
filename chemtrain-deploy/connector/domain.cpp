@@ -139,9 +139,12 @@ namespace jcn {
 
     }
 
-    double AtomBuilder::evaluate_domain(bool success, int inum, int gnum, double **f, std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results) {
+    double AtomBuilder::evaluate_domain(bool success, int inum, int gnum, double **f,
+        std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results,
+        std::vector<double>& per_atom_potential) {
 
         double potential = 0.0;
+        per_atom_potential.clear();
 
         Logger logger = Logger::getlogger();
 
@@ -199,11 +202,12 @@ namespace jcn {
                 + std::to_string(duration.count()) + " seconds"
             );
 
-            // The energy buffer contains per-atom energies (one float per atom).
-            // Sum the first `inum` entries (local atoms) to obtain the total potential
-            // for this domain. 
+            // The exported energy buffer already contains one contribution per
+            // atom. Preserve the local entries for LAMMPS compute pe/atom and
+            // sum the same values for the domain's global-energy contribution.
+            per_atom_potential.assign(potential_data, potential_data + inum);
             potential = std::accumulate(
-                potential_data, potential_data + inum, 0.0,
+                per_atom_potential.begin(), per_atom_potential.end(), 0.0,
                 [](double sum, float v){ return sum + static_cast<double>(v); }
             );
 

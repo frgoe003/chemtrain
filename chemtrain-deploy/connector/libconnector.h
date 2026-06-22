@@ -156,8 +156,17 @@ namespace jcn {
         /** The estimated number of floating point operations. */
         double flops;
 
-        /** Whether recompilation was necessary **/
-        bool recompiled;
+        /** Number of executable compilations during this evaluation. */
+        int compilations;
+
+        /** Compilations performed before the first successful evaluation. */
+        int initial_compilations;
+
+        /** Runtime compilations caused by atom-buffer growth. */
+        int atom_recompilations;
+
+        /** Runtime compilations caused by neighbor-buffer growth. */
+        int edge_recompilations;
 
     };
 
@@ -169,6 +178,9 @@ namespace jcn {
 
         /** The potential energy of the system. */
         double potential;
+
+        /** Potential-energy contribution of each local atom. */
+        std::vector<double> per_atom_potential;
 
         /** The statistics of the computation. */
         Statistics stats;

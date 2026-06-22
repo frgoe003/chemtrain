@@ -37,8 +37,11 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import textwrap
+import time
 import urllib.request
+import urllib.error
 
 
 import pkgutil
@@ -214,7 +217,17 @@ def get_githash():
 
 # Bazel
 
-BAZEL_BASE_URI = "https://github.com/bazelbuild/bazel/releases/download/7.4.1/"
+# The default is pinned with the binary checksums below.  A mirror can be used
+# in restricted build environments by setting BAZEL_BASE_URI; it must expose
+# the same filenames and content because downloads are always checksum checked.
+BAZEL_BASE_URI = os.environ.get(
+    "BAZEL_BASE_URI",
+    "https://github.com/bazelbuild/bazel/releases/download/7.4.1/",
+).rstrip("/") + "/"
+BAZEL_DOWNLOAD_RETRIES = max(
+    1, int(os.environ.get("BAZEL_DOWNLOAD_RETRIES", "5")))
+BAZEL_DOWNLOAD_TIMEOUT = max(
+    1, int(os.environ.get("BAZEL_DOWNLOAD_TIMEOUT", "60")))
 BazelPackage = collections.namedtuple(
     "BazelPackage", ["base_uri", "file", "sha256"]
 )
@@ -259,7 +272,7 @@ bazel_packages = {
 
 
 def download_and_verify_bazel():
-  """Downloads a bazel binary from GitHub, verifying its SHA256 hash."""
+  """Downloads Bazel with retries, then verifies its SHA-256 checksum."""
   package = bazel_packages.get((platform.system(), platform.machine()))
   if package is None:
     return None
@@ -268,24 +281,36 @@ def download_and_verify_bazel():
     uri = (package.base_uri or BAZEL_BASE_URI) + package.file
     sys.stdout.write(f"Downloading bazel from: {uri}\n")
 
-    def progress(block_count, block_size, total_size):
-      if total_size <= 0:
-        total_size = 170**6
-      progress = (block_count * block_size) / total_size
-      num_chars = 40
-      progress_chars = int(num_chars * progress)
-      sys.stdout.write("{} [{}{}] {}%\r".format(
-          package.file, "#" * progress_chars,
-          "." * (num_chars - progress_chars), int(progress * 100.0)))
-
-    tmp_path, _ = urllib.request.urlretrieve(
-      uri, None, progress if sys.stdout.isatty() else None
-    )
-    sys.stdout.write("\n")
+    tmp_path = None
+    last_error = None
+    for attempt in range(1, BAZEL_DOWNLOAD_RETRIES + 1):
+      try:
+        request = urllib.request.Request(
+            uri, headers={"User-Agent": "chemtrain-deploy-build/1"})
+        with urllib.request.urlopen(
+            request, timeout=BAZEL_DOWNLOAD_TIMEOUT) as response:
+          with tempfile.NamedTemporaryFile(delete=False) as output:
+            tmp_path = output.name
+            while chunk := response.read(1024 * 1024):
+              output.write(chunk)
+        break
+      except (OSError, urllib.error.URLError) as error:
+        last_error = error
+        if tmp_path:
+          pathlib.Path(tmp_path).unlink(missing_ok=True)
+          tmp_path = None
+        if attempt == BAZEL_DOWNLOAD_RETRIES:
+          raise RuntimeError(
+              f"Failed to download Bazel from {uri} after {attempt} attempts"
+          ) from last_error
+        delay = 2 ** (attempt - 1)
+        print(f"Download attempt {attempt} failed; retrying in {delay}s: {error}")
+        time.sleep(delay)
 
     # Verify that the downloaded Bazel binary has the expected SHA256.
     with open(tmp_path, "rb") as downloaded_file:
       contents = downloaded_file.read()
+    pathlib.Path(tmp_path).unlink(missing_ok=True)
 
     digest = hashlib.sha256(contents).hexdigest()
     if digest != package.sha256:
@@ -647,6 +672,15 @@ def main():
   }
 
   build_options = args.bazel_options
+
+  # Keep XLA's hermetic Python repository aligned with the interpreter running
+  # this script. Without this repository setting XLA silently selects its own
+  # default and emits a misleading configuration warning.
+  python_bin_path = get_python_bin_path(None)
+  python_version = get_python_version(python_bin_path)
+  check_python_version(python_version)
+  build_options.append(
+      "--repo_env=HERMETIC_PYTHON_VERSION={}.{}".format(*python_version))
 
   output_path = os.path.abspath(args.output_path)
   config_path = os.path.abspath("config.bazelrc")

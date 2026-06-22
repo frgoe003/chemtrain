@@ -21,6 +21,12 @@ tf_http_archive(
     urls = tf_mirror_urls(
         "https://github.com/google-ml-infra/rules_ml_toolchain/archive/de6fc6c38ea0368a198daa3f8c7cb829cc8db185.tar.gz",
     ),
+    # This pinned revision forcibly enables NVCC debug logging to a shared
+    # /tmp/nvcc_wrapper.txt. Besides being unnecessary, that fails in rootless
+    # Apptainer builds when /tmp contains a file owned by another namespace.
+    patch_file = [
+        "//third_party/rules_ml_toolchain/patches:disable-forced-nvcc-log.patch",
+    ],
 )
 
 load("@rules_ml_toolchain//cc/deps:cc_toolchain_deps.bzl", "cc_toolchain_deps")
