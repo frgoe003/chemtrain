@@ -245,6 +245,13 @@ void ChemtrainDeploy::settings(int narg, char **arg)
 {
   if (narg < 1) error->all(FLERR, "Illegal jax_connect command");
 
+  // pair_style chemtrain_deploy <backend> [memory_fraction] [comm on|off]
+  //
+  // `backend` selects the PJRT implementation (normally `cuda`) and the
+  // optional fraction limits PJRT's device-memory pool. `comm on` selects the
+  // exported graph variant containing intermediate feature gathers; `comm
+  // off` selects the ordinary graph that evaluates the complete local/ghost
+  // environment without those gathers. Communication is off by default.
   jcn::ConnectorConfig config;
   communication_enabled = false;
 
@@ -386,6 +393,18 @@ void ChemtrainDeploy::coeff(int narg, char **arg)
 int ChemtrainDeploy::exchange_callback(
     void *context, void *data, std::int64_t rows, std::int64_t cols,
     jcn::CommunicationScalarType type, bool reverse, const char **error_msg) {
+  // Call order for one exported gather site:
+  //
+  //   XLA FFI -> connector worker stages the active device rows on the host
+  //           -> CommunicationContext wakes the LAMMPS caller thread
+  //           -> this callback enters exchange()
+  //           -> LAMMPS Comm performs its ordered domain swaps
+  //           -> pack_* / MPI / unpack_* runs once per swap
+  //           -> the connector copies the changed row range back to XLA
+  //
+  // MPI must run on the thread that called LAMMPS, rather than PJRT's worker.
+  // The CommunicationContext rendezvous provides that hand-off while the FFI
+  // result remains asynchronous from XLA's point of view.
   auto *self = static_cast<ChemtrainDeploy *>(context);
   try {
     return self->exchange(data, rows, cols, type, reverse);
@@ -510,10 +529,11 @@ int ChemtrainDeploy::pack_forward_comm(int n, int *list, double *buf,
               << " cols=" << communication_cols << std::endl;
   }
 
-  // LAMMPS owns double-precision communication buffers. Preserve a bulk-copy
-  // path for f64 features and convert f32 only at this API boundary, keeping
-  // the model's packed representation unchanged everywhere else.
   const int count = checked_communication_count(n, communication_cols);
+  // For a forward swap LAMMPS supplies the possibly non-contiguous owner/ghost
+  // indices that the neighboring domain needs. Gather each complete feature
+  // row into LAMMPS's contiguous double buffer. F64 rows use bulk copies;
+  // model-native F32 rows are converted only at this final MPI boundary.
   const int width = static_cast<int>(communication_cols);
   const int nthreads = comm->nthreads;
   if (communication_type == jcn::CommunicationScalarType::F64) {
@@ -547,6 +567,9 @@ int ChemtrainDeploy::pack_forward_comm(int n, int *list, double *buf,
 
 void ChemtrainDeploy::unpack_forward_comm(int n, int first, double *buf) {
   ProfileRange range("chemtrain_comm.unpack_forward");
+  // Forward receives occupy the contiguous ghost range [first, first + n).
+  // Overwrite those staged feature rows with the neighboring owners' values;
+  // later swaps may use these newly received ghosts to construct corner halos.
   const bool debug = communication_debug_enabled();
   if (debug) {
     std::cerr << "[COMM] unpack_forward n=" << n
@@ -599,6 +622,9 @@ static double max_abs_double_buf(const double *buf, int n) {
 int ChemtrainDeploy::pack_reverse_comm(int n, int first, double *buf) {
   ProfileRange range("chemtrain_comm.pack_reverse");
   const int count = checked_communication_count(n, communication_cols);
+  // Reverse communication traverses the forward swaps in reverse order. Its
+  // send rows are therefore the contiguous ghost block populated by the
+  // corresponding forward receive; pack their cotangents for their owners.
   const std::int64_t offset =
       static_cast<std::int64_t>(first) * communication_cols;
   const int nthreads = comm->nthreads;
@@ -635,6 +661,10 @@ int ChemtrainDeploy::pack_reverse_comm(int n, int first, double *buf) {
 void ChemtrainDeploy::unpack_reverse_comm(int n, int *list, double *buf) {
   ProfileRange range("chemtrain_comm.unpack_reverse");
   const int count = checked_communication_count(n, communication_cols);
+  // The transpose of a forward overwrite is an indexed accumulation. Scatter
+  // each returned ghost cotangent into the owner row selected by LAMMPS. The
+  // connector subsequently copies owners back and defines ghost cotangents as
+  // zero, so this function deliberately does not clear staged ghost rows.
   int first_atom = (n > 0 ? list[0] : -1);
   const bool debug = communication_debug_enabled();
   double before = 0.0;
