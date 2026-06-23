@@ -29,6 +29,7 @@ from typing import Dict, Any, Tuple, Callable
 
 import jax
 import jax.numpy as jnp
+from flax import nnx
 
 from e3nn_jax import Irreps
 
@@ -41,6 +42,7 @@ from mace_jax.modules.wrapper_ops import (
     resolve_equivariance_config,
 )
 from mace_jax.modules import models as mace_jax_models
+from mace_jax.nnx_config import ConfigDict, ConfigVar
 
 from mace_jax.cli import mace_jax_from_torch
 import torch
@@ -52,6 +54,48 @@ from mace_jax.tools.model_builder import (
     _build_jax_model,
     _prepare_template_data,
 )
+
+
+def _variable_value(value):
+    """Read an NNX variable value across Flax versions."""
+    get_value = getattr(value, "get_value", None)
+    if callable(get_value):
+        return get_value()
+    return value.value
+
+
+def _extract_nnx_value(value):
+    """Convert NNX variables to JAX pytrees while preserving config semantics."""
+    if isinstance(value, ConfigVar):
+        raw = _variable_value(value)
+        # Dict-valued ConfigVars are model configuration, not nested state.
+        # ConfigDict keeps them as a single registered pytree object.
+        if isinstance(raw, dict) and not isinstance(raw, ConfigDict):
+            return ConfigDict(raw)
+        return raw
+    if isinstance(value, nnx.Variable):
+        return _variable_value(value)
+    return value
+
+
+def _state_to_legacy_variables(state):
+    """Map MACE-JAX's NNX State back to Chemtrain's old variables dict.
+
+    Chemtrain training code expects trainable weights under variables["params"].
+    Newer MACE-JAX returns one flat NNX State, so split out Param leaves and
+    keep all other state/config entries visible at the top level as before.
+    """
+    if not isinstance(state, nnx.State):
+        return state
+
+    params_state, nonparam_state = nnx.split_state(state, nnx.Param, ...)
+    params = nnx.to_pure_dict(params_state, extract_fn=_extract_nnx_value)
+    nonparams = nnx.to_pure_dict(nonparam_state, extract_fn=_extract_nnx_value)
+
+    if "params" in nonparams:
+        raise ValueError("MACE-JAX non-param state contains reserved key 'params'.")
+
+    return {"params": params, **nonparams}
 
 
 
@@ -168,9 +212,11 @@ def mace_jax_neighborlist_from_torch(
     equivariance_config = resolve_equivariance_config(
         equivariance_config, cueq_config=cueq_config
     )
-    jax_model, variables, template_data = mace_jax_from_torch.convert_model(
+    jax_model, state, template_data = mace_jax_from_torch.convert_model(
         torch_model, config, equivariance_config=equivariance_config
     )
+    uses_nnx_state = isinstance(state, nnx.State)
+    variables = _state_to_legacy_variables(state)
 
     cueq = (
         None if equivariance_config is None else equivariance_config.cueq_config
@@ -189,7 +235,7 @@ def mace_jax_neighborlist_from_torch(
     default_comm = comm
 
     def _apply_fn(
-        params, senders, receivers, edge_feats, node_feats, *, comm=None
+        params, senders, receivers, edge_feats, node_feats, *, state=None, comm=None
     ):
         (vectors,) = edge_feats
         species, mask = node_feats
@@ -211,8 +257,12 @@ def mace_jax_neighborlist_from_torch(
             "unit_shifts": jnp.zeros((vectors.shape[0], 3)),  # Unused, but some models require it
         }
 
-        out, _ = jax_model.apply(params)(
-            data, compute_force=False, compute_stress=False, comm=comm)
+        if state is None:
+            out, _ = jax_model.apply(params)(
+                data, compute_force=False, compute_stress=False, comm=comm)
+        else:
+            out, _ = jax_model.apply(params, state)(
+                data, compute_force=False, compute_stress=False, comm=comm)
         return out["node_energy"] * mask
 
     use_batched_apply = cueq_enabled or use_custom_batch_fn
@@ -246,13 +296,23 @@ def mace_jax_neighborlist_from_torch(
 
         vectors /= scale_pos
 
-        model_args = (params, senders, receivers, (vectors,), (species, mask))
+        if uses_nnx_state and isinstance(params, dict) and "params" in params:
+            # Keep Chemtrain's public variables["params"] contract, but pass
+            # params and non-param config separately to Flax's public
+            # GraphDef.apply(state, *states) merge path.
+            model_params = params["params"]
+            model_state = {
+                key: value for key, value in params.items() if key != "params"
+            } or None
+        else:
+            model_params, model_state = params, None
+        model_args = (model_params, senders, receivers, (vectors,), (species, mask))
         if use_batched_apply and comm is None:
             # Construct the batching transform only for the ordinary model;
             # ``comm`` is a static JIT property, so this branch is specialized
             # independently from the communicating deployment variant.
             batched_apply = utils.batch_apply_fn(
-                functools.partial(_apply_fn, comm=comm)
+                functools.partial(_apply_fn, state=model_state, comm=comm)
             )
             per_atom_energies = batched_apply(*model_args)
         else:
@@ -261,7 +321,7 @@ def mace_jax_neighborlist_from_torch(
             # backward rule intentionally recomputes the model from its inputs;
             # bypassing it lets JAX retain the communicated primal features and
             # avoids a second forward halo exchange before the reverse one.
-            per_atom_energies = _apply_fn(*model_args, comm=comm)
+            per_atom_energies = _apply_fn(*model_args, state=model_state, comm=comm)
         per_atom_energies *= scale_pot
 
         if per_particle:
@@ -269,7 +329,7 @@ def mace_jax_neighborlist_from_torch(
         else:
             return jnp.sum(per_atom_energies)
 
-    return jax.tree.map(jnp.asarray, variables), jax.jit(
+    return variables, jax.jit(
         apply_fn, static_argnames=("comm",)
     )
 
