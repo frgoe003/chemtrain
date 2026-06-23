@@ -84,18 +84,133 @@ def _state_to_legacy_variables(state):
     Chemtrain training code expects trainable weights under variables["params"].
     Newer MACE-JAX returns one flat NNX State, so split out Param leaves and
     keep all other state/config entries visible at the top level as before.
+    The Param subtree itself is also reshaped to the historical MACE-JAX
+    grouping used by saved Chemtrain pickles, e.g. interactions_0 instead of
+    interactions[0].
     """
     if not isinstance(state, nnx.State):
         return state
 
     params_state, nonparam_state = nnx.split_state(state, nnx.Param, ...)
-    params = nnx.to_pure_dict(params_state, extract_fn=_extract_nnx_value)
+    params = _nnx_params_to_legacy_params(
+        nnx.to_pure_dict(params_state, extract_fn=_extract_nnx_value)
+    )
     nonparams = nnx.to_pure_dict(nonparam_state, extract_fn=_extract_nnx_value)
 
     if "params" in nonparams:
         raise ValueError("MACE-JAX non-param state contains reserved key 'params'.")
 
     return {"params": params, **nonparams}
+
+
+def _nnx_params_to_legacy_params(params):
+    """Expose NNX module-list params like old Chemtrain MACE-JAX params."""
+    if not isinstance(params, dict):
+        return params
+
+    legacy = {
+        key: value
+        for key, value in params.items()
+        if key not in ("interactions", "products", "readouts")
+    }
+
+    interactions = params.get("interactions")
+    if isinstance(interactions, dict):
+        interaction_indices = sorted(idx for idx in interactions if isinstance(idx, int))
+        legacy["interactions"] = {
+            str(idx): {"conv_tp_weights": {}}
+            for idx in interaction_indices
+        }
+        for idx in interaction_indices:
+            value = interactions[idx]
+            legacy[f"interactions_{idx}"] = _legacy_layer_names(value)
+
+    for group_name in ("products", "readouts"):
+        group = params.get(group_name)
+        if isinstance(group, dict):
+            for idx in sorted(idx for idx in group if isinstance(idx, int)):
+                value = group[idx]
+                legacy[f"{group_name}_{idx}"] = value
+
+    return legacy
+
+
+def _legacy_params_to_nnx_params(params):
+    """Accept old saved MACE-JAX params and rebuild the NNX apply tree."""
+    if not isinstance(params, dict):
+        return params
+
+    nnx_params = {
+        key: value
+        for key, value in params.items()
+        if not (
+            key == "interactions"
+            or key.startswith("interactions_")
+            or key.startswith("products_")
+            or key.startswith("readouts_")
+        )
+    }
+
+    interactions = _collect_legacy_group(params, "interactions", _nnx_layer_names)
+    if interactions:
+        nnx_params["interactions"] = interactions
+
+    for group_name in ("products", "readouts"):
+        group = _collect_legacy_group(params, group_name)
+        if group:
+            nnx_params[group_name] = group
+
+    return nnx_params
+
+
+def _collect_legacy_group(params, prefix, value_fn=lambda value: value):
+    group = {}
+    marker = f"{prefix}_"
+    for key, value in params.items():
+        if not isinstance(key, str) or not key.startswith(marker):
+            continue
+        index = key[len(marker):]
+        if index.isdigit():
+            group[int(index)] = value_fn(value)
+    return group
+
+
+def _legacy_layer_names(tree):
+    """Convert NNX MLP layer indices to old layer0/layer1 names."""
+    return _rename_layer_container(tree, from_key="layers", to_key="layer")
+
+
+def _nnx_layer_names(tree):
+    """Convert old layer0/layer1 names back to NNX's layers[index] form."""
+    return _rename_layer_container(tree, from_key="layer", to_key="layers")
+
+
+def _rename_layer_container(tree, *, from_key, to_key):
+    if not isinstance(tree, dict):
+        return tree
+    converted = dict(tree)
+    conv_weights = converted.get("conv_tp_weights")
+    if not isinstance(conv_weights, dict):
+        return converted
+
+    conv_weights = dict(conv_weights)
+    if from_key == "layers":
+        layers = conv_weights.pop("layers", None)
+        if isinstance(layers, dict):
+            for idx, value in layers.items():
+                conv_weights[f"{to_key}{idx}"] = value
+    else:
+        layers = {}
+        for key in list(conv_weights):
+            if isinstance(key, str) and key.startswith(from_key):
+                index = key[len(from_key):]
+                if index.isdigit():
+                    layers[int(index)] = conv_weights.pop(key)
+        if layers:
+            conv_weights[to_key] = layers
+
+    converted["conv_tp_weights"] = conv_weights
+    return converted
 
 
 
@@ -300,7 +415,7 @@ def mace_jax_neighborlist_from_torch(
             # Keep Chemtrain's public variables["params"] contract, but pass
             # params and non-param config separately to Flax's public
             # GraphDef.apply(state, *states) merge path.
-            model_params = params["params"]
+            model_params = _legacy_params_to_nnx_params(params["params"])
             model_state = {
                 key: value for key, value in params.items() if key != "params"
             } or None
