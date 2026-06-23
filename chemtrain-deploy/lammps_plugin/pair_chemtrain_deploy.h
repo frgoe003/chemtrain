@@ -46,7 +46,6 @@ class ChemtrainDeploy : public Pair {
 
   // double cut_global;
   double **cut;
-  double **xold;
   double scale = 1.0;
 
   // Statistics
@@ -57,10 +56,6 @@ class ChemtrainDeploy : public Pair {
   double flops = 0.0;
 
   jcn::ModelProperties model_properties;
-
-  double max_displacement_sq = 0.0;
-
-  bool check_distance();
 
   std::unique_ptr<jcn::Connector> connector;
 
@@ -75,7 +70,6 @@ class ChemtrainDeploy : public Pair {
   static int exchange_callback(void *, void *, std::int64_t, std::int64_t,
                                jcn::CommunicationScalarType, bool,
                                const char **);
-  static std::int64_t active_rows_callback(void *);
   int exchange(void *, std::int64_t, std::int64_t,
                jcn::CommunicationScalarType, bool);
   double communication_get(std::int64_t, std::int64_t) const;

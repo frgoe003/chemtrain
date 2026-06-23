@@ -107,8 +107,20 @@ def copy_deps(so_file: pathlib.Path, dst_dir: pathlib.Path, allowed_roots: list[
     print(f"Copying dependency {real_src} to {real_dst} with soname {soname}")
 
     if real_src not in copied_realpaths:
-      shutil.copy2(real_src, real_dst)
-      copied_realpaths[real_src] = real_dst
+      if real_dst.exists() and real_src.samefile(real_dst):
+        copied_realpaths[real_src] = real_dst
+      elif real_dst.exists():
+        source_digest = hashlib.sha256(real_src.read_bytes()).digest()
+        destination_digest = hashlib.sha256(real_dst.read_bytes()).digest()
+        if source_digest != destination_digest:
+          raise RuntimeError(
+              f"Dependency collision for {real_name}: {real_src} and "
+              f"{real_dst} contain different libraries"
+          )
+        copied_realpaths[real_src] = real_dst
+      else:
+        shutil.copy2(real_src, real_dst)
+        copied_realpaths[real_src] = real_dst
 
     soname_dst = dst_dir / soname
     if soname != real_name and not soname_dst.exists():
@@ -758,6 +770,12 @@ def main():
           "--@xla//xla/stream_executor/cuda:nvshmem_enabled=false"
         )
 
+      if not args.enable_nccl:
+        # The connector creates one PJRT client for one selected device and
+        # does not use XLA collectives. Avoid downloading and linking NCCL in
+        # this configuration. Multi-device users can opt back in explicitly.
+        build_options.append("--config=nonccl")
+
       if args.build_cuda_with_clang:
         logging.debug("Building CUDA with Clang")
         build_options.append("--config=build_cuda_with_clang")
@@ -815,6 +833,7 @@ def main():
       build_pjrt_plugin_command = [
           *command_base,
           "@xla//xla/pjrt/c:pjrt_c_api_gpu_plugin.so",
+          "//connector:libconnector.so",
           "--",
       ]
 
@@ -846,6 +865,25 @@ def main():
       copy_deps(
         source_dir,
         target_dir / "deps", allowed_roots
+      )
+
+      # Build and package the connector in the same Bazel invocation and with
+      # the same external XLA repository configuration as the PJRT plugin.
+      # Besides avoiding a second repository-analysis pass, this prevents the
+      # two shared libraries from accidentally being produced with different
+      # CUDA, compiler, or PJRT settings.
+      connector_source = pathlib.Path(
+          "./bazel-bin/connector/libconnector.so"
+      ).resolve()
+      copy_and_patch_rpath(
+          connector_source,
+          out_dir / "libconnector.so",
+          "$ORIGIN/pjrt/cuda/deps",
+      )
+      copy_deps(
+          connector_source,
+          target_dir / "deps",
+          allowed_roots,
       )
 
 

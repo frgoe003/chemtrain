@@ -122,43 +122,7 @@ ChemtrainDeploy::~ChemtrainDeploy()
     memory->destroy(setflag);
     memory->destroy(cutsq);
     memory->destroy(cut);
-    memory->destroy(xold);
   }
-}
-
-bool ChemtrainDeploy::check_distance() {
-  double **x = atom->x;
-  int nlocal = atom->nlocal;
-
-  double deltasq = 2.0 * 2.0; // Hard coded skin distance
-
-  int flag = 0;
-  double local_max_displacement_sq = 0.0;
-  for (int i = 0; i < nlocal; i++) {
-    double delx = x[i][0] - xold[i][0];
-    double dely = x[i][1] - xold[i][1];
-    double delz = x[i][2] - xold[i][2];
-    double rsq = delx * delx + dely * dely + delz * delz;
-    local_max_displacement_sq = std::max(local_max_displacement_sq, rsq);
-    if (rsq > deltasq) {
-      flag = 1;
-    }
-  }
-
-  int flagall;
-  MPI_Allreduce(&flag, &flagall, 1, MPI_INT, MPI_MAX, world);
-  MPI_Allreduce(&local_max_displacement_sq, &max_displacement_sq, 1,
-                MPI_DOUBLE, MPI_MAX, world);
-
-  bool update_list = (flagall > 0);
-
-  if (update_list) {
-    for (int i = 0; i < atom->nlocal; i++) {
-      std::memcpy(xold[i], atom->x[i], 3 * sizeof(double));
-    }
-  }
-
-  return update_list;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -169,10 +133,10 @@ void ChemtrainDeploy::compute(int eflag, int vflag)
 
   auto start = std::chrono::high_resolution_clock::now();
 
-  // Check if neighborlist was updated just in this timestep resulting in newly communicated atoms.
-  bool moved_beyond_skin = check_distance();
-  bool lammps_neighbor_rebuilt = (neighbor->ago == 0);
-  bool update_list = moved_beyond_skin || lammps_neighbor_rebuilt;
+  // LAMMPS owns neighbor rebuild decisions for the supported host-neighbor-list
+  // path. The old explicit displacement scan existed for the removed
+  // DeviceSparseNeighborList path and would add redundant work here.
+  bool update_list = (neighbor->ago == 0);
 
   // Number of sender atoms can change depending on the ghost setting of the neighbor list.
   int inum = list->inum + list->gnum;
@@ -253,7 +217,6 @@ void ChemtrainDeploy::allocate()
   memory->create(setflag, n + 1, n + 1, "pair:setflag");
   memory->create(cutsq, n + 1, n + 1, "pair:cutsq");
   memory->create(cut, n + 1, n + 1, "pair:cut");
-  memory->create(xold, atom->nmax, 3, "pair:xold");
 
   for (int i = 1; i <= n; i++) {
     for (int j = 1; j <= n; j++) setflag[i][j] = 0;
@@ -378,7 +341,6 @@ void ChemtrainDeploy::coeff(int narg, char **arg)
     // The selected graph contains FFI gathers; bind them to LAMMPS's normal
     // forward/reverse pair communication for this pair instance.
     config.communication.context = this;
-    config.communication.active_rows = &ChemtrainDeploy::active_rows_callback;
     config.communication.exchange = &ChemtrainDeploy::exchange_callback;
   }
 
@@ -437,13 +399,6 @@ int ChemtrainDeploy::exchange_callback(
     return 1;
   }
 }
-
-std::int64_t ChemtrainDeploy::active_rows_callback(void *context) {
-  auto *self = static_cast<ChemtrainDeploy *>(context);
-  return static_cast<std::int64_t>(self->atom->nlocal) + self->atom->nghost;
-}
-
-/* ---------------------------------------------------------------------- */
 
 int ChemtrainDeploy::exchange(void *data, std::int64_t rows,
                               std::int64_t cols,
@@ -798,10 +753,6 @@ double ChemtrainDeploy::init_one(int i, int j)
   if (!allocated) allocate();
 
   if (setflag[i][j] == 0) error->all(FLERR, "Not all pair coeffs are set");
-
-  for (int i = 0; i < atom->nlocal; i++) {
-    std::memcpy(xold[i], atom->x[i], 3 * sizeof(double));
-  }
 
   double min_comm_dist = model_properties.comm_dist + neighbor->skin;
   if (min_comm_dist > comm->get_comm_cutoff()) {

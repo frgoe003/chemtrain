@@ -23,7 +23,7 @@ if(NOT LAMMPS_DIR AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 option(CHEMTRAIN_DEPLOY_NATIVE_ARCH
-  "Optimize the plugin for the CPU architecture used to build it" ON)
+  "Optimize the plugin for the CPU architecture used to build it" OFF)
 
 # when this file is included as subdirectory in the LAMMPS build, many settings are directly imported
 if(LAMMPS_DIR)

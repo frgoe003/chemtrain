@@ -72,6 +72,7 @@ class CommunicationContext {
   CommunicationContext(CommunicationCallbacks callbacks, bool enabled,
                        CommunicationWorkspace* workspace,
                        std::int64_t owned_rows,
+                       std::int64_t active_rows,
                        int expected_forward_sites = 0,
                        std::vector<int> expected_widths = {});
 
@@ -93,6 +94,7 @@ class CommunicationContext {
   bool enabled_;
   CommunicationWorkspace* workspace_;
   std::int64_t owned_rows_;
+  std::int64_t active_rows_;
 
   mutable std::mutex mutex_;
   std::condition_variable request_ready_;

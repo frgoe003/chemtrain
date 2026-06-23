@@ -42,8 +42,6 @@ namespace jcn {
 
     struct CommunicationCallbacks {
         void* context = nullptr;
-        /** Number of owned and ghost rows at the start of the buffer. */
-        std::int64_t (*active_rows)(void* context) = nullptr;
         int (*exchange)(void* context, void* data, std::int64_t rows,
                         std::int64_t cols, CommunicationScalarType type,
                         bool reverse, const char** error) = nullptr;

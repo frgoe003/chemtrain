@@ -66,8 +66,8 @@ namespace jcn {
 
         const char* raw_env = std::getenv("JCN_PJRT_PATH");
         if (raw_env == nullptr) {
-            std::cerr << "Set JCN_PJRT_PATH to discover PJRT plugins" << std::endl;
-            return;
+            throw std::runtime_error(
+                "Set JCN_PJRT_PATH to discover PJRT plugins");
         }
 
         std::string raw_path = std::string(raw_env) + "/pjrt";
@@ -76,14 +76,14 @@ namespace jcn {
         try {
             struct stat st;
             if (stat(raw_path.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
-                std::cerr << "Invalid PJRT plugin directory: " << raw_path << std::endl;
-                return;
+                throw std::runtime_error(
+                    "Invalid PJRT plugin directory: " + raw_path);
             }
 
             DIR* dir = opendir(raw_path.c_str());
             if (!dir) {
-                std::cerr << "Failed to open PJRT plugin directory: " << raw_path << std::endl;
-                return;
+                throw std::runtime_error(
+                    "Failed to open PJRT plugin directory: " + raw_path);
             }
 
             struct dirent* entry;
@@ -119,7 +119,8 @@ namespace jcn {
 
             closedir(dir);
         } catch (const std::exception& e) {
-            std::cerr << "Failed to load PJRT plugins: " << e.what() << std::endl;
+            throw std::runtime_error(
+                std::string("Failed to load PJRT plugins: ") + e.what());
         }
 
         if (cuda_pjrt_api != nullptr) {
@@ -388,13 +389,10 @@ namespace jcn {
                 logger.log(LogLevel::INFO, "Initialize SimpleDenseNeighborList");
                 break;
             case jcn::Model::DEVICE_SPARSE:
-                neighbor_list = std::make_unique<DeviceSparseNeighborList>(
-                    statistics_keys
-                );
-                neighbor_list->initialize(config.neighbor_list_multipliers);
-
-                logger.log(LogLevel::INFO, "Initialize DeviceSparseNeighborList");
-                break;
+                throw std::runtime_error(
+                    "DeviceSparseNeighborList is not supported by the current "
+                    "LAMMPS connector. Re-export the model with a host "
+                    "neighbor-list variant.");
             default:
                 throw std::runtime_error(
                     "Unknown neighbor list type: "
@@ -534,32 +532,38 @@ namespace jcn {
                 throw std::runtime_error("arg_handles is empty or not properly populated");
             }
 
+            const bool uses_communication = model->uses_communication();
+
             xla::ExecuteContext execute_context;
-            // AtomBuilder already receives `lnum`, the number of owned atoms,
-            // from LAMMPS. Pass that same prefix length to the FFI context so
-            // communication can stage owned and ghost rows separately without
-            // extending the public plugin callback ABI or querying LAMMPS again.
-            CommunicationContext communication_context(
-                communication_callbacks, model->uses_communication(),
-                &communication_workspace_, lnum, communication_forward_sites_,
-                communication_widths_);
-
-            absl::Status context_status =
-                AddCommunicationContextToExecuteContext(
-                    &execute_context, &communication_context);
-
-            if (!context_status.ok()) {
-                throw std::runtime_error(
-                    "Failed to initialize communication execution context: " +
-                    context_status.ToString());
-            }
-
             xla::ExecuteOptions execute_options;
-            execute_options.context = &execute_context;
+
+            // AtomBuilder already receives the owned and ghost counts from
+            // LAMMPS. Store those values in the FFI context before execution so
+            // PJRT worker threads never need to read LAMMPS atom state.
+            CommunicationContext communication_context(
+                communication_callbacks, uses_communication,
+                &communication_workspace_, lnum,
+                static_cast<std::int64_t>(lnum) + gnum,
+                communication_forward_sites_, communication_widths_);
+
+            if (uses_communication) {
+                absl::Status context_status =
+                    AddCommunicationContextToExecuteContext(
+                        &execute_context, &communication_context);
+
+                if (!context_status.ok()) {
+                    throw std::runtime_error(
+                        "Failed to initialize communication execution context: " +
+                        context_status.ToString());
+                }
+                execute_options.context = &execute_context;
+            }
 
             start = std::chrono::high_resolution_clock::now();
 
-            communication_context.BeginExecution();
+            if (uses_communication) {
+                communication_context.BeginExecution();
+            }
 
             // PJRT execution runs separately because this caller thread is
             // the only thread allowed to enter the LAMMPS/MPI callbacks.
@@ -586,31 +590,41 @@ namespace jcn {
                                 if (!results.ok()) break;
                             }
                         }
-                        communication_context.NotifyExecutionComplete();
+                        if (uses_communication) {
+                            communication_context.NotifyExecutionComplete();
+                        }
                         return results;
                     } catch (...) {
                         // Ensure the main thread cannot remain asleep if PJRT
                         // reports an exception instead of an error Status.
-                        communication_context.NotifyExecutionComplete();
+                        if (uses_communication) {
+                            communication_context.NotifyExecutionComplete();
+                        }
                         throw;
                     }
                 });
 
-            communication_context.ServiceUntilExecutionComplete();
-
-            absl::Status communication_status =
-                communication_context.ValidateExecution();
-            if (!communication_status.ok()) {
-                throw std::runtime_error(
-                    "Communication execution validation failed: " +
-                    communication_status.ToString());
+            if (uses_communication) {
+                communication_context.ServiceUntilExecutionComplete();
             }
 
-            // Wait for the results to be ready
+            // Wait for the results before validating communication metadata so
+            // real PJRT execution failures are not hidden by a secondary
+            // "missing communication sites" message.
             absl::StatusOr<std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>> results = future_results.get();
 
             if (!results.ok()) {
                 throw std::runtime_error("Failed to execute: " + results.status().ToString());
+            }
+
+            if (uses_communication) {
+                absl::Status communication_status =
+                    communication_context.ValidateExecution();
+                if (!communication_status.ok()) {
+                    throw std::runtime_error(
+                        "Communication execution validation failed: " +
+                        communication_status.ToString());
+                }
             }
 
             // Now we have to copy the results back to the host
@@ -727,11 +741,9 @@ namespace jcn {
 
                 break;
             case jcn::Model::DEVICE_SPARSE:
-                // Does not specify a cutoff for the particles as neighbor
-                // list is computed on the device
-                properties.cutoff = 0.0;
-
-                break;
+                throw std::runtime_error(
+                    "DeviceSparseNeighborList is not supported by the current "
+                    "LAMMPS connector.");
         }
 
         logger.log(LogLevel::INFO,

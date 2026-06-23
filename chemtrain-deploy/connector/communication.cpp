@@ -5,6 +5,7 @@
 #include <cstring>
 #include <exception>
 #include <iostream>
+#include <mutex>
 
 #include "absl/status/status.h"
 #include "xla/backends/gpu/ffi.h"
@@ -94,12 +95,14 @@ CommunicationContext::CommunicationContext(CommunicationCallbacks callbacks,
                                            bool enabled,
                                            CommunicationWorkspace* workspace,
                                            std::int64_t owned_rows,
+                                           std::int64_t active_rows,
                                            int expected_forward_sites,
                                            std::vector<int> expected_widths)
     : callbacks_(callbacks),
       enabled_(enabled),
       workspace_(workspace),
       owned_rows_(owned_rows),
+      active_rows_(active_rows),
       expected_forward_sites_(expected_forward_sites),
       expected_widths_(std::move(expected_widths)),
       validate_communication_sites_(
@@ -111,11 +114,11 @@ CommunicationContext::CommunicationContext(CommunicationCallbacks callbacks,
 }
 
 std::int64_t CommunicationContext::ActiveRows(std::int64_t capacity) const {
-  if (!enabled_ || callbacks_.active_rows == nullptr) return capacity;
+  if (!enabled_) return capacity;
   // A/B switch for measuring whether active-prefix staging beats transferring
   // the complete static-capacity buffer on a specific system.
   if (std::getenv("JCN_COMM_STAGE_FULL_BUFFER") != nullptr) return capacity;
-  const std::int64_t rows = callbacks_.active_rows(callbacks_.context);
+  const std::int64_t rows = active_rows_;
   return rows >= 0 && rows <= capacity ? rows : capacity;
 }
 
@@ -314,6 +317,7 @@ class ScopedCommunicationProfileRange {
 
 xla::ffi::TypeRegistry::TypeId g_communication_context_type_id =
     xla::ffi::TypeRegistry::kUnknownTypeId;
+std::recursive_mutex g_communication_registration_mutex;
 
 tsl::AsyncValueRef<tsl::Chain> RunExchange(
     ffi::AnyBuffer input, ffi::AnyBuffer token_input,
@@ -567,6 +571,7 @@ const PJRT_FFI* FindFfiExtension(const PJRT_Api* api) {
 }
 
 absl::Status RegisterCommunicationContextType(const PJRT_FFI* ffi) {
+  std::lock_guard<std::recursive_mutex> lock(g_communication_registration_mutex);
   if (g_communication_context_type_id !=
       xla::ffi::TypeRegistry::kUnknownTypeId) {
     return absl::OkStatus();
@@ -674,6 +679,7 @@ absl::Status AddCommunicationContextToExecuteContext(
 }
 
 int RegisterCommunicationFfi(const PJRT_Api* api, const char* platform_name) {
+  std::lock_guard<std::recursive_mutex> lock(g_communication_registration_mutex);
   if (CommunicationDebugEnabled()) {
     std::cerr << "RegisterCommunicationFfi called for " << platform_name
               << std::endl;
