@@ -524,15 +524,6 @@ def mace_jax_neighborlist(
         default_mace_config | mace_config
     )  # Overwrite defaults with any values present in mace_config
 
-    print("-" * 50)
-    for key, value in config.items():
-        print(f"Using MACE config: {key}: {value}")
-    if equivariance_config is not None:
-        print("-" * 50)
-        for key, value in equivariance_config.to_dict().items():
-            print(f"Using equivariance config: {key}: {value}")
-    print("-" * 50)
-
     try:
         jax_model = _build_jax_model(
             config,
